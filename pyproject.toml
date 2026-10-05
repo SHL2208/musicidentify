@@ -1,0 +1,28 @@
+[project]
+name = "musicidentify"
+version = "1.0.0"
+description = "AI Music Detector Agent - Detect AI-generated music vs Human music"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-genai>=1.0.0",
+    "imageio-ffmpeg>=0.5.1",
+    "librosa>=0.10.2",
+    "matplotlib>=3.9.0",
+    "numpy>=1.26.0",
+    "openpyxl>=3.1.2",
+    "pandas>=2.2.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.0",
+    "scipy>=1.13.0",
+    "soundfile>=0.12.1",
+    "streamlit>=1.40.0",
+    "yt-dlp>=2025.1.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pyright]
+extraPaths = ["."]

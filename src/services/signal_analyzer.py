@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 import numpy as np
@@ -13,7 +14,7 @@ from .fakeprint_detector import FakeprintDetector
 
 class SignalAnalyzer:
     @staticmethod
-    def check_heuristics(metadata: dict) -> Optional[dict]:
+    def check_heuristics(metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Kiểm tra các quy tắc nhanh (Metadata, Ngày phát hành, Tags).
         Nếu thỏa mãn điều kiện chắc chắn, trả về kết quả ngay để tiết kiệm API quota.
@@ -46,8 +47,10 @@ class SignalAnalyzer:
         # 2. Kiểm tra hashtag / credit rõ ràng của AI trong mô tả
         description = (metadata.get("description") or "").lower()
         title = (metadata.get("title") or "").lower()
+        uploader = (metadata.get("uploader") or "").lower()
+        channel = (metadata.get("channel") or "").lower()
         tags = [str(t).lower() for t in metadata.get("tags") or []]
-        combined_text = f"{title} {description} {' '.join(tags)}"
+        combined_text = f"{title} {description} {uploader} {channel} {' '.join(tags)}"
 
         if "created with suno" in combined_text or "#suno" in combined_text or "suno ai" in combined_text:
             return {
@@ -64,6 +67,22 @@ class SignalAnalyzer:
                 "confidence": 0.99,
                 "engine": "Udio",
                 "reason": "Phát hiện nhãn xác nhận sáng tác bằng Udio AI trong phần mô tả / tiêu đề."
+            }
+
+        # 2b. Kiểm tra các thẻ lệnh điều khiển cấu trúc AI sinh nhạc (Suno / Udio Prompt Tags)
+        # Người dùng Suno thường copy toàn bộ lời bài hát bao gồm các thẻ prompt điều khiển vào mô tả
+        suno_prompt_pattern = re.compile(
+            r'\[\s*(?:drums?|sub-?bass|beat drop|instrumental|guitar solo|piano solo|vocal chop|synth|fade out|drop|build-?up|tempo)[^\]]*\]',
+            re.IGNORECASE
+        )
+        ai_prompt_tags = suno_prompt_pattern.findall(description)
+        if ai_prompt_tags:
+            return {
+                "is_ai": True,
+                "verdict_type": VerdictType.AI_GENERATED,
+                "confidence": 0.98,
+                "engine": "Suno",
+                "reason": f"Phát hiện thẻ lệnh điều khiển phối khí của AI Suno/Udio trong phần lời ({', '.join(ai_prompt_tags[:2])})."
             }
 
         return None
@@ -123,7 +142,11 @@ class SignalAnalyzer:
         # 5. Phân tích Dấu vân Fourier Deconvolution (Fakeprint Detector - ISMIR 2025)
         fakeprint_info = FakeprintDetector.analyze_waveform(y_mono, sr=sr)
         fakeprint_score = fakeprint_info["fakeprint_score"]
-        fakeprint_detected = fakeprint_info["fakeprint_detected"]
+        # Nếu bài hát có tỷ lệ sóng hài cao (vocal autotune, synth, chords tự nhiên), yêu cầu điểm fakeprint phải cực kỳ rõ rệt
+        if harmonic_ratio > 0.70:
+            fakeprint_detected = fakeprint_score >= 0.88
+        else:
+            fakeprint_detected = fakeprint_info["fakeprint_detected"]
 
         # 6. Tương quan pha Stereo
         stereo_corr = 1.0

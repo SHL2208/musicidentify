@@ -23,15 +23,27 @@ class BatchManager:
         # 1. Tải và cắt 30s âm thanh
         audio_path, metadata = self.audio_engine.process_track_audio(track)
 
-        # 2. Kiểm tra bộ lọc Heuristics nhanh (Ngày phát hành, tags)
+        # 2. Kiểm tra bộ lọc Heuristics nhanh (Ngày phát hành, tags nhận diện AI)
         heuristics_result = SignalAnalyzer.check_heuristics(metadata)
         if heuristics_result:
             is_ai = heuristics_result["is_ai"]
             v_type = heuristics_result.get("verdict_type", VerdictType.CONFIRMED_HUMAN if not is_ai else VerdictType.AI_GENERATED)
-            verdict_label = (
-                "CONFIRMED HUMAN (Người làm)" if v_type == VerdictType.CONFIRMED_HUMAN
-                else "AI-GENERATED (Nhạc AI tạo)"
-            )
+            if v_type == VerdictType.CONFIRMED_HUMAN:
+                verdict_label = "CONFIRMED HUMAN (Người làm)"
+            elif v_type == VerdictType.PROCESSED_HUMAN:
+                verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
+            elif v_type == VerdictType.HYBRID_AI:
+                verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
+            else:
+                verdict_label = "AI-GENERATED (Nhạc AI tạo)"
+
+            # Tạo ảnh phổ và metrics để báo cáo đầy đủ
+            try:
+                metrics, spec_image_path = SignalAnalyzer.analyze_audio(audio_path)
+            except Exception:
+                metrics = None
+                spec_image_path = None
+
             return DetectionResult(
                 track_id=track.id,
                 track_title=track.track_title or track.raw_query,
@@ -42,9 +54,9 @@ class BatchManager:
                 confidence_score=heuristics_result["confidence"],
                 suspected_engine=heuristics_result["engine"],
                 reasons=[heuristics_result["reason"]],
-                detailed_explanation=f"Xác thực nhanh qua siêu dữ liệu nguồn: {heuristics_result['reason']}",
-                acoustic_metrics=None,
-                spectrogram_image_path=None
+                detailed_explanation=f"Xác thực qua siêu dữ liệu nguồn: {heuristics_result['reason']}",
+                acoustic_metrics=metrics,
+                spectrogram_image_path=str(spec_image_path) if spec_image_path else None
             )
 
         # 3. Phân tích âm học và tạo ảnh Forensic 2 tầng (Mel-Spectrogram + Fourier Fakeprint)

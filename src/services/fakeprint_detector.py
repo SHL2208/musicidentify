@@ -107,7 +107,7 @@ class FakeprintDetector:
         
         if max_lag > min_lag:
             search_window = autocorr[min_lag:max_lag]
-            peak_indices, properties = signal.find_peaks(search_window, prominence=0.15)
+            peak_indices, properties = signal.find_peaks(search_window, prominence=0.25)
             
             if len(peak_indices) > 0:
                 prominences = properties['prominences']
@@ -131,15 +131,22 @@ class FakeprintDetector:
         sparsity_ratio = float(q95 / median_res)
 
         # 6. Tính toán Fakeprint Score tổng hợp (0.0 đến 1.0)
-        # Nhạc AI: có gai chu kỳ rõ rệt (prominence cao) và độ nhọn đỉnh tách biệt
-        score_prom = np.clip(max_prominence / 0.8, 0.0, 1.0)
-        score_sparsity = np.clip((sparsity_ratio - 2.5) / 5.0, 0.0, 1.0)
+        # LƯU Ý KHOA HỌC (ISMIR 2025):
+        # Nếu chu kỳ các đỉnh (periodicity_hz) nằm trong khoảng 80Hz - 750Hz, đây là khoảng tần số
+        # cơ bản của giọng người (F0) và các nốt nhạc tự nhiên. Sự tồn tại của các đỉnh hài âm
+        # ở khoảng cách này là hiện tượng bình thường của nhạc cụ và vocal có Auto-Tune/Melodyne.
+        # Do đó, chỉ số cần chiết khấu tính chất chu kỳ nốt nhạc tự nhiên để tránh báo động giả.
+        is_musical_pitch_range = (80.0 <= periodicity_hz <= 750.0)
+        prom_discount = 0.45 if is_musical_pitch_range else 1.0
+            
+        score_prom = np.clip((max_prominence * prom_discount) / 0.85, 0.0, 1.0)
+        score_sparsity = np.clip((sparsity_ratio - 3.5) / 6.0, 0.0, 1.0)
         
-        raw_score = 0.65 * score_prom + 0.35 * score_sparsity
+        raw_score = 0.60 * score_prom + 0.40 * score_sparsity
         fakeprint_score = float(np.clip(raw_score, 0.0, 1.0))
         
-        # Ngưỡng phát hiện fakeprint: >= 0.60
-        is_detected = fakeprint_score >= 0.60
+        # Ngưỡng phát hiện fakeprint: >= 0.80 (đảm bảo chỉ cảnh báo khi có vân nhân tạo cực đoan)
+        is_detected = fakeprint_score >= 0.80
 
         return {
             "fakeprint_score": round(fakeprint_score, 3),

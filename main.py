@@ -48,15 +48,23 @@ def main():
         print(f"🔍 Đang phân tích: '{args.query}' bằng model {args.model}...")
         track = InputResolver.resolve_track(args.query)
         result = manager.process_single_track(track, model_override=args.model)
-        print("\n" + "="*50)
+        print("\n" + "="*60)
         print(f"🎵 BÀI HÁT: {result.track_title}")
         print(f"🎯 KẾT LUẬN: {result.verdict_label} (Tự tin: {result.confidence_score*100:.1f}%)")
+        print(f"🏷️ PHÂN LOẠI 4 TẦNG: {result.verdict_type.value}")
+        if result.acoustic_metrics:
+            m = result.acoustic_metrics
+            fp_tag = "⚠️ NGHI VẤN AI" if m.fakeprint_detected else "✅ TỰ NHIÊN"
+            print(f"🔬 ĐIỂM FAKEPRINT FOURIER (ISMIR 2025): {m.fakeprint_score * 100:.1f}% ({fp_tag})")
+            print(f"📡 ĐỘ MỞ DẢI TẦN (ROLLOFF 95%): {m.spectral_rolloff_95_hz:.0f} Hz")
+            print(f"📦 ĐÁNH GIÁ NÉN TRUYỀN TẢI: {m.compression_source}")
+            print(f"🎼 TỶ LỆ SÓNG HÀI (HARMONIC): {m.harmonic_ratio * 100:.1f}%")
         print(f"🤖 NỀN TẢNG NGHI VẤN: {result.suspected_engine}")
-        print(f"📌 LÝ DO CHÍNH:")
+        print(f"📌 LUẬN CỨ CHÍNH:")
         for r in result.reasons:
             print(f"   - {r}")
-        print(f"📝 GIẢI THÍCH: {result.detailed_explanation}")
-        print("="*50)
+        print(f"📝 GIẢI THÍCH CHI TIẾT:\n{result.detailed_explanation}")
+        print("="*60)
 
     elif args.file:
         file_path = Path(args.file)

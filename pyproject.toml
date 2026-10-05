@@ -26,3 +26,4 @@ package = false
 
 [tool.pyright]
 extraPaths = ["."]
+reportMissingTypeStubs = false

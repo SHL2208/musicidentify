@@ -1,3 +1,4 @@
 {
-  "extraPaths": ["."]
+  "extraPaths": ["."],
+  "reportMissingTypeStubs": false
 }

@@ -1,0 +1,105 @@
+/* Modern FAANG-Grade Dark Glassmorphism Design System */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+:root {
+    --bg-dark: #0B0F19;
+    --surface-card: rgba(17, 24, 39, 0.75);
+    --border-card: rgba(255, 255, 255, 0.08);
+    --primary-gradient: linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #EC4899 100%);
+    --human-color: #10B981;
+    --processed-color: #F59E0B;
+    --hybrid-color: #F97316;
+    --ai-color: #EF4444;
+}
+
+body, [data-testid="stAppViewContainer"] {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.main-header {
+    font-size: 2.3rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    background: var(--primary-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.2rem;
+}
+
+.sub-header {
+    font-size: 1.05rem;
+    color: #94A3B8;
+    margin-bottom: 1.5rem;
+    font-weight: 500;
+}
+
+.verdict-box-ai {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(139, 92, 246, 0.14) 100%);
+    border: 1.5px solid rgba(239, 68, 68, 0.8);
+    border-radius: 14px;
+    padding: 1.3rem;
+    text-align: center;
+    margin-bottom: 1.2rem;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 32px 0 rgba(239, 68, 68, 0.15);
+}
+
+.verdict-box-human {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(59, 130, 246, 0.14) 100%);
+    border: 1.5px solid rgba(16, 185, 129, 0.8);
+    border-radius: 14px;
+    padding: 1.3rem;
+    text-align: center;
+    margin-bottom: 1.2rem;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 32px 0 rgba(16, 185, 129, 0.15);
+}
+
+.verdict-box-processed {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.16) 0%, rgba(59, 130, 246, 0.14) 100%);
+    border: 1.5px solid rgba(245, 158, 11, 0.8);
+    border-radius: 14px;
+    padding: 1.3rem;
+    text-align: center;
+    margin-bottom: 1.2rem;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 32px 0 rgba(245, 158, 11, 0.15);
+}
+
+.verdict-box-hybrid {
+    background: linear-gradient(135deg, rgba(249, 115, 22, 0.16) 0%, rgba(168, 85, 247, 0.14) 100%);
+    border: 1.5px solid rgba(249, 115, 22, 0.8);
+    border-radius: 14px;
+    padding: 1.3rem;
+    text-align: center;
+    margin-bottom: 1.2rem;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 32px 0 rgba(249, 115, 22, 0.15);
+}
+
+.verdict-title {
+    font-size: 1.7rem;
+    font-weight: 800;
+    margin-bottom: 0.25rem;
+    letter-spacing: -0.01em;
+}
+
+.badge-engine {
+    display: inline-block;
+    padding: 0.3rem 0.9rem;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    background: rgba(55, 65, 81, 0.8);
+    color: #F3F4F6;
+    margin-top: 0.4rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.metric-pill {
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+}

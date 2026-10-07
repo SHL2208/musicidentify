@@ -18,36 +18,55 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from src.services.resolver import InputResolver
-from src.services.batch_manager import BatchManager
-from src.config import DEFAULT_GEMINI_MODEL
+from backend.core.config import DEFAULT_GEMINI_MODEL, API_HOST, API_PORT
+from backend.core.container import get_container
+from backend.api.schemas.dtos import TrackDetectRequest
 
 def run_streamlit():
-    """Khởi động giao diện người dùng Streamlit Web."""
-    app_path = root_dir / "src" / "ui" / "app.py"
+    """Khởi động giao diện người dùng Streamlit Web từ thư mục frontend/."""
+    app_path = root_dir / "frontend" / "app.py"
     cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
     subprocess.run(cmd)
 
+def run_api_server():
+    """Khởi động FastAPI REST Server bằng uvicorn."""
+    import uvicorn
+    print(f"🚀 Đang khởi chạy API Server tại http://{API_HOST}:{API_PORT} (Tài liệu Swagger: http://{API_HOST}:{API_PORT}/docs)...")
+    uvicorn.run("backend.api.app:app", host=API_HOST, port=API_PORT, reload=True)
+
 def main():
-    parser = argparse.ArgumentParser(description="AI Music Detector Agent - Phát hiện nhạc AI vs Nhạc Người")
+    parser = argparse.ArgumentParser(description="AI Music Detector Agent - Enterprise Clean Architecture (FAANG Standard)")
     parser.add_argument("--ui", action="store_true", help="Mở giao diện Web trực quan (Streamlit)")
+    parser.add_argument("--api", action="store_true", help="Khởi chạy REST API Server (FastAPI)")
     parser.add_argument("--query", type=str, help="Kiểm tra 1 bài hát (Link URL hoặc Tên bài hát)")
     parser.add_argument("--file", type=str, help="Kiểm tra hàng loạt từ file (.txt, .csv, .xlsx)")
     parser.add_argument("--model", type=str, default=DEFAULT_GEMINI_MODEL, help="Model: gemini-3.1-flash-lite hoặc gemini-3.5-flash-lite")
 
     args = parser.parse_args()
 
+    if args.api:
+        run_api_server()
+        return
+
     if args.ui or (not args.query and not args.file):
-        print("🚀 Đang khởi chạy giao diện Web Streamlit...")
+        print("🚀 Đang khởi chạy giao diện Web Streamlit (frontend/app.py)...")
         run_streamlit()
         return
 
-    manager = BatchManager()
+    # Khởi tạo Dependency Injection Container
+    container = get_container(default_model=args.model)
 
     if args.query:
-        print(f"🔍 Đang phân tích: '{args.query}' bằng model {args.model}...")
-        track = InputResolver.resolve_track(args.query)
-        result = manager.process_single_track(track, model_override=args.model)
+        print(f"🔍 Đang phân tích: '{args.query}' bằng model {args.model} qua Controller Layer...")
+        track_controller = container.track_controller
+        request = TrackDetectRequest(query=args.query, model_override=args.model)
+        response = track_controller.detect_track(request)
+
+        if not response.success or not response.data:
+            print(f"❌ Thất bại: {response.error or response.message}")
+            sys.exit(1)
+
+        result = response.data
         print("\n" + "="*60)
         print(f"🎵 BÀI HÁT: {result.track_title}")
         print(f"🎯 KẾT LUẬN: {result.verdict_label} (Tự tin: {result.confidence_score*100:.1f}%)")
@@ -71,9 +90,9 @@ def main():
         if not file_path.exists():
             print(f"❌ Không tìm thấy file: {args.file}")
             sys.exit(1)
-        print(f"📁 Đang đọc file: {file_path}...")
-        tracks = InputResolver.parse_batch_file(file_path)
-        print(f"📊 Tìm thấy {len(tracks)} bài hát. Bắt đầu quét...")
+        print(f"📁 Đang đọc file: {file_path} qua Batch Controller...")
+
+        batch_controller = container.batch_controller
 
         def progress(idx, total, tr, res, err):
             if res:
@@ -81,7 +100,13 @@ def main():
             else:
                 print(f"[{idx}/{total}] ❌ Lỗi: {tr.raw_query} ({err})")
 
-        report = manager.process_batch(tracks, model_override=args.model, on_progress=progress)
+        response = batch_controller.process_file(file_path, model_override=args.model, on_progress=progress)
+
+        if not response.success or not response.data:
+            print(f"❌ Lỗi xử lý lô: {response.error or response.message}")
+            sys.exit(1)
+
+        report = response.data
         print("\n🎉 HOÀN THÀNH!")
         print(f"Tổng: {report.total_tracks} | AI: {report.ai_count} | Người: {report.human_count} | Lỗi: {report.failed_count}")
         if report.report_file_path:

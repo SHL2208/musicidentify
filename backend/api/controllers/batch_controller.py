@@ -1,0 +1,81 @@
+import uuid
+from pathlib import Path
+from typing import List, Optional, Callable
+from backend.core.interfaces.services.batch_service_interface import IBatchService
+from backend.core.interfaces.services.resolver_interface import IInputResolver
+from backend.core.models.entities import TrackItem, DetectionResult, BatchReport
+from ..schemas.dtos import BatchDetectRequest, StandardResponse
+
+class BatchController:
+    """
+    Controller điều phối yêu cầu phân tích hàng loạt.
+    Gọi IBatchService và IInputResolver qua Interface.
+    """
+
+    def __init__(self, batch_service: IBatchService, resolver: IInputResolver):
+        self.batch_service = batch_service
+        self.resolver = resolver
+
+    def process_queries(
+        self,
+        request: BatchDetectRequest,
+        on_progress: Optional[Callable[[int, int, TrackItem, Optional[DetectionResult], Optional[str]], None]] = None
+    ) -> StandardResponse[BatchReport]:
+        """Tiếp nhận danh sách truy vấn dạng text và thực hiện quét hàng loạt."""
+        try:
+            tracks: List[TrackItem] = []
+            for q in request.queries:
+                clean_q = q.strip()
+                if not clean_q:
+                    continue
+                input_type = self.resolver.detect_input_type(clean_q)
+                tracks.append(TrackItem(
+                    id=str(uuid.uuid4())[:8],
+                    raw_query=clean_q,
+                    input_type=input_type,
+                    track_title=Path(clean_q).stem if input_type.value == "LOCAL_FILE" else clean_q,
+                    resolved_url=clean_q if input_type.value == "URL" else None
+                ))
+
+            report = self.batch_service.process_batch(
+                tracks=tracks,
+                model_override=request.model_override,
+                on_progress=on_progress
+            )
+            return StandardResponse[BatchReport](
+                success=True,
+                message=f"Đã xử lý xong lô {report.total_tracks} bài hát",
+                data=report
+            )
+        except Exception as e:
+            return StandardResponse[BatchReport](
+                success=False,
+                message="Lỗi khi xử lý danh sách hàng loạt",
+                error=str(e)
+            )
+
+    def process_file(
+        self,
+        file_path: Path,
+        model_override: Optional[str] = None,
+        on_progress: Optional[Callable[[int, int, TrackItem, Optional[DetectionResult], Optional[str]], None]] = None
+    ) -> StandardResponse[BatchReport]:
+        """Tiếp nhận tệp dữ liệu (.txt, .csv, .xlsx) và thực hiện quét hàng loạt."""
+        try:
+            tracks = self.resolver.parse_batch_file(file_path)
+            report = self.batch_service.process_batch(
+                tracks=tracks,
+                model_override=model_override,
+                on_progress=on_progress
+            )
+            return StandardResponse[BatchReport](
+                success=True,
+                message=f"Đã phân tích xong tệp {file_path.name} ({report.total_tracks} bài)",
+                data=report
+            )
+        except Exception as e:
+            return StandardResponse[BatchReport](
+                success=False,
+                message=f"Lỗi khi xử lý tệp '{file_path.name}'",
+                error=str(e)
+            )

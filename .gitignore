@@ -36,10 +36,14 @@ tests/
 #document folder
 document/
 
+#scratch folder
+scratch/
+
 # Sample songs
 sample_songs.*
 sample_songs.txt
 sample_songs.xlsx
+testcase.xlsx
 
 # IDEs
 .vscode/

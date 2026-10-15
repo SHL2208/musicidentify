@@ -74,11 +74,12 @@ def render_batch_view(client: BackendClient):
         st.divider()
         st.subheader("📊 Tổng kết Kết quả")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Tổng số bài", report.total_tracks)
         c2.metric("Nghi vấn AI", report.ai_count, delta="AI Detected", delta_color="inverse")
         c3.metric("Người làm", report.human_count, delta="Human", delta_color="normal")
-        c4.metric("Lỗi xử lý", report.failed_count)
+        c4.metric("Chưa rõ", getattr(report, "uncertain_count", 0))
+        c5.metric("Lỗi xử lý", report.failed_count)
 
         # Bảng dữ liệu chi tiết
         table_rows = []

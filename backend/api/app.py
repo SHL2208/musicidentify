@@ -1,24 +1,20 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from .routers.tracks import router as tracks_router
+from ..core.config import DEFAULT_GEMINI_MODEL, GEMINI_API_KEYS, get_ffmpeg_binary
+from ..core.exceptions import MusicIdentifyException
 from .routers.batch import router as batch_router
 from .routers.reports import router as reports_router
+from .routers.tracks import router as tracks_router
 from .schemas.dtos import HealthResponse
-from ..core.config import (
-    GEMINI_API_KEYS,
-    DEFAULT_GEMINI_MODEL,
-    get_ffmpeg_binary
-)
-from ..core.exceptions import MusicIdentifyException
 
 app = FastAPI(
     title="AI Music Detector API",
     description="Enterprise Multi-Tier Forensic Audio Detection API (FAANG Clean Architecture)",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
 )
 
 # CORS Middleware
@@ -30,6 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Global Exception Handler
 @app.exception_handler(MusicIdentifyException)
 async def custom_exception_handler(request: Request, exc: MusicIdentifyException):
@@ -39,14 +36,16 @@ async def custom_exception_handler(request: Request, exc: MusicIdentifyException
             "success": False,
             "message": exc.message,
             "details": exc.details,
-            "error": exc.__class__.__name__
-        }
+            "error": exc.__class__.__name__,
+        },
     )
+
 
 # Include Routers
 app.include_router(tracks_router, prefix="/api/v1")
 app.include_router(batch_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
+
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 def health_check():
@@ -57,5 +56,5 @@ def health_check():
         version="1.0.0",
         ffmpeg_available=bool(ffmpeg_exe and len(ffmpeg_exe) > 0),
         configured_api_keys_count=len(GEMINI_API_KEYS),
-        default_model=DEFAULT_GEMINI_MODEL
+        default_model=DEFAULT_GEMINI_MODEL,
     )

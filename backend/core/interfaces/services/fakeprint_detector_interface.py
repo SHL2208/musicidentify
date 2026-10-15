@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any
+
 import numpy as np
+
 
 class IFakeprintDetector(ABC):
     """Interface định nghĩa thuật toán phát hiện dấu vết deconvolution Fourier (ISMIR 2025)."""
 
     @abstractmethod
-    def analyze_waveform(self, y: np.ndarray, sr: int = 44100) -> Dict[str, Any]:
+    def analyze_waveform(self, y: np.ndarray, sr: int = 44100) -> dict[str, Any]:
         """
         Phân tích dạng sóng mono để trích xuất chỉ số Fakeprint Fourier.
         Trả về dict chứa các trường:

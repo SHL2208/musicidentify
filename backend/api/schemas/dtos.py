@@ -1,25 +1,32 @@
-from typing import List, Optional, Generic, TypeVar, Any
+from typing import Generic, TypeVar
+
 from pydantic import BaseModel, Field
-from backend.core.models.entities import DetectionResult, BatchReport, TrackItem
 
 T = TypeVar("T")
+
 
 class StandardResponse(BaseModel, Generic[T]):
     success: bool = True
     message: str = "Success"
-    data: Optional[T] = None
-    error: Optional[str] = None
+    data: T | None = None
+    error: str | None = None
+
 
 class TrackDetectRequest(BaseModel):
     query: str = Field(description="URL bài hát, tên bài hát, hoặc đường dẫn file âm thanh")
-    model_override: Optional[str] = Field(default=None, description="Mô hình Gemini chỉ định (nếu muốn ghi đè)")
+    model_override: str | None = Field(
+        default=None, description="Mô hình Gemini chỉ định (nếu muốn ghi đè)"
+    )
+
 
 class BatchDetectRequest(BaseModel):
-    queries: List[str] = Field(description="Danh sách link URL hoặc tên bài hát cần quét")
-    model_override: Optional[str] = Field(default=None, description="Mô hình Gemini chỉ định")
+    queries: list[str] = Field(description="Danh sách link URL hoặc tên bài hát cần quét")
+    model_override: str | None = Field(default=None, description="Mô hình Gemini chỉ định")
+
 
 class ExportReportRequest(BaseModel):
     format: str = Field(default="xlsx", description="Định dạng xuất báo cáo: 'xlsx' hoặc 'csv'")
+
 
 class HealthResponse(BaseModel):
     status: str = "healthy"

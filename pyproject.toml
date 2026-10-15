@@ -29,3 +29,11 @@ package = false
 [tool.pyright]
 extraPaths = ["."]
 reportMissingTypeStubs = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008", "E402"]

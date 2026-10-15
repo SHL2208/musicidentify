@@ -19,6 +19,7 @@ from frontend.components.verdict_card import render_verdict_card
 from frontend.components.metrics_display import render_metrics_display
 from frontend.components.spectrogram_viewer import render_spectrogram_viewer
 from frontend.components.batch_view import render_batch_view
+from frontend.components.benchmark_view import render_benchmark_view
 
 # Page Config
 st.set_page_config(
@@ -47,7 +48,11 @@ client = BackendClient(
 )
 
 # Tabs
-tab1, tab2 = st.tabs(["🔍 Thẩm định Đơn bài (Single Track)", "📁 Quét Hàng loạt (Batch Mode)"])
+tab1, tab2, tab3 = st.tabs([
+    "🔍 Thẩm định Đơn bài (Single Track)",
+    "📁 Quét Hàng loạt (Batch Mode)",
+    "🎯 Chấm điểm Testcase (Benchmark)"
+])
 
 # TAB 1: SINGLE TRACK
 with tab1:
@@ -107,3 +112,8 @@ with tab1:
 # TAB 2: BATCH SCAN
 with tab2:
     render_batch_view(client)
+
+# TAB 3: BENCHMARK & ACCURACY EVALUATION
+with tab3:
+    render_benchmark_view()
+

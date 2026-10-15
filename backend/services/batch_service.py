@@ -1,16 +1,17 @@
 import logging
 import time
-from typing import List, Optional, Callable
+from collections.abc import Callable
 
 from ..core.config import BATCH_SLEEP_INTERVAL
-from ..core.models.entities import TrackItem, DetectionResult, BatchReport, VerdictType
+from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
 from ..core.interfaces.services.batch_service_interface import IBatchService
 from ..core.interfaces.services.detection_service_interface import IDetectionService
 from ..core.interfaces.services.report_service_interface import IReportService
-from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
+from ..core.models.entities import BatchReport, DetectionResult, TrackItem, VerdictType
 from ..repositories.file_report_repository import clean_excel_text
 
 logger = logging.getLogger(__name__)
+
 
 class BatchService(IBatchService):
     """
@@ -23,7 +24,7 @@ class BatchService(IBatchService):
         detection_service: IDetectionService,
         report_service: IReportService,
         track_repo: ITrackRepository,
-        sleep_interval: float = BATCH_SLEEP_INTERVAL
+        sleep_interval: float = BATCH_SLEEP_INTERVAL,
     ):
         self.detection_service = detection_service
         self.report_service = report_service
@@ -32,15 +33,17 @@ class BatchService(IBatchService):
 
     def process_batch(
         self,
-        tracks: List[TrackItem],
-        model_override: Optional[str] = None,
-        on_progress: Optional[Callable[[int, int, TrackItem, Optional[DetectionResult], Optional[str]], None]] = None
+        tracks: list[TrackItem],
+        model_override: str | None = None,
+        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
+        | None = None,
     ) -> BatchReport:
         """Xử lý danh sách bài hát có điều tiết tốc độ và cập nhật tiến độ."""
         total = len(tracks)
-        results: List[DetectionResult] = []
+        results: list[DetectionResult] = []
         ai_count = 0
         human_count = 0
+        uncertain_count = 0
         failed_count = 0
 
         for i, track in enumerate(tracks):
@@ -52,7 +55,9 @@ class BatchService(IBatchService):
                 track.status = "COMPLETED"
                 self.track_repo.save_track(track)
 
-                if result.is_ai:
+                if result.verdict_type == VerdictType.UNCERTAIN:
+                    uncertain_count += 1
+                elif result.is_ai:
                     ai_count += 1
                 else:
                     human_count += 1
@@ -72,12 +77,16 @@ class BatchService(IBatchService):
                     track.track_title or track.raw_query,
                     error_msg,
                 )
-                print(f"[BatchService] Lỗi xử lý bài '{track.track_title or track.raw_query}': {error_msg}")
+                print(
+                    f"[BatchService] Lỗi xử lý bài '{track.track_title or track.raw_query}': {error_msg}"
+                )
 
                 error_result = DetectionResult(
                     track_id=track.id,
                     track_title=track.track_title or track.raw_query,
                     source_url=track.resolved_url or track.raw_query,
+                    input_type=track.input_type,
+                    raw_query=track.raw_query,
                     is_ai=False,
                     verdict_type=VerdictType.ERROR,
                     verdict_label="❌ LỖI XỬ LÝ (ERROR)",
@@ -86,7 +95,7 @@ class BatchService(IBatchService):
                     reasons=[f"Lỗi kỹ thuật: {error_msg}"],
                     detailed_explanation=f"Không thể hoàn thành thẩm định bài hát do lỗi: {error_msg}",
                     acoustic_metrics=None,
-                    spectrogram_image_path=None
+                    spectrogram_image_path=None,
                 )
                 results.append(error_result)
                 self.track_repo.save_result(error_result)
@@ -105,7 +114,8 @@ class BatchService(IBatchService):
             processed_count=len(results),
             ai_count=ai_count,
             human_count=human_count,
+            uncertain_count=uncertain_count,
             failed_count=failed_count,
             results=results,
-            report_file_path=str(report_file) if report_file else None
+            report_file_path=str(report_file) if report_file else None,
         )

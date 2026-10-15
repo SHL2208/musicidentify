@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Dict, Any
-from backend.core.models.entities import DetectionResult, AcousticMetrics
+from typing import Any
+
+from backend.core.models.entities import AcousticMetrics, DetectionResult
+
 
 class IAIClassifier(ABC):
     """Interface định nghĩa phân loại thẩm âm sử dụng mô hình trí tuệ nhân tạo (Gemini)."""
@@ -11,12 +13,14 @@ class IAIClassifier(ABC):
         self,
         track_id: str,
         track_title: str,
-        source_url: Optional[str] = None,
-        audio_path: Optional[Path] = None,
-        spectrogram_path: Optional[Path] = None,
-        metrics: Optional[AcousticMetrics] = None,
-        model_override: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        source_url: str | None = None,
+        audio_path: Path | None = None,
+        spectrogram_path: Path | None = None,
+        metrics: AcousticMetrics | None = None,
+        model_override: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        input_type: Any | None = None,
+        raw_query: str | None = None,
     ) -> DetectionResult:
         """
         Thực hiện giám định đa tầng bằng AI kết hợp tín hiệu âm thanh và biểu đồ phổ tần.

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+
 
 class IStorageRepository(ABC):
     """Interface định nghĩa hợp đồng quản lý lưu trữ tệp tin tạm và tệp tin đầu ra."""
@@ -11,7 +11,7 @@ class IStorageRepository(ABC):
         pass
 
     @abstractmethod
-    def cleanup_file(self, path: Optional[Path]) -> bool:
+    def cleanup_file(self, path: Path | None) -> bool:
         """Dọn dẹp file tạm an toàn không ném exception."""
         pass
 

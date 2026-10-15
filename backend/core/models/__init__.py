@@ -1,10 +1,10 @@
 from .entities import (
-    InputType,
-    VerdictType,
-    TrackItem,
     AcousticMetrics,
+    BatchReport,
     DetectionResult,
-    BatchReport
+    InputType,
+    TrackItem,
+    VerdictType,
 )
 
 __all__ = [
@@ -13,5 +13,5 @@ __all__ = [
     "TrackItem",
     "AcousticMetrics",
     "DetectionResult",
-    "BatchReport"
+    "BatchReport",
 ]

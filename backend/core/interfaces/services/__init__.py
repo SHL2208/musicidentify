@@ -1,11 +1,11 @@
 from .audio_engine_interface import IAudioEngine
-from .fakeprint_detector_interface import IFakeprintDetector
-from .signal_analyzer_interface import ISignalAnalyzer
-from .classifier_interface import IAIClassifier
-from .resolver_interface import IInputResolver
-from .detection_service_interface import IDetectionService
 from .batch_service_interface import IBatchService
+from .classifier_interface import IAIClassifier
+from .detection_service_interface import IDetectionService
+from .fakeprint_detector_interface import IFakeprintDetector
 from .report_service_interface import IReportService
+from .resolver_interface import IInputResolver
+from .signal_analyzer_interface import ISignalAnalyzer
 
 __all__ = [
     "IAudioEngine",
@@ -15,5 +15,5 @@ __all__ = [
     "IInputResolver",
     "IDetectionService",
     "IBatchService",
-    "IReportService"
+    "IReportService",
 ]

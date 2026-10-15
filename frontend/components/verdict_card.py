@@ -29,6 +29,12 @@ def render_verdict_card(result: DetectionResult):
         icon = "🤖"
         tier_title = "AI-GENERATED (Nhạc sinh hoàn toàn bằng AI)"
         desc = "Tác phẩm sinh trực tiếp từ các mô hình Suno/Udio (hòa bệt âm sắc, dính noise cymbals, phổ răng lược)."
+    elif v_type == VerdictType.UNCERTAIN:
+        box_class = "verdict-box-uncertain"
+        title_color = "#94A3B8"
+        icon = "❔"
+        tier_title = "UNCERTAIN (Chưa đủ căn cứ kết luận)"
+        desc = "Dữ liệu âm thanh chưa đủ rõ ràng, bị nhiễu nặng hoặc có dấu hiệu mâu thuẫn để phân loại chắc chắn."
     else:
         box_class = "verdict-box-ai"
         title_color = "#EF4444"

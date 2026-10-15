@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
-from backend.core.models.entities import TrackItem, DetectionResult
+
+from backend.core.models.entities import DetectionResult, TrackItem
+
 
 class ITrackRepository(ABC):
     """Interface định nghĩa hợp đồng lưu trữ và truy xuất các bài hát và kết quả thẩm định."""
@@ -11,7 +12,7 @@ class ITrackRepository(ABC):
         pass
 
     @abstractmethod
-    def get_track(self, track_id: str) -> Optional[TrackItem]:
+    def get_track(self, track_id: str) -> TrackItem | None:
         """Lấy bài hát theo ID."""
         pass
 
@@ -21,12 +22,12 @@ class ITrackRepository(ABC):
         pass
 
     @abstractmethod
-    def get_result(self, track_id: str) -> Optional[DetectionResult]:
+    def get_result(self, track_id: str) -> DetectionResult | None:
         """Lấy kết quả thẩm định theo ID bài hát."""
         pass
 
     @abstractmethod
-    def list_results(self) -> List[DetectionResult]:
+    def list_results(self) -> list[DetectionResult]:
         """Lấy toàn bộ kết quả thẩm định đã ghi nhận."""
         pass
 

@@ -1,18 +1,22 @@
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Tuple, Optional, Any, Dict, cast
+from typing import Any, cast
+
 import numpy as np
 import soundfile as sf
 import yt_dlp
 
 from ..core.config import AUDIO_SAMPLE_DURATION, AUDIO_SAMPLE_OFFSET, get_ffmpeg_binary
-from ..core.models.entities import TrackItem, InputType
-from ..core.interfaces.services.audio_engine_interface import IAudioEngine
-from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
 from ..core.exceptions import AudioProcessingException
+from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
+from ..core.interfaces.services.audio_engine_interface import IAudioEngine
+from ..core.models.entities import InputType, TrackItem
 
-def _extract_first_entry(entries: Any) -> Optional[dict]:
+
+def _extract_first_entry(entries: Any) -> dict | None:
     """Trích xuất phần tử đầu tiên từ entries của yt-dlp (hỗ trợ cả list, PagedList và Iterable)."""
     if not entries:
         return None
@@ -26,33 +30,68 @@ def _extract_first_entry(entries: Any) -> Optional[dict]:
         except Exception:
             return None
 
+
 class AudioEngineService(IAudioEngine):
     """Hiện thực dịch vụ xử lý và trích xuất âm thanh, tuân thủ interface IAudioEngine."""
 
-    def __init__(self, storage_repo: IStorageRepository, ffmpeg_path: Optional[str] = None):
+    def __init__(self, storage_repo: IStorageRepository, ffmpeg_path: str | None = None):
         self.storage_repo = storage_repo
         self.temp_dir = self.storage_repo.get_temp_dir()
         self.ffmpeg_path = ffmpeg_path or get_ffmpeg_binary()
 
-    def process_track_audio(self, track: TrackItem) -> Tuple[Path, Optional[Dict[str, Any]]]:
+    def process_track_audio(self, track: TrackItem) -> tuple[Path, dict[str, Any] | None]:
         """
         Tải và trích xuất mẫu âm thanh đa phân đoạn (Multi-Segment) đại diện cho toàn bài hát.
         Trả về: (đường dẫn file .wav đa phân đoạn, metadata chi tiết)
         """
-        raw_audio_path: Optional[Path] = None
-        metadata: Dict[str, Any] = {}
+        raw_audio_path: Path | None = None
+        metadata: dict[str, Any] = {}
 
         try:
             if track.input_type == InputType.LOCAL_FILE and os.path.isfile(track.raw_query):
                 raw_audio_path = Path(track.raw_query)
+                metadata = {"title": Path(track.raw_query).stem}
             else:
                 url_to_download = track.resolved_url
                 if not url_to_download or not url_to_download.startswith("http"):
                     url_to_download = f"ytsearch1:{track.raw_query}"
-                raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
+                try:
+                    raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
+                except Exception as dl_err:
+                    err_str = str(dl_err).lower()
+                    if (
+                        "zingmp3" in url_to_download.lower()
+                        or "vip" in err_str
+                        or "premieres" in err_str
+                        or "upcoming" in err_str
+                    ):
+                        from ..core.container import get_container
+
+                        res_svc = get_container().resolver
+                        target_t = track.track_title or track.raw_query
+                        target_a = track.artist or ""
+                        yt_url, _, _, is_match, score = res_svc.search_youtube(
+                            target_t, target_artist=target_a
+                        )
+
+                        # BẢO VỆ CHẶT CHẼ NGUỒN ÂM THANH:
+                        # Tuyệt đối không xóa tên ca sĩ để tải bừa bản cover của ca sĩ khác.
+                        # Chỉ chấp nhận fallback sang YouTube nếu khớp chính xác nghệ sĩ mục tiêu (score >= 0.65).
+                        if yt_url and is_match and score >= 0.65:
+                            raw_audio_path, metadata = self._download_audio(yt_url, track.id)
+                            metadata["is_fallback_audio"] = True
+                            metadata["fallback_from_url"] = url_to_download
+                        else:
+                            raise AudioProcessingException(
+                                f"Bản thu '{target_t}' ({target_a}) bị khóa VIP trên Zing MP3 và không tìm thấy bản phát hành chính chủ trên YouTube."
+                            ) from dl_err
+                    else:
+                        raise
 
             # Trích xuất mẫu đa phân đoạn (Verse 20%, Chorus 50%, Climax 75%)
-            sample_path = self._slice_multisegment_sample(raw_audio_path, track.id, track.duration_sec)
+            sample_path = self._slice_multisegment_sample(
+                raw_audio_path, track.id, track.duration_sec
+            )
 
             # Xóa file audio gốc tải về nếu là file tạm
             if raw_audio_path != sample_path and raw_audio_path.is_relative_to(self.temp_dir):
@@ -63,64 +102,85 @@ class AudioEngineService(IAudioEngine):
         except Exception as e:
             if isinstance(e, AudioProcessingException):
                 raise
-            raise AudioProcessingException(f"Lỗi khi xử lý âm thanh bài '{track.track_title or track.raw_query}': {e}") from e
+            raise AudioProcessingException(
+                f"Lỗi khi xử lý âm thanh bài '{track.track_title or track.raw_query}': {e}"
+            ) from e
 
-    def _download_audio(self, url: str, track_id: str) -> Tuple[Path, dict]:
+    def _download_audio(self, url: str, track_id: str) -> tuple[Path, dict]:
         """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
-        
-        client_fallbacks = [
-            ['android', 'web'],
-            ['mweb', 'android'],
-            ['ios']
+
+        client_fallbacks = [None, ["web"], ["mweb"], ["tv"]]
+        node_bin = shutil.which("node") or (
+            r"C:\Program Files\nodejs\node.exe"
+            if Path(r"C:\Program Files\nodejs\node.exe").exists()
+            else None
+        )
+        js_runtimes_cfg: dict[str, Any] = {"node": {}} if node_bin else {}
+
+        # Tự động nạp cookies.txt nếu có (cho phép bypass YouTube bot challenge)
+        cookie_candidates = [
+            self.temp_dir.parent / "cookies_master.txt",
+            self.temp_dir.parent.parent / "cookies_master.txt",
+            self.temp_dir.parent / "cookies.txt",
+            self.temp_dir.parent.parent / "cookies.txt",
         ]
+        cookie_src = next((p for p in cookie_candidates if p.exists()), None)
+        cookie_file: str | None = None
+        if cookie_src:
+            runtime_cookie = self.temp_dir / "cookie_runtime.txt"
+            try:
+                shutil.copy2(cookie_src, runtime_cookie)
+                cookie_file = str(runtime_cookie)
+            except Exception:
+                cookie_file = str(cookie_src)
 
         last_exception = None
         for client_pref in client_fallbacks:
-            ydl_opts = {
-                'format': 'bestaudio/ba/b',
-                'outtmpl': out_template,
-                'quiet': True,
-                'no_warnings': True,
-                'ffmpeg_location': self.ffmpeg_path,
-                'nocheckcertificate': True,
-                'retries': 3,
-                'socket_timeout': 30,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': client_pref
-                    }
-                },
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'wav',
-                    'preferredquality': '192',
-                }],
+            ydl_opts: dict[str, Any] = {
+                # Tải audio stream nén gốc nhẹ (~1-2MB) thay vì convert toàn bộ bài sang WAV 100MB
+                "format": "ba[ext=m4a]/ba[ext=webm]/ba[ext=mp3]/bestaudio/ba",
+                "max_filesize": 35 * 1024 * 1024,
+                "outtmpl": out_template,
+                "quiet": True,
+                "no_warnings": True,
+                "ffmpeg_location": self.ffmpeg_path,
+                "nocheckcertificate": True,
+                "retries": 1,
+                "socket_timeout": 12,
+                "remote_components": ["ejs:github"],
             }
+            if client_pref:
+                ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
+            if cookie_file:
+                ydl_opts["cookiefile"] = cookie_file
+            if js_runtimes_cfg:
+                ydl_opts["js_runtimes"] = js_runtimes_cfg
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    if isinstance(info, dict) and 'entries' in info:
-                        first_entry = _extract_first_entry(info.get('entries'))
+                    if isinstance(info, dict) and "entries" in info:
+                        first_entry = _extract_first_entry(info.get("entries"))
                         if first_entry:
                             info = first_entry
 
-                    wav_file = self.temp_dir / f"{track_id}_raw.wav"
-                    if not wav_file.exists():
-                        candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
-                        if candidates:
-                            wav_file = candidates[0]
-                        else:
-                            raise FileNotFoundError(f"Không tìm thấy file audio đã tải về cho ID {track_id}")
+                    candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
+                    if candidates:
+                        raw_file = candidates[0]
+                        return raw_file, dict(info) if isinstance(info, dict) else {}
 
-                    return wav_file, dict(info) if isinstance(info, dict) else {}
+                    raise FileNotFoundError(
+                        f"Không tìm thấy file audio đã tải về cho ID {track_id}"
+                    )
             except Exception as e:
                 last_exception = e
                 continue
 
         raise AudioProcessingException(f"Lỗi tải âm thanh từ URL/Tìm kiếm: {last_exception}")
 
-    def _slice_multisegment_sample(self, input_audio: Path, track_id: str, total_duration: Optional[float] = None) -> Path:
+    def _slice_multisegment_sample(
+        self, input_audio: Path, track_id: str, total_duration: float | None = None
+    ) -> Path:
         """
         Trích xuất đa phân đoạn đại diện toàn bài (Multi-Segment):
         - Đoạn 1 (15s): Verse / Khúc đầu (20% thời lượng bài)
@@ -128,6 +188,67 @@ class AudioEngineService(IAudioEngine):
         - Đoạn 3 (15s): Chuyển đoạn / Climax / Bridge (75% thời lượng bài)
         """
         output_sample = self.temp_dir / f"{track_id}_multisegment.wav"
+
+        # TỐI ƯU SIÊU TỐC: Dùng FFmpeg CLI để slice stream trực tiếp trong 0.05 giây
+        dur = float(total_duration) if total_duration and total_duration > 0 else 0.0
+        if dur <= 0.0:
+            try:
+                snd_info = sf.info(str(input_audio))
+                dur = float(snd_info.duration)
+            except Exception:
+                dur = self._get_audio_duration_ffmpeg(input_audio)
+
+        if dur > 0.0:
+            try:
+                if dur <= 45.0:
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                        "-i",
+                        str(input_audio),
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(output_sample),
+                    ]
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    if res.returncode == 0 and output_sample.exists():
+                        return output_sample
+                else:
+                    slice_dur = 15.0
+                    start_1 = max(0.0, min(dur * 0.20 - slice_dur / 2, dur - slice_dur))
+                    start_2 = max(0.0, min(dur * 0.50 - slice_dur / 2, dur - slice_dur))
+                    start_3 = max(0.0, min(dur * 0.75 - slice_dur / 2, dur - slice_dur))
+
+                    filter_complex = (
+                        f"[0:a]atrim=start={start_1:.2f}:end={start_1 + slice_dur:.2f},asetpts=PTS-STARTPTS[a1];"
+                        f"[0:a]atrim=start={start_2:.2f}:end={start_2 + slice_dur:.2f},asetpts=PTS-STARTPTS[a2];"
+                        f"[0:a]atrim=start={start_3:.2f}:end={start_3 + slice_dur:.2f},asetpts=PTS-STARTPTS[a3];"
+                        "[a1][a2][a3]concat=n=3:v=0:a=1[out]"
+                    )
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                        "-i",
+                        str(input_audio),
+                        "-filter_complex",
+                        filter_complex,
+                        "-map",
+                        "[out]",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(output_sample),
+                    ]
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    if res.returncode == 0 and output_sample.exists():
+                        return output_sample
+            except Exception as ffmpeg_err:
+                print(
+                    f"[AudioEngineService] FFmpeg slice error, fallback to soundfile: {ffmpeg_err}"
+                )
 
         try:
             data, sr = sf.read(str(input_audio))
@@ -153,7 +274,7 @@ class AudioEngineService(IAudioEngine):
                 end_frame = min(total_frames, start_frame + slice_frames)
                 if end_frame - start_frame < slice_frames:
                     start_frame = max(0, end_frame - slice_frames)
-                
+
                 segment = data[start_frame:end_frame].copy()
                 if len(segment) >= fade_len * 2:
                     segment[:fade_len] *= fade_in
@@ -172,7 +293,21 @@ class AudioEngineService(IAudioEngine):
             print(f"[AudioEngineService] Fallback sang FFmpeg đơn đoạn do lỗi: {e}")
             return self._slice_ffmpeg_fallback(input_audio, track_id, total_duration)
 
-    def _slice_ffmpeg_fallback(self, input_audio: Path, track_id: str, total_duration: Optional[float] = None) -> Path:
+    def _get_audio_duration_ffmpeg(self, audio_path: Path) -> float:
+        """Trích xuất độ dài audio bằng FFmpeg khi định dạng không được soundfile hỗ trợ trực tiếp."""
+        try:
+            cmd = [self.ffmpeg_path, "-i", str(audio_path)]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", res.stderr)
+            if m:
+                return float(m.group(1)) * 3600 + float(m.group(2)) * 60 + float(m.group(3))
+        except Exception:  # noqa: BLE001
+            pass
+        return 0.0
+
+    def _slice_ffmpeg_fallback(
+        self, input_audio: Path, track_id: str, total_duration: float | None = None
+    ) -> Path:
         """Fallback FFmpeg cắt đoạn 30s đơn nếu xảy ra lỗi."""
         output_sample = self.temp_dir / f"{track_id}_30s.wav"
         offset = AUDIO_SAMPLE_OFFSET
@@ -185,14 +320,19 @@ class AudioEngineService(IAudioEngine):
         cmd = [
             self.ffmpeg_path,
             "-y",
-            "-ss", str(offset),
-            "-t", str(AUDIO_SAMPLE_DURATION),
-            "-i", str(input_audio),
-            "-ar", "44100",
-            "-ac", "2",
-            str(output_sample)
+            "-ss",
+            str(offset),
+            "-t",
+            str(AUDIO_SAMPLE_DURATION),
+            "-i",
+            str(input_audio),
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(output_sample),
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise AudioProcessingException(f"FFmpeg slicing failed: {result.stderr}")
 

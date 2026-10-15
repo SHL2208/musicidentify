@@ -115,8 +115,10 @@ d:/test/musicidentify/
 ```
 
 ### 💡 Khởi chạy hệ thống bằng `uv`
-- **Khởi chạy Web UI:** `uv run streamlit run frontend/app.py` hoặc click đúp file `run_app.bat`
-- **Khởi chạy REST API Server:** `uv run main.py --api` (Tài liệu Swagger: `http://localhost:8000/docs`)
-- **Quét 1 bài hát qua CLI:** `uv run main.py --query "Tên bài hoặc URL"`
-- **Quét hàng loạt từ file:** `uv run main.py --file "sample_songs.xlsx"`
-- **Chạy kiểm thử tự động:** `uv run python -m unittest discover tests`
+
+* **Khởi chạy Web UI:** `uv run streamlit run frontend/app.py` hoặc click đúp file `run_app.bat`
+* **Khởi chạy REST API Server:** `uv run main.py --api` (Tài liệu Swagger: `http://localhost:8000/docs`)
+* **Quét 1 bài hát qua CLI:** `uv run main.py --query "Tên bài hoặc URL"`
+* **Quét hàng loạt từ file:** `uv run main.py --file "sample_songs.xlsx"`
+* **Chạy kiểm thử tự động:** `uv run python -m unittest discover tests`
+* **Đánh giá độ chính xác & Vẽ Confusion Matrix:** `uv run python tests/test_confusion_matrix.py --sample 20` (hoặc `--from-report` để vẽ từ file đối soát trước đó)

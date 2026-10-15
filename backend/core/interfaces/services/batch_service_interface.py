@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Callable
-from backend.core.models.entities import TrackItem, DetectionResult, BatchReport
+from collections.abc import Callable
+
+from backend.core.models.entities import BatchReport, DetectionResult, TrackItem
+
 
 class IBatchService(ABC):
     """Interface định nghĩa nghiệp vụ xử lý hàng loạt có điều tiết tốc độ (Rate Limiting)."""
@@ -8,9 +10,10 @@ class IBatchService(ABC):
     @abstractmethod
     def process_batch(
         self,
-        tracks: List[TrackItem],
-        model_override: Optional[str] = None,
-        on_progress: Optional[Callable[[int, int, TrackItem, Optional[DetectionResult], Optional[str]], None]] = None
+        tracks: list[TrackItem],
+        model_override: str | None = None,
+        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
+        | None = None,
     ) -> BatchReport:
         """
         Xử lý danh sách bài hát có điều tiết tốc độ (Rate Limiting)

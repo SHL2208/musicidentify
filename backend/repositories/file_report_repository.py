@@ -1,15 +1,17 @@
 import re
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 import pandas as pd
 
 from ..core.config import OUTPUT_DIR
-from ..core.interfaces.repositories.report_repository_interface import IReportRepository
 from ..core.exceptions import RepositoryException
+from ..core.interfaces.repositories.report_repository_interface import IReportRepository
 
 ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
 
 def clean_excel_text(val: Any) -> Any:
     """Lọc bỏ ANSI escape codes và các ký tự điều khiển không hợp lệ trong Excel XML."""
@@ -18,6 +20,7 @@ def clean_excel_text(val: Any) -> Any:
         val = ILLEGAL_CHARACTERS_RE.sub("", val)
     return val
 
+
 class FileReportRepository(IReportRepository):
     """Hiện thực lưu trữ và xuất tệp báo cáo ra đĩa cứng (Excel hoặc CSV)."""
 
@@ -25,7 +28,7 @@ class FileReportRepository(IReportRepository):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_report_file(self, records: List[Dict[str, Any]], format: str = "xlsx") -> Path:
+    def save_report_file(self, records: list[dict[str, Any]], format: str = "xlsx") -> Path:
         if not records:
             raise RepositoryException("Không có dữ liệu bản ghi để xuất báo cáo.")
 
@@ -37,7 +40,7 @@ class FileReportRepository(IReportRepository):
             if hasattr(df, "map"):
                 df = df.map(clean_excel_text)
             elif hasattr(df, "applymap"):
-                applymap_fn = getattr(df, "applymap")
+                applymap_fn = df.applymap
                 df = applymap_fn(clean_excel_text)
 
             if format.lower() == "csv":
@@ -51,6 +54,6 @@ class FileReportRepository(IReportRepository):
         except Exception as e:
             raise RepositoryException(f"Lỗi khi ghi tệp báo cáo: {e}") from e
 
-    def get_report_file(self, filename: str) -> Optional[Path]:
+    def get_report_file(self, filename: str) -> Path | None:
         target = self.output_dir / filename
         return target if target.exists() and target.is_file() else None

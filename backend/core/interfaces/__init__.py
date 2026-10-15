@@ -1,17 +1,13 @@
+from .repositories import IReportRepository, IStorageRepository, ITrackRepository
 from .services import (
-    IAudioEngine,
-    IFakeprintDetector,
-    ISignalAnalyzer,
     IAIClassifier,
-    IInputResolver,
-    IDetectionService,
+    IAudioEngine,
     IBatchService,
-    IReportService
-)
-from .repositories import (
-    ITrackRepository,
-    IReportRepository,
-    IStorageRepository
+    IDetectionService,
+    IFakeprintDetector,
+    IInputResolver,
+    IReportService,
+    ISignalAnalyzer,
 )
 
 __all__ = [
@@ -25,5 +21,5 @@ __all__ = [
     "IReportService",
     "ITrackRepository",
     "IReportRepository",
-    "IStorageRepository"
+    "IStorageRepository",
 ]

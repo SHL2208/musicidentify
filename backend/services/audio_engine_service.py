@@ -57,8 +57,8 @@ class AudioEngineService(IAudioEngine):
                 raw_audio_path = Path(track.raw_query)
                 metadata = {
                     "title": Path(track.raw_query).stem,
-                    "webpage_url": str(track.raw_query),
-                    "url": str(track.raw_query),
+                    "webpage_url": track.raw_query,
+                    "url": track.raw_query,
                 }
             else:
                 url_to_download = track.resolved_url
@@ -77,7 +77,7 @@ class AudioEngineService(IAudioEngine):
                         resolved_track = res_svc.resolve_track(track.raw_query)
 
                     if resolved_track and getattr(resolved_track, "resolved_url", None):
-                        res_url = str(resolved_track.resolved_url)
+                        res_url = resolved_track.resolved_url
                         if res_url and not res_url.startswith("<MagicMock"):
                             url_to_download = res_url
                             track.resolved_url = res_url
@@ -164,7 +164,13 @@ class AudioEngineService(IAudioEngine):
         """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
-        client_fallbacks = [None, ["web"], ["mweb"], ["tv"]]
+        client_fallbacks = [
+            ["android", "ios"],
+            ["mweb", "tv"],
+            ["web_embedded"],
+            ["web"],
+            None,
+        ]
         node_bin = shutil.which("node") or (
             r"C:\Program Files\nodejs\node.exe"
             if Path(r"C:\Program Files\nodejs\node.exe").exists()
@@ -187,8 +193,9 @@ class AudioEngineService(IAudioEngine):
                 "no_warnings": True,
                 "ffmpeg_location": self.ffmpeg_path,
                 "nocheckcertificate": True,
-                "retries": 1,
-                "socket_timeout": 12,
+                "geo_bypass": True,
+                "retries": 2,
+                "socket_timeout": 15,
                 "remote_components": ["ejs:github"],
             }
             if client_pref:

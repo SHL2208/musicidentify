@@ -4,8 +4,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Tự động nạp biến môi trường từ .env
+# Tự động nạp biến môi trường từ .env (khi chạy Local)
 load_dotenv()
+
+# Tự động đồng bộ Streamlit Secrets vào os.environ (khi chạy trên Streamlit Cloud)
+try:
+    import streamlit as st
+
+    if hasattr(st, "secrets"):
+        for _sk, _sv in st.secrets.items():
+            if isinstance(_sv, (str, int, float, bool)) and _sk not in os.environ:
+                os.environ[_sk] = str(_sv)
+except Exception:
+    pass
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 TEMP_DIR = BASE_DIR / "data" / "temp"
@@ -102,6 +113,15 @@ def get_cookie_file_path() -> Path | None:
     2. Các file cục bộ: cookies.txt hoặc cookies_master.txt tại BASE_DIR hoặc TEMP_DIR.
     """
     env_cookies = os.getenv("YOUTUBE_COOKIES_CONTENT", "").strip()
+    if not env_cookies:
+        try:
+            import streamlit as st
+
+            if hasattr(st, "secrets") and "YOUTUBE_COOKIES_CONTENT" in st.secrets:
+                env_cookies = str(st.secrets["YOUTUBE_COOKIES_CONTENT"]).strip()
+        except Exception:
+            pass
+
     if env_cookies:
         runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
         try:

@@ -6,7 +6,7 @@ import streamlit as st
 from backend.core.config import TEMP_DIR
 from backend.core.models.entities import BatchReport
 
-from ..services.backend_client import BackendClient
+from frontend.services.backend_client import BackendClient
 
 
 def render_batch_view(client: BackendClient):

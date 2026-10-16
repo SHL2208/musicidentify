@@ -1,4 +1,3 @@
-import runpy
 import sys
 from pathlib import Path
 
@@ -7,6 +6,7 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-# Chạy giao diện Streamlit từ frontend/app.py (Hỗ trợ Hugging Face Spaces & Streamlit Cloud)
-frontend_entrypoint = root_dir / "frontend" / "app.py"
-runpy.run_path(str(frontend_entrypoint), run_name="__main__")
+from frontend.app import main
+
+if __name__ == "__main__":
+    main()

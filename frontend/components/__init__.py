@@ -1,4 +1,5 @@
 from .batch_view import render_batch_view
+from .benchmark_view import render_benchmark_view
 from .header import render_header
 from .metrics_display import render_metrics_display
 from .sidebar import render_sidebar
@@ -12,4 +13,6 @@ __all__ = [
     "render_metrics_display",
     "render_spectrogram_viewer",
     "render_batch_view",
+    "render_benchmark_view",
 ]
+

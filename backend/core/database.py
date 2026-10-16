@@ -11,6 +11,16 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 
+try:
+    import streamlit as st
+
+    if hasattr(st, "secrets"):
+        for _sk, _sv in st.secrets.items():
+            if isinstance(_sv, (str, int, float, bool)) and str(_sk) not in os.environ:
+                os.environ[str(_sk)] = str(_sv)
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()

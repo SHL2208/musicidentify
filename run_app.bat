@@ -14,8 +14,8 @@ if exist "%USERPROFILE%\.local\bin\uv.exe" (
 
 where uv >nul 2>nul
 if %errorlevel% equ 0 (
-    echo [OK] Đang khởi động giao diện Web bằng uv (frontend\app.py)...
-    uv run streamlit run frontend\app.py
+    echo [OK] Đang khởi động giao diện Web bằng uv (app.py)...
+    uv run streamlit run app.py
 ) else (
     echo [ERROR] Không tìm thấy uv trên hệ thống. Vui lòng cài đặt uv hoặc thêm uv vào biến môi trường PATH.
     pause

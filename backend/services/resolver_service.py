@@ -591,12 +591,6 @@ class InputResolverService(IInputResolver):
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
-            "remote_components": ["ejs:github"],
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web", "mweb"],
-                }
-            },
         }
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
@@ -606,7 +600,7 @@ class InputResolverService(IInputResolver):
             else None
         )
         if node_bin:
-            ydl_opts["js_runtimes"] = {"node": {}}
+            ydl_opts["js_runtimes"] = ["node"]
 
         # Danh sách các câu truy vấn tìm kiếm theo thứ tự ưu tiên
         candidate_queries: list[str] = []
@@ -736,12 +730,6 @@ class InputResolverService(IInputResolver):
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
-            "remote_components": ["ejs:github"],
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web", "mweb"],
-                }
-            },
         }
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
@@ -751,7 +739,7 @@ class InputResolverService(IInputResolver):
             else None
         )
         if node_bin:
-            ydl_opts["js_runtimes"] = {"node": {}}
+            ydl_opts["js_runtimes"] = ["node"]
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                 info = ydl.extract_info(url, download=False)

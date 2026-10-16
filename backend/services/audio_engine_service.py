@@ -109,38 +109,49 @@ class AudioEngineService(IAudioEngine):
                         f"Không tìm thấy URL hợp lệ để tải bài hát '{track.track_title or track.raw_query}'"
                     )
 
+                raw_audio_path = None
+                metadata = {}
                 try:
                     raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
                 except Exception as dl_err:
                     err_str = str(dl_err).lower()
-                    if (
-                        "zingmp3" in url_to_download.lower()
-                        or "vip" in err_str
-                        or "premieres" in err_str
-                        or "upcoming" in err_str
-                    ):
+                    target_t = track.track_title or track.raw_query
+                    target_a = track.artist or ""
+
+                    # Nhánh 1: Nếu URL gốc là Zing MP3 bị VIP/lỗi, thử tìm kiếm và tải trên YouTube
+                    if "zingmp3" in url_to_download.lower() or "vip" in err_str:
                         from ..core.container import get_container
 
                         res_svc = get_container().resolver
-                        target_t = track.track_title or track.raw_query
-                        target_a = track.artist or ""
                         yt_url, _, _, is_match, score = res_svc.search_youtube(
                             target_t, target_artist=target_a
                         )
-
-                        # BẢO VỆ CHẶT CHẼ NGUỒN ÂM THANH:
-                        # Tuyệt đối không xóa tên ca sĩ để tải bừa bản cover của ca sĩ khác.
-                        # Chỉ chấp nhận fallback sang YouTube nếu khớp chính xác nghệ sĩ mục tiêu (score >= 0.65).
                         if yt_url and is_match and score >= 0.65:
-                            raw_audio_path, metadata = self._download_audio(yt_url, track.id)
+                            try:
+                                raw_audio_path, metadata = self._download_audio(yt_url, track.id)
+                                metadata["is_fallback_audio"] = True
+                                metadata["fallback_from_url"] = url_to_download
+                                metadata["fallback_platform"] = "youtube"
+                            except Exception:
+                                raw_audio_path, metadata = None, {}
+
+                    # Nhánh 2: Nếu chưa tải được (do YouTube bị chặn Datacenter/bot/format trên Cloud),
+                    # Tự động Fallback sang SoundCloud (hoàn toàn mở, không bị bot block trên Cloud Datacenter)
+                    if not raw_audio_path or not raw_audio_path.exists():
+                        try:
+                            clean_t = re.sub(r"\(.*?\)|\[.*?\]", "", target_t).strip()
+                            sc_search = f"scsearch1:{clean_t or target_t} {target_a}".strip()
+                            print(f"[AudioEngineService] 🔄 YouTube tải thất bại. Đang tự động thử tải bản thu dự phòng từ SoundCloud: {sc_search}")
+                            raw_audio_path, metadata = self._download_audio(sc_search, track.id)
                             metadata["is_fallback_audio"] = True
                             metadata["fallback_from_url"] = url_to_download
-                        else:
-                            raise AudioProcessingException(
-                                f"Bản thu '{target_t}' ({target_a}) bị khóa VIP trên Zing MP3 và không tìm thấy bản phát hành chính chủ trên YouTube."
-                            ) from dl_err
-                    else:
-                        raise
+                            metadata["fallback_platform"] = "soundcloud"
+                        except Exception as sc_err:
+                            print(f"[AudioEngineService] ❌ SoundCloud fallback thất bại: {sc_err}")
+            if not raw_audio_path or not raw_audio_path.exists():
+                raise AudioProcessingException(
+                    f"Không thể tải tệp âm thanh hợp lệ cho bài '{track.track_title or track.raw_query}'"
+                )
 
             # Trích xuất mẫu đa phân đoạn (Verse 20%, Chorus 50%, Climax 75%)
             sample_path = self._slice_multisegment_sample(
@@ -161,39 +172,23 @@ class AudioEngineService(IAudioEngine):
             ) from e
 
     def _download_audio(self, url: str, track_id: str) -> tuple[Path, dict]:
-        """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden / bot block."""
+        """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi đa tầng và chống bot/format/cookie mismatch."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
-        # Chuỗi Fallback Client: Ưu tiên client web dùng Cookies đăng nhập từ trình duyệt Desktop
-        # TUYỆT ĐỐI KHÔNG dùng web_embedded vì video âm nhạc bản quyền luôn chặn embed (lỗi 152)
-        client_fallbacks = [
-            # 1. web: Trình duyệt Desktop chính chủ (tận dụng 100% cookies của user)
-            ["web"],
-            # 2. web_creator: YouTube Creator Studio (dùng cookies, không bị giới hạn embed)
-            ["web_creator"],
-            # 3. mweb: Mobile web (hỗ trợ session cookies)
-            ["mweb"],
-            # 4. android_creator: API YouTube Studio Android
-            ["android_creator"],
-            # 5. android: Khách hàng Android tiêu chuẩn
-            ["android"],
-            # 6. yt-dlp mặc định
-            None,
-        ]
+        # Tự động nạp cookies.txt hoặc YOUTUBE_COOKIES_CONTENT từ cấu hình
+        cookie_path = get_cookie_file_path()
+        cookie_file: str | None = str(cookie_path) if (cookie_path and cookie_path.exists()) else None
+        if cookie_file:
+            print(f"[AudioEngineService] 🍪 Nạp cookie YouTube từ: {cookie_file} ({Path(cookie_file).stat().st_size} bytes)")
+        else:
+            print("[AudioEngineService] ℹ️ Chạy chế độ không cookie.")
+
         node_bin = shutil.which("node") or (
             r"C:\Program Files\nodejs\node.exe"
             if Path(r"C:\Program Files\nodejs\node.exe").exists()
             else None
         )
-        js_runtimes_cfg: dict[str, Any] = {"node": {}} if node_bin else {}
-
-        # Tự động nạp cookies.txt hoặc YOUTUBE_COOKIES_CONTENT từ cấu hình
-        cookie_path = get_cookie_file_path()
-        cookie_file: str | None = str(cookie_path) if cookie_path else None
-        if cookie_file:
-            print(f"[AudioEngineService] 🍪 Nạp cookie YouTube từ: {cookie_file} ({Path(cookie_file).stat().st_size} bytes)")
-        else:
-            print("[AudioEngineService] ⚠️ CẢNH BÁO: Không có cookie YouTube. Cloud/Datacenter IP có thể bị YouTube chặn.")
+        js_runtimes_cfg: list[str] = ["node"] if node_bin else []
 
         user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -201,11 +196,38 @@ class AudioEngineService(IAudioEngine):
             "Chrome/131.0.0.0 Safari/537.36"
         )
 
+        # Ma trận chiến lược tải đa tầng (Multi-tier Strategy Matrix)
+        # Tự động chuyển đổi thông minh giữa có Cookie, không Cookie, và các client khác nhau
+        strategies: list[dict[str, Any]] = [
+            # 1. yt-dlp tự động đàm phán có cookie (nếu người dùng cung cấp)
+            {"name": "default_with_cookies", "client": None, "use_cookies": True},
+            # 2. yt-dlp tự động đàm phán KHÔNG cookie (tránh lỗi session/sidts trên Datacenter IP)
+            {"name": "default_no_cookies", "client": None, "use_cookies": False},
+            # 3. Android client KHÔNG cookie (API di động chính thống, không bị bot block desktop)
+            {"name": "android_no_cookies", "client": ["android"], "use_cookies": False},
+            # 4. iOS client KHÔNG cookie
+            {"name": "ios_no_cookies", "client": ["ios"], "use_cookies": False},
+            # 5. Web client có cookie
+            {"name": "web_with_cookies", "client": ["web"], "use_cookies": True},
+            # 6. Mobile web KHÔNG cookie
+            {"name": "mweb_no_cookies", "client": ["mweb"], "use_cookies": False},
+            # 7. TV client KHÔNG cookie
+            {"name": "tv_no_cookies", "client": ["tv"], "use_cookies": False},
+        ]
+
+        # Nếu không có file cookie, lọc bỏ các chiến lược use_cookies: True trùng lặp
+        if not cookie_file:
+            strategies = [s for s in strategies if not s["use_cookies"]]
+
         last_exception = None
-        for client_pref in client_fallbacks:
+        for strat in strategies:
+            strat_name = strat["name"]
+            client_pref = strat["client"]
+            use_cookie = strat["use_cookies"] and bool(cookie_file)
+
             ydl_opts: dict[str, Any] = {
-                # Ưu tiên audio stream nén gốc, nếu client chỉ có stream kèm video thì tự động fallback sang video nhẹ (<=480p) để FFmpeg bóc tách audio
-                "format": "ba[ext=m4a]/ba[ext=webm]/ba/bestaudio/b[height<=480]/b/best",
+                # Linh hoạt tối đa: Chọn audio tốt nhất, nếu chỉ có video thì tải video và FFmpeg bóc tách audio
+                "format": "bestaudio/bestvideo+bestaudio/best",
                 "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
@@ -214,28 +236,32 @@ class AudioEngineService(IAudioEngine):
                 "nocheckcertificate": True,
                 "geo_bypass": True,
                 "retries": 3,
-                "socket_timeout": 20,
+                "socket_timeout": 25,
                 "user_agent": user_agent,
                 "http_headers": {
                     "User-Agent": user_agent,
                     "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
                     "Referer": "https://www.youtube.com/",
                 },
-                "remote_components": ["ejs:github"],
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }
+                ],
             }
-            extractor_args: dict[str, Any] = {
-                # QUAN TRỌNG: missing_pot giúp yt-dlp KHÔNG tự ý ẩn các định dạng khi thiếu PO-Token
-                "formats": ["missing_pot", "duplicate"],
-            }
+
+            extractor_args: dict[str, Any] = {}
             if client_pref:
                 extractor_args["player_client"] = client_pref
-            ydl_opts["extractor_args"] = {"youtube": extractor_args}
+            if extractor_args:
+                ydl_opts["extractor_args"] = {"youtube": extractor_args}
 
-            if cookie_file:
+            if use_cookie and cookie_file:
                 ydl_opts["cookiefile"] = cookie_file
             if js_runtimes_cfg:
                 ydl_opts["js_runtimes"] = js_runtimes_cfg
-
 
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
@@ -255,9 +281,11 @@ class AudioEngineService(IAudioEngine):
                         elif url.startswith("http"):
                             info_dict["webpage_url"] = url
 
+                    # Tìm file kết quả (kể cả .mp3 do postprocessor tạo ra hoặc file gốc)
                     candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
                     if candidates:
-                        raw_file = candidates[0]
+                        mp3_cands = [c for c in candidates if c.suffix.lower() == ".mp3"]
+                        raw_file = mp3_cands[0] if mp3_cands else candidates[0]
                         return raw_file, info_dict
 
                     raise FileNotFoundError(
@@ -265,7 +293,7 @@ class AudioEngineService(IAudioEngine):
                     )
             except Exception as e:
                 last_exception = e
-                print(f"[AudioEngineService] Fallback client {client_pref} thất bại: {e}")
+                print(f"[AudioEngineService] Chiến lược '{strat_name}' thất bại: {e}")
                 continue
 
         raise AudioProcessingException(f"Lỗi tải âm thanh từ URL/Tìm kiếm: {last_exception}")

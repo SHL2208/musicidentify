@@ -173,8 +173,17 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, int]:
         if line_str.count("\t") >= 6:
             parts = line_str.split("\t")
             if len(parts) >= 7 and parts[0]:
+                cookie_name = parts[5].strip()
+                # QUAN TRỌNG: Loại bỏ __Secure-1PSIDTS và __Secure-3PSIDTS
+                # sidts là token phiên TLS-fingerprint của máy cá nhân. Đem sang Cloud Datacenter (AWS)
+                # sẽ kích hoạt cơ chế chống bot của YouTube: "The page needs to be reloaded".
+                if cookie_name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
+                    continue
                 valid_cookies.append("\t".join(parts[:7]))
             elif len(parts) == 6 and parts[0]:
+                cookie_name = parts[5].strip()
+                if cookie_name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
+                    continue
                 valid_cookies.append("\t".join(parts) + "\t")
             continue
 
@@ -186,12 +195,16 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, int]:
             (".", "http", "www", "youtube", "google", "zing")
         ):
             domain, sub, path, sec, exp, name = parts[:6]
+            if name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
+                continue
             val = " ".join(parts[6:])
             valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
         elif len(parts) == 6 and parts[0].startswith(
             (".", "http", "www", "youtube", "google", "zing")
         ):
             domain, sub, path, sec, exp, name = parts
+            if name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
+                continue
             valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t")
 
     if not valid_cookies:

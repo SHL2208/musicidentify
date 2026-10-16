@@ -8,6 +8,7 @@ if str(root_dir) not in sys.path:
 
 import streamlit as st
 
+from backend.core.config import TEMP_DIR
 from frontend.components.batch_view import render_batch_view
 from frontend.components.benchmark_view import render_benchmark_view
 
@@ -57,23 +58,54 @@ tab1, tab2, tab3 = st.tabs([
 
 # TAB 1: SINGLE TRACK
 with tab1:
-    col_input, col_btn = st.columns([4, 1])
-    with col_input:
-        query_input = st.text_input(
-            "Nhập liên kết YouTube, tên bài hát, hoặc đường dẫn file âm thanh:",
-            placeholder="VD: https://www.youtube.com/watch?v=... hoặc 'Sơn Tùng M-TP - Đừng Làm Trái Tim Anh Đau'",
-            key="single_query_input"
-        )
-    with col_btn:
-        st.write("")
-        st.write("")
-        submit_btn = st.button("🚀 Bắt đầu Giám định", type="primary", use_container_width=True)
+    input_method = st.radio(
+        "Phương thức thẩm định:",
+        ["🔗 Nhập Link YouTube / Tên bài hát", "📤 Tải file âm thanh lên (.mp3, .wav, .m4a)"],
+        horizontal=True
+    )
 
-    if submit_btn and query_input.strip():
-        with st.spinner(f"Đang thẩm định: '{query_input.strip()}' bằng {st.session_state.model_name}..."):
+    query_to_process = None
+    target_display_name = ""
+
+    if input_method == "🔗 Nhập Link YouTube / Tên bài hát":
+        col_input, col_btn = st.columns([4, 1])
+        with col_input:
+            query_input = st.text_input(
+                "Nhập liên kết YouTube, tên bài hát, hoặc URL âm thanh:",
+                placeholder="VD: https://www.youtube.com/watch?v=... hoặc 'Sơn Tùng M-TP - Đừng Làm Trái Tim Anh Đau'",
+                key="single_query_input"
+            )
+        with col_btn:
+            st.write("")
+            st.write("")
+            submit_btn = st.button("🚀 Bắt đầu Giám định", type="primary", use_container_width=True, key="btn_url")
+        if submit_btn and query_input.strip():
+            query_to_process = query_input.strip()
+            target_display_name = query_input.strip()
+    else:
+        col_file, col_btn = st.columns([4, 1])
+        with col_file:
+            uploaded_audio = st.file_uploader(
+                "Tải lên tệp âm thanh trực tiếp (hoạt động 100% không phụ thuộc YouTube/Cloud bot filter):",
+                type=["mp3", "wav", "m4a", "flac", "ogg", "aac"],
+                key="single_audio_file"
+            )
+        with col_btn:
+            st.write("")
+            st.write("")
+            submit_file_btn = st.button("🚀 Bắt đầu Giám định", type="primary", use_container_width=True, key="btn_file")
+        if submit_file_btn and uploaded_audio:
+            save_path = TEMP_DIR / uploaded_audio.name
+            with open(save_path, "wb") as f:
+                f.write(uploaded_audio.getbuffer())
+            query_to_process = str(save_path)
+            target_display_name = uploaded_audio.name
+
+    if query_to_process:
+        with st.spinner(f"Đang thẩm định: '{target_display_name}' bằng {st.session_state.model_name}..."):
             try:
                 result = client.detect_single_track(
-                    query=query_input.strip(),
+                    query=query_to_process,
                     model_override=st.session_state.model_name
                 )
                 st.session_state.single_result = result
@@ -83,6 +115,7 @@ with tab1:
     # Hiển thị kết quả
     if st.session_state.single_result:
         res = st.session_state.single_result
+
         st.divider()
 
         st.markdown(f"### 🎵 Kết Quả Thẩm Định: **{res.track_title}**")

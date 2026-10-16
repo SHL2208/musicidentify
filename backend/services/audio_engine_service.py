@@ -9,7 +9,12 @@ import numpy as np
 import soundfile as sf
 import yt_dlp
 
-from ..core.config import AUDIO_SAMPLE_DURATION, AUDIO_SAMPLE_OFFSET, get_ffmpeg_binary
+from ..core.config import (
+    AUDIO_SAMPLE_DURATION,
+    AUDIO_SAMPLE_OFFSET,
+    get_cookie_file_path,
+    get_ffmpeg_binary,
+)
 from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
 from ..core.interfaces.services.audio_engine_interface import IAudioEngine
@@ -164,22 +169,9 @@ class AudioEngineService(IAudioEngine):
         )
         js_runtimes_cfg: dict[str, Any] = {"node": {}} if node_bin else {}
 
-        # Tự động nạp cookies.txt nếu có (cho phép bypass YouTube bot challenge)
-        cookie_candidates = [
-            self.temp_dir.parent / "cookies_master.txt",
-            self.temp_dir.parent.parent / "cookies_master.txt",
-            self.temp_dir.parent / "cookies.txt",
-            self.temp_dir.parent.parent / "cookies.txt",
-        ]
-        cookie_src = next((p for p in cookie_candidates if p.exists()), None)
-        cookie_file: str | None = None
-        if cookie_src:
-            runtime_cookie = self.temp_dir / "cookie_runtime.txt"
-            try:
-                shutil.copy2(cookie_src, runtime_cookie)
-                cookie_file = str(runtime_cookie)
-            except Exception:
-                cookie_file = str(cookie_src)
+        # Tự động nạp cookies.txt hoặc YOUTUBE_COOKIES_CONTENT từ cấu hình
+        cookie_path = get_cookie_file_path()
+        cookie_file: str | None = str(cookie_path) if cookie_path else None
 
         last_exception = None
         for client_pref in client_fallbacks:

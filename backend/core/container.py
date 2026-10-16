@@ -3,9 +3,10 @@ from pathlib import Path
 from ..api.controllers.batch_controller import BatchController
 from ..api.controllers.report_controller import ReportController
 from ..api.controllers.track_controller import TrackController
-from ..repositories.file_report_repository import FileReportRepository
 
 # Concrete Implementations
+from ..repositories.database_track_repository import DatabaseTrackRepository
+from ..repositories.file_report_repository import FileReportRepository
 from ..repositories.in_memory_track_repository import InMemoryTrackRepository
 from ..repositories.temp_storage_repository import TempStorageRepository
 from ..services.audio_engine_service import AudioEngineService
@@ -16,6 +17,7 @@ from ..services.gemini_classifier_service import GeminiClassifierService
 from ..services.report_service import ReportService
 from ..services.resolver_service import InputResolverService
 from ..services.signal_analyzer_service import SignalAnalyzerService
+from ..services.supabase_storage_service import SupabaseStorageService
 
 # Core Configurations
 from .config import (
@@ -27,6 +29,7 @@ from .config import (
     TEMP_DIR,
     get_ffmpeg_binary,
 )
+from .database import is_database_available
 from .interfaces.repositories.report_repository_interface import IReportRepository
 from .interfaces.repositories.storage_repository_interface import IStorageRepository
 from .interfaces.repositories.track_repository_interface import ITrackRepository
@@ -65,7 +68,11 @@ class AppContainer:
         self.report_repository: IReportRepository = FileReportRepository(
             output_dir=output_dir or OUTPUT_DIR
         )
-        self.track_repository: ITrackRepository = InMemoryTrackRepository()
+        if is_database_available():
+            self.track_repository: ITrackRepository = DatabaseTrackRepository()
+        else:
+            self.track_repository: ITrackRepository = InMemoryTrackRepository()
+        self.supabase_storage: SupabaseStorageService = SupabaseStorageService()
 
         # 2. LAYER 2: SERVICES (Tất cả được gán kiểu là Interface)
         self.audio_engine: IAudioEngine = AudioEngineService(

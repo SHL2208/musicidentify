@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from backend.core.config import TEMP_DIR
 from backend.core.models.entities import BatchReport
 
 from ..services.backend_client import BackendClient
@@ -24,8 +25,7 @@ def render_batch_view(client: BackendClient):
         uploaded_file = st.file_uploader("Chọn tệp danh sách bài hát:", type=[
                                          "txt", "csv", "xlsx", "xls"])
         if uploaded_file:
-            temp_path = Path("data/temp") / uploaded_file.name
-            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = TEMP_DIR / uploaded_file.name
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             file_path = temp_path

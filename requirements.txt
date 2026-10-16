@@ -1,0 +1,28 @@
+# Core Web & API
+streamlit>=1.40.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# Google Gemini Multi-tier AI
+google-genai>=1.0.0
+
+# Audio Processing & Signal Analysis (DSP)
+librosa>=0.10.2
+soundfile>=0.12.1
+scipy>=1.13.0
+numpy>=1.26.0
+matplotlib>=3.9.0
+imageio-ffmpeg>=0.5.1
+yt-dlp>=2025.1.0
+
+# Data Manipulation & Reports
+pandas>=2.2.0
+openpyxl>=3.1.2
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+
+# Database & Cloud Storage
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+supabase>=2.0.0

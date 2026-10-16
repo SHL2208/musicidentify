@@ -13,6 +13,7 @@ from typing import Any, cast
 import pandas as pd
 import yt_dlp
 
+from ..core.config import get_cookie_file_path
 from ..core.exceptions import InvalidInputException, TrackNotFoundException
 from ..core.interfaces.services.resolver_interface import IInputResolver
 from ..core.models.entities import InputType, TrackItem
@@ -583,9 +584,7 @@ class InputResolverService(IInputResolver):
         Tìm kiếm bài hát trên YouTube với bộ lọc Top 5, xác thực thông minh và Fallback đa Pass.
         Trả về: (url, title, duration, is_verified_match, match_score)
         """
-        cookie_file = Path(r"d:\test\musicidentify\cookies.txt")
-        if not cookie_file.exists():
-            cookie_file = Path(r"d:\test\musicidentify\cookies_master.txt")
+        cookie_file = get_cookie_file_path()
 
         ydl_opts: dict[str, Any] = {
             "quiet": True,
@@ -594,7 +593,7 @@ class InputResolverService(IInputResolver):
             "skip_download": True,
             "remote_components": ["ejs:github"],
         }
-        if cookie_file.exists():
+        if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
         node_bin = shutil.which("node") or (
             r"C:\Program Files\nodejs\node.exe"
@@ -725,9 +724,7 @@ class InputResolverService(IInputResolver):
         return None, song_name, None, False, 0.0
 
     def _get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
-        cookie_file = Path(r"d:\test\musicidentify\cookies.txt")
-        if not cookie_file.exists():
-            cookie_file = Path(r"d:\test\musicidentify\cookies_master.txt")
+        cookie_file = get_cookie_file_path()
 
         ydl_opts: dict[str, Any] = {
             "quiet": True,
@@ -736,7 +733,7 @@ class InputResolverService(IInputResolver):
             "skip_download": True,
             "remote_components": ["ejs:github"],
         }
-        if cookie_file.exists():
+        if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
         node_bin = shutil.which("node") or (
             r"C:\Program Files\nodejs\node.exe"

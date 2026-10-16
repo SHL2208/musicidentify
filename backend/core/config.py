@@ -71,6 +71,12 @@ AUDIO_SAMPLE_DURATION = int(os.getenv("AUDIO_SAMPLE_DURATION", "30"))
 AUDIO_SAMPLE_OFFSET = int(os.getenv("AUDIO_SAMPLE_OFFSET", "45"))
 BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "3.0"))
 
+# Media Cloud Storage Configuration
+CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = (
+    os.getenv("CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD", "true").strip().lower()
+    in ("true", "1", "yes")
+)
+
 # Server / API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -87,3 +93,33 @@ def get_ffmpeg_binary() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
         return "ffmpeg"
+
+
+def get_cookie_file_path() -> Path | None:
+    """
+    Trả về đường dẫn file cookies.txt hợp lệ nếu có.
+    Hỗ trợ:
+    1. Biến môi trường YOUTUBE_COOKIES_CONTENT (dành cho Cloud Secrets như Hugging Face / Streamlit Cloud).
+    2. Các file cục bộ: cookies.txt hoặc cookies_master.txt tại BASE_DIR hoặc TEMP_DIR.
+    """
+    env_cookies = os.getenv("YOUTUBE_COOKIES_CONTENT", "").strip()
+    if env_cookies:
+        runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
+        try:
+            runtime_cookie.write_text(env_cookies, encoding="utf-8")
+            return runtime_cookie
+        except Exception:
+            pass
+
+    for candidate in [
+        BASE_DIR / "cookies.txt",
+        BASE_DIR / "cookies_master.txt",
+        TEMP_DIR / "cookies.txt",
+        TEMP_DIR / "cookies_master.txt",
+        TEMP_DIR / "cookie_runtime.txt",
+    ]:
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return candidate
+
+    return None
+

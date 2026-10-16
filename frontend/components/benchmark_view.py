@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from backend.core.config import BASE_DIR, TEMP_DIR
 from backend.core.container import get_container
 from benchmark_evaluator import (
     export_audit_excel,
@@ -22,7 +23,7 @@ def render_benchmark_view():
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        default_file = "testcase.xlsx"
+        default_file = str(BASE_DIR / "testcase.xlsx")
         file_options = ["Sử dụng file có sẵn trong project (testcase.xlsx)", "Tải lên file Excel khác"]
         file_source = st.radio("Nguồn file test sample:", file_options, horizontal=True)
 
@@ -30,8 +31,7 @@ def render_benchmark_view():
         if file_source == "Tải lên file Excel khác":
             uploaded = st.file_uploader("Chọn file Excel testcase (.xlsx):", type=["xlsx", "xls"])
             if uploaded:
-                save_path = Path("data/temp") / uploaded.name
-                save_path.parent.mkdir(parents=True, exist_ok=True)
+                save_path = TEMP_DIR / uploaded.name
                 with open(save_path, "wb") as f:
                     f.write(uploaded.getbuffer())
                 selected_file_path = str(save_path)
@@ -175,6 +175,14 @@ def render_benchmark_view():
             audit_file = export_audit_excel(benchmark_summary, results)
             st.session_state["benchmark_file"] = audit_file
 
+            # Tự động đồng bộ lịch sử đợt chấm điểm lên CSDL Supabase Cloud
+            if hasattr(container.track_repository, "save_benchmark_run"):
+                try:
+                    run_id = container.track_repository.save_benchmark_run(benchmark_summary, results)
+                    st.toast(f"☁️ Đã lưu đợt Benchmark '{run_id}' lên Supabase Cloud!", icon="✅")
+                except Exception as db_save_err:
+                    st.warning(f"Không thể lưu đợt benchmark vào Cloud DB: {db_save_err}")
+
         except Exception as e:
             st.error(f"Lỗi trong quá trình thẩm định benchmark: {e}")
 
@@ -217,3 +225,30 @@ def render_benchmark_view():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
+
+    # Hiển thị lịch sử các lần chạy Benchmark từ Cloud DB (nếu có)
+    container = get_container()
+    if hasattr(container.track_repository, "list_benchmark_runs"):
+        past_runs = container.track_repository.list_benchmark_runs(limit=10)
+        if past_runs:
+            st.divider()
+            with st.expander("📜 Xem Lịch Sử Các Đợt Chấm Điểm Trên Cloud (Supabase)", expanded=False):
+                df_history = pd.DataFrame(past_runs)
+                if not df_history.empty:
+                    cols_to_show = ["id", "total_samples", "accuracy", "precision", "recall", "f1_score", "created_at"]
+                    existing_cols = [c for c in cols_to_show if c in df_history.columns]
+                    st.dataframe(
+                        df_history[existing_cols].rename(
+                            columns={
+                                "id": "Mã đợt test",
+                                "total_samples": "Số mẫu",
+                                "accuracy": "Accuracy",
+                                "precision": "Precision",
+                                "recall": "Recall",
+                                "f1_score": "F1-Score",
+                                "created_at": "Thời gian chạy"
+                            }
+                        ),
+                        use_container_width=True
+                    )
+

@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,100 @@ from ..core.interfaces.repositories.storage_repository_interface import (
 from ..core.interfaces.services.fakeprint_detector_interface import IFakeprintDetector
 from ..core.interfaces.services.signal_analyzer_interface import ISignalAnalyzer
 from ..core.models.entities import AcousticMetrics, VerdictType
+
+_DEFAULT_HUMAN_WHITELIST = [
+    "sony",
+    "warner music vietnam",
+    "bmz",
+    "vieent",
+    "believe",
+    "loops",
+]
+
+_DEFAULT_PURE_AI_DISTRIBUTORS = [
+    "incom",
+    "tte fast considerate",
+]
+
+_DEFAULT_AI_ARTIST_REGEXES = [
+    (r"\blofi quê hương\b", "Lofi Quê Hương"),
+    (r"\bhanzen\b", "HanZen"),
+    (r"\ban deep\b", "An Deep"),
+    (r"\bgmhd\b", "GMHD"),
+    (r"\bsinbadai\b", "SinbadAI"),
+    (r"\bđặng bảo trung\b", "Đặng Bảo Trung"),
+    (r"\btiểu mai tử\b", "Tiểu Mai Tử"),
+    (r"\bf47\b", "F47"),
+    (r"\bhoàng k\b", "Hoàng K"),
+    (r"\bhlc\b", "HLC"),
+]
+
+_catalog_cache: dict[str, Any] = {
+    "timestamp": 0.0,
+    "whitelist": list(_DEFAULT_HUMAN_WHITELIST),
+    "ai_distributors": list(_DEFAULT_PURE_AI_DISTRIBUTORS),
+    "ai_artists": list(_DEFAULT_AI_ARTIST_REGEXES),
+}
+
+
+def get_dynamic_catalog() -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """Lấy danh mục nhà phân phối AI, Whitelist và nghệ sĩ ảo động từ CSDL (kèm cache 5 phút)."""
+    global _catalog_cache
+    now = time.time()
+    if now - _catalog_cache["timestamp"] < 300:
+        return (
+            _catalog_cache["whitelist"],
+            _catalog_cache["ai_distributors"],
+            _catalog_cache["ai_artists"],
+        )
+
+    try:
+        from sqlalchemy import select
+
+        from ..core.database import get_db_session, is_database_available
+        from ..core.models.db_models import AIArtistProjectModel, DistributorCatalogModel
+
+        if is_database_available():
+            with get_db_session() as session:
+                dist_records = session.scalars(
+                    select(DistributorCatalogModel).where(
+                        DistributorCatalogModel.is_active.is_(True)
+                    )
+                ).all()
+                artist_records = session.scalars(
+                    select(AIArtistProjectModel).where(AIArtistProjectModel.is_active.is_(True))
+                ).all()
+
+                whitelist = [
+                    d.name.lower()
+                    for d in dist_records
+                    if d.catalog_type == "HUMAN_WHITELIST"
+                ]
+                ai_dist = [
+                    d.name.lower()
+                    for d in dist_records
+                    if d.catalog_type == "AI_DISTRIBUTOR"
+                ]
+                ai_artists = [(a.regex_pattern, a.project_name) for a in artist_records]
+
+                merged_wl = list(dict.fromkeys(_DEFAULT_HUMAN_WHITELIST + whitelist))
+                merged_ai = list(dict.fromkeys(_DEFAULT_PURE_AI_DISTRIBUTORS + ai_dist))
+                merged_artists = (
+                    ai_artists if ai_artists else list(_DEFAULT_AI_ARTIST_REGEXES)
+                )
+
+                _catalog_cache["whitelist"] = merged_wl
+                _catalog_cache["ai_distributors"] = merged_ai
+                _catalog_cache["ai_artists"] = merged_artists
+                _catalog_cache["timestamp"] = now
+    except Exception:
+        pass
+
+    return (
+        _catalog_cache["whitelist"],
+        _catalog_cache["ai_distributors"],
+        _catalog_cache["ai_artists"],
+    )
 
 
 class SignalAnalyzerService(ISignalAnalyzer):
@@ -186,32 +281,14 @@ class SignalAnalyzerService(ISignalAnalyzer):
             or ""
         ).lower()
 
-        # Whitelist bảo vệ hãng đĩa lớn và nhà phân phối chính thống chống False Positive
-        human_distributor_whitelist = [
-            "sony",
-            "warner music vietnam",
-            "bmz",
-            "vieent",
-            "believe",
-            "loops",
-        ]
+        human_distributor_whitelist, pure_ai_distributors, ai_artist_regexes = (
+            get_dynamic_catalog()
+        )
         is_whitelisted_distributor = any(
             w in distributor_lower for w in human_distributor_whitelist
         )
 
         # 1. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được xác thực 100% qua catalog
-        ai_artist_regexes = [
-            (r"\blofi quê hương\b", "Lofi Quê Hương"),
-            (r"\bhanzen\b", "HanZen"),
-            (r"\ban deep\b", "An Deep"),
-            (r"\bgmhd\b", "GMHD"),
-            (r"\bsinbadai\b", "SinbadAI"),
-            (r"\bđặng bảo trung\b", "Đặng Bảo Trung"),
-            (r"\btiểu mai tử\b", "Tiểu Mai Tử"),
-            (r"\bf47\b", "F47"),
-            (r"\bhoàng k\b", "Hoàng K"),
-            (r"\bhlc\b", "HLC"),
-        ]
         for pat, proj_name in ai_artist_regexes:
             if re.search(pat, artist_lower):
                 return {
@@ -224,10 +301,6 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
         # 2. Kiểm tra nhà phân phối chuyên phát hành nhạc AI thương mại (Catalog / Distributor Intelligence)
         if not is_whitelisted_distributor:
-            pure_ai_distributors = [
-                "incom",
-                "tte fast considerate",
-            ]
             for ai_dist in pure_ai_distributors:
                 if ai_dist in distributor_lower:
                     return {
@@ -289,13 +362,9 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
             # Nếu cao độ phẳng (rigidity >= 0.35 hoặc jitter < 0.015) nhưng Formant chuyển động
             # linh hoạt (formant_var >= 300.0) do khẩu hình phát âm tự nhiên -> Auto-Tune phòng thu của người
-            is_studio_autotune = bool(
-                (rigidity_ratio >= 0.35 or jitter < 0.015) and formant_var >= 300.0
-            )
-            is_anomaly = bool(
-                (rigidity_ratio >= 0.40 or (jitter < 0.015 and rigidity_ratio > 0.32))
-                and not is_studio_autotune
-            )
+            is_studio_autotune = ((rigidity_ratio >= 0.35 or jitter < 0.015) and formant_var >= 300.0)
+            is_anomaly = ((rigidity_ratio >= 0.40 or (jitter < 0.015 and rigidity_ratio > 0.32))
+                and not is_studio_autotune)
 
             if is_anomaly:
                 label = "Synthetic / Quantized Latent Grid"
@@ -359,7 +428,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             corr = float(corr_matrix[0, 1])
             bleed_score = float(max(0.0, corr)) if not np.isnan(corr) else 0.0
 
-            is_bleed = bool(bleed_score >= 0.40)
+            is_bleed = (bleed_score >= 0.40)
             return {
                 "stem_bleed_score": round(bleed_score, 3),
                 "stem_bleed_detected": is_bleed,
@@ -425,7 +494,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 float(np.mean(stft[mask_ultra, :] ** 2)) if np.any(mask_ultra) else 0.0
             ) + 1e-12
             shelf_drop_db = float(10 * np.log10(power_mid_high / power_ultra))
-            ultrasonic_cutoff = bool(shelf_drop_db >= 25.0 and rolloff_95 < 18000.0)
+            ultrasonic_cutoff = (shelf_drop_db >= 25.0 and rolloff_95 < 18000.0)
             high_freq_slope = round(float(shelf_drop_db), 2)
 
             # 4. Phân tích thành phần sóng hài toàn bài (HPSS Harmonic-Percussive Sound Separation)

@@ -1,6 +1,8 @@
-# Environment variables
+# Environment variables & Sensitive Credentials
 .env
 *.env
+cookies*.txt
+cookie*.txt
 
 # Python
 __pycache__/

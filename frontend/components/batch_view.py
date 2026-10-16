@@ -107,7 +107,9 @@ def render_batch_view(client: BackendClient):
                 }
             )
 
-        st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
+        from frontend.components.ui_compat import get_width_kwargs
+
+        st.dataframe(pd.DataFrame(table_rows), **get_width_kwargs(st.dataframe))
 
         if report.report_file_path and Path(report.report_file_path).exists():
             with open(report.report_file_path, "rb") as f:

@@ -592,6 +592,12 @@ class InputResolverService(IInputResolver):
             "extract_flat": True,
             "skip_download": True,
             "remote_components": ["ejs:github"],
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web_safari", "web_embedded", "mweb"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            },
         }
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
@@ -732,6 +738,12 @@ class InputResolverService(IInputResolver):
             "extract_flat": True,
             "skip_download": True,
             "remote_components": ["ejs:github"],
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web_safari", "web_embedded", "mweb"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            },
         }
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
@@ -802,7 +814,7 @@ class InputResolverService(IInputResolver):
         artist_col = None
 
         for col in df.columns:
-            c_low = str(col).strip().lower()
+            c_low = col.strip().lower()
             if any(
                 k in c_low
                 for k in [

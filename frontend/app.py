@@ -10,13 +10,13 @@ import streamlit as st
 
 from backend.core.config import TEMP_DIR
 from frontend.components.batch_view import render_batch_view
-from frontend.components.benchmark_view import render_benchmark_view
 
 # UI Components
 from frontend.components.header import render_header
 from frontend.components.metrics_display import render_metrics_display
 from frontend.components.sidebar import render_sidebar
 from frontend.components.spectrogram_viewer import render_spectrogram_viewer
+from frontend.components.ui_compat import get_width_kwargs
 from frontend.components.verdict_card import render_verdict_card
 from frontend.services.backend_client import BackendClient
 
@@ -50,11 +50,17 @@ def main():
     client = BackendClient(model_override=st.session_state.model_name)
 
     # Tabs
-    tab1, tab2, tab3 = st.tabs(
+    # tab1, tab2, tab3 = st.tabs(
+    #     [
+    #         "🔍 Thẩm định Đơn bài (Single Track)",
+    #         "📁 Quét Hàng loạt (Batch Mode)",
+    #         "🎯 Chấm điểm Testcase (Benchmark)",
+    #     ]
+    # )
+    tab1, tab2 = st.tabs(
         [
             "🔍 Thẩm định Đơn bài (Single Track)",
             "📁 Quét Hàng loạt (Batch Mode)",
-            "🎯 Chấm điểm Testcase (Benchmark)",
         ]
     )
 
@@ -81,7 +87,7 @@ def main():
                 st.write("")
                 st.write("")
                 submit_btn = st.button(
-                    "🚀 Bắt đầu Giám định", type="primary", use_container_width=True, key="btn_url"
+                    "🚀 Bắt đầu Giám định", type="primary", key="btn_url", **get_width_kwargs(st.button)
                 )
             if submit_btn and query_input.strip():
                 query_to_process = query_input.strip()
@@ -98,7 +104,7 @@ def main():
                 st.write("")
                 st.write("")
                 submit_file_btn = st.button(
-                    "🚀 Bắt đầu Giám định", type="primary", use_container_width=True, key="btn_file"
+                    "🚀 Bắt đầu Giám định", type="primary", key="btn_file", **get_width_kwargs(st.button)
                 )
             if submit_file_btn and uploaded_audio:
                 save_path = TEMP_DIR / uploaded_audio.name
@@ -175,9 +181,9 @@ def main():
     with tab2:
         render_batch_view(client)
 
-    # TAB 3: BENCHMARK & ACCURACY EVALUATION
-    with tab3:
-        render_benchmark_view()
+    # # TAB 3: BENCHMARK & ACCURACY EVALUATION
+    # with tab3:
+    #     render_benchmark_view()
 
 
 if __name__ == "__main__":

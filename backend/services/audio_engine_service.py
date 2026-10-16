@@ -161,14 +161,22 @@ class AudioEngineService(IAudioEngine):
             ) from e
 
     def _download_audio(self, url: str, track_id: str) -> tuple[Path, dict]:
-        """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden."""
+        """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden / bot block."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
+        # Chuỗi Fallback Client tối ưu cho Cloud/Datacenter (loại trừ TV vì TV client gây 'The page needs to be reloaded')
         client_fallbacks = [
-            ["android"],
-            ["ios"],
-            ["tv"],
-            ["web"],
+            # 1. web_safari + web_embedded: Bỏ qua kiểm tra PO-token gắt gao, rất mượt trên Datacenter/Cloud
+            ["web_safari", "web_embedded"],
+            # 2. web_embedded: Trình nhúng, ít bị bot-detection chặn
+            ["web_embedded"],
+            # 3. mweb: Mobile web ít bị lỗi reload trang
+            ["mweb"],
+            # 4. default trừ TV (bỏ -tv để không dính lỗi player reload)
+            ["default", "-tv"],
+            # 5. ios + android kèm missing_pot
+            ["ios", "android"],
+            # 6. yt-dlp mặc định
             None,
         ]
         node_bin = shutil.which("node") or (
@@ -181,29 +189,41 @@ class AudioEngineService(IAudioEngine):
         # Tự động nạp cookies.txt hoặc YOUTUBE_COOKIES_CONTENT từ cấu hình
         cookie_path = get_cookie_file_path()
         cookie_file: str | None = str(cookie_path) if cookie_path else None
+        if cookie_file:
+            print(f"[AudioEngineService] 🍪 Nạp cookie YouTube từ: {cookie_file} ({Path(cookie_file).stat().st_size} bytes)")
+        else:
+            print("[AudioEngineService] ⚠️ CẢNH BÁO: Không có cookie YouTube. Cloud/Datacenter IP có thể bị YouTube chặn.")
 
         last_exception = None
         for client_pref in client_fallbacks:
             ydl_opts: dict[str, Any] = {
-                # Ưu tiên audio stream nén gốc, nếu client (như Android) chỉ có stream kèm video thì tự động fallback sang video nhẹ (<=480p) để FFmpeg bóc tách audio
-                "format": "ba[ext=m4a]/ba[ext=webm]/ba[ext=mp3]/bestaudio/b[height<=480]/b/best",
-                "max_filesize": 75 * 1024 * 1024,
+                # Ưu tiên audio stream nén gốc, nếu client chỉ có stream kèm video thì tự động fallback sang video nhẹ (<=480p) để FFmpeg bóc tách audio
+                "format": "ba[ext=m4a]/ba[ext=webm]/ba/bestaudio/b[height<=480]/b/best",
+                "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
                 "no_warnings": True,
                 "ffmpeg_location": self.ffmpeg_path,
                 "nocheckcertificate": True,
                 "geo_bypass": True,
-                "retries": 2,
-                "socket_timeout": 15,
+                "retries": 3,
+                "socket_timeout": 20,
                 "remote_components": ["ejs:github"],
             }
+            extractor_args: dict[str, Any] = {
+                # QUAN TRỌNG: missing_pot giúp yt-dlp KHÔNG tự ý ẩn các định dạng khi thiếu PO-Token
+                "formats": ["missing_pot", "duplicate"],
+                "player_skip": ["webpage", "configs"],
+            }
             if client_pref:
-                ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
+                extractor_args["player_client"] = client_pref
+            ydl_opts["extractor_args"] = {"youtube": extractor_args}
+
             if cookie_file:
                 ydl_opts["cookiefile"] = cookie_file
             if js_runtimes_cfg:
                 ydl_opts["js_runtimes"] = js_runtimes_cfg
+
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                     info = ydl.extract_info(url, download=True)

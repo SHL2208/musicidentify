@@ -11,6 +11,7 @@ from benchmark_evaluator import (
     load_testcase_dataset,
     select_samples,
 )
+from frontend.components.ui_compat import get_width_kwargs
 
 
 def render_benchmark_view():
@@ -77,7 +78,7 @@ def render_benchmark_view():
         seed_val = st.number_input("Random Seed:", value=42, min_value=1, max_value=9999)
 
     # Nút kích hoạt
-    if st.button("🚀 Bắt đầu Chấm Điểm Dự Án", type="primary", use_container_width=True):
+    if st.button("🚀 Bắt đầu Chấm Điểm Dự Án", type="primary", **get_width_kwargs(st.button)):
         try:
             with st.spinner("Đang nạp dữ liệu từ file testcase..."):
                 dataset = load_testcase_dataset(file_path=selected_file_path, sheet_name=sheet_name)
@@ -246,7 +247,7 @@ def render_benchmark_view():
         # Bảng chi tiết
         st.markdown("#### 📋 Bảng Đối Soát Chi Tiết Từng Bài Hát")
         df_res = pd.DataFrame(res_list)
-        st.dataframe(df_res, use_container_width=True)
+        st.dataframe(df_res, **get_width_kwargs(st.dataframe))
 
         # Nút tải file
         audit_path = st.session_state.get("benchmark_file")
@@ -257,7 +258,7 @@ def render_benchmark_view():
                     data=f.read(),
                     file_name=Path(audit_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    **get_width_kwargs(st.download_button),
                 )
 
     # Hiển thị lịch sử các lần chạy Benchmark từ Cloud DB (nếu có)
@@ -293,5 +294,5 @@ def render_benchmark_view():
                                 "created_at": "Thời gian chạy",
                             }
                         ),
-                        use_container_width=True,
+                        **get_width_kwargs(st.dataframe),
                     )

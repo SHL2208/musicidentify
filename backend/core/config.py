@@ -1,20 +1,33 @@
+import base64
 import os
+import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
 # Tự động nạp biến môi trường từ .env (khi chạy Local)
 load_dotenv()
 
-# Tự động đồng bộ Streamlit Secrets vào os.environ (khi chạy trên Streamlit Cloud)
+# Tự động đồng bộ toàn bộ Streamlit Secrets vào os.environ (hỗ trợ cả các cấu trúc lồng nhau)
 try:
     import streamlit as st
 
     if hasattr(st, "secrets"):
-        for _sk, _sv in st.secrets.items():
-            if isinstance(_sv, (str, int, float, bool)) and _sk not in os.environ:
-                os.environ[_sk] = str(_sv)
+        def _sync_secrets_to_env(obj: Any, prefix: str = "") -> None:
+            if isinstance(obj, dict) or hasattr(obj, "items"):
+                for k, v in obj.items():
+                    k_str = f"{prefix}_{k}".strip("_").upper()
+                    if isinstance(v, (str, int, float, bool)):
+                        if k_str not in os.environ:
+                            os.environ[k_str] = str(v)
+                        if str(k) not in os.environ:
+                            os.environ[str(k)] = str(v)
+                    elif isinstance(v, (dict, list)) or hasattr(v, "items"):
+                        _sync_secrets_to_env(v, prefix=k_str)
+
+        _sync_secrets_to_env(st.secrets)
 except Exception:
     pass
 
@@ -105,30 +118,161 @@ def get_ffmpeg_binary() -> str:
         return "ffmpeg"
 
 
+def normalize_netscape_cookies(raw_text: str) -> tuple[str, int]:
+    """
+    Chuẩn hóa nội dung cookies sang định dạng chuẩn Netscape HTTP Cookie File cho yt-dlp:
+    1. Tự động giải mã Base64 (nếu chuỗi được mã hóa Base64 để chống lỗi trình soạn thảo web).
+    2. Bóc tách dấu ngoặc kép TOML/Python thừa (''' hoặc \"\"\").
+    3. Chuyển đổi escape characters ('\\n' -> '\n', '\\t' -> '\t').
+    4. TỰ ĐỘNG PHỤC HỒI TAB: Trình duyệt web (khi copy-paste) thường biến dấu Tab thành 2-4 khoảng trắng (Spaces).
+       yt-dlp bắt buộc phải có Tab chuẩn để phân tách 7 trường; nếu không có Tab yt-dlp sẽ âm thầm bỏ qua cookie.
+       Hàm này tự động phân tách và ghép lại bằng Tab thật 100%.
+    5. Đảm bảo có header '# Netscape HTTP Cookie File'.
+    Trả về: (nội dung chuẩn hóa, số lượng cookie hợp lệ)
+    """
+    if not raw_text or not raw_text.strip():
+        return "", 0
+
+    content = raw_text.strip()
+
+    # Bóc tách dấu ngoặc kép nếu người dùng dán cả ngoặc
+    for q in ['"""', "'''"]:
+        if content.startswith(q) and content.endswith(q):
+            content = content[len(q) : -len(q)].strip()
+
+    # Hỗ trợ tiền tố base64: hoặc tự động nhận diện Base64
+    if content.startswith("base64:"):
+        content = content[7:].strip()
+
+    if "\t" not in content and "\n" not in content[:200] and len(content) > 50:
+        try:
+            decoded = base64.b64decode(content, validate=True).decode("utf-8", errors="replace")
+            if any(
+                k in decoded.lower()
+                for k in ["youtube", "netscape", "domain", "true", "false", "sid"]
+            ):
+                content = decoded
+        except Exception:
+            pass
+
+    # Xử lý chuỗi escape nếu có
+    if "\\n" in content and "\n" not in content:
+        content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
+    if "\\t" in content:
+        content = content.replace("\\t", "\t")
+
+    lines = content.splitlines()
+    valid_cookies: list[str] = []
+
+    for line in lines:
+        line_str = line.strip()
+        if not line_str or line_str.startswith("#"):
+            continue
+
+        # Nếu dòng đã có ít nhất 6 dấu tab chuẩn Netscape
+        if line_str.count("\t") >= 6:
+            parts = line_str.split("\t")
+            if len(parts) >= 7 and parts[0]:
+                valid_cookies.append("\t".join(parts[:7]))
+            elif len(parts) == 6 and parts[0]:
+                valid_cookies.append("\t".join(parts) + "\t")
+            continue
+
+        # Nếu bị biến thành khoảng trắng do copy-paste trên trình duyệt web:
+        # Netscape format gồm 7 trường: domain, include_subdomains, path, secure, expires, name, value
+        # 6 trường đầu tiên tuyệt đối không bao giờ chứa khoảng trắng!
+        parts = re.split(r"\s+", line_str)
+        if len(parts) >= 7 and parts[0].startswith(
+            (".", "http", "www", "youtube", "google", "zing")
+        ):
+            domain, sub, path, sec, exp, name = parts[:6]
+            val = " ".join(parts[6:])
+            valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
+        elif len(parts) == 6 and parts[0].startswith(
+            (".", "http", "www", "youtube", "google", "zing")
+        ):
+            domain, sub, path, sec, exp, name = parts
+            valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t")
+
+    if not valid_cookies:
+        return "", 0
+
+    header = "# Netscape HTTP Cookie File\n# This file is generated for yt-dlp.\n\n"
+    normalized_content = header + "\n".join(valid_cookies) + "\n"
+    return normalized_content, len(valid_cookies)
+
+
+def find_cookie_content_from_secrets_or_env() -> str:
+    """Tìm kiếm nội dung cookie YouTube từ các biến môi trường hoặc Streamlit Secrets."""
+    candidate_keys = [
+        "YOUTUBE_COOKIES_BASE64",
+        "YOUTUBE_COOKIES_CONTENT",
+        "YOUTUBE_COOKIES",
+        "COOKIES_BASE64",
+        "COOKIES_CONTENT",
+        "COOKIES",
+        "COOKIE",
+        "cookies",
+        "youtube_cookies",
+        "COOKIES_TXT",
+    ]
+    for key in candidate_keys:
+        val = os.getenv(key, "").strip()
+        if val:
+            return val
+
+    try:
+        import streamlit as st
+
+        if hasattr(st, "secrets"):
+            for key in candidate_keys:
+                if key in st.secrets and str(st.secrets[key]).strip():
+                    return str(st.secrets[key]).strip()
+
+            def search_secrets(obj: Any) -> str | None:
+                if isinstance(obj, dict) or hasattr(obj, "items"):
+                    for k, v in obj.items():
+                        if isinstance(v, str):
+                            k_l = str(k).lower()
+                            if ("cookie" in k_l or "youtube" in k_l) and len(v.strip()) > 30:
+                                return v.strip()
+                            if (
+                                ".youtube.com" in v
+                                or "LOGIN_INFO" in v
+                                or "Netscape" in v
+                                or "__Secure-" in v
+                            ):
+                                return v.strip()
+                        elif isinstance(v, (dict, list)) or hasattr(v, "items"):
+                            res = search_secrets(v)
+                            if res:
+                                return res
+                return None
+
+            found = search_secrets(st.secrets)
+            if found:
+                return found
+    except Exception:
+        pass
+
+    return ""
+
+
 def get_cookie_file_path() -> Path | None:
     """
     Trả về đường dẫn file cookies.txt hợp lệ nếu có.
-    Hỗ trợ:
-    1. Biến môi trường YOUTUBE_COOKIES_CONTENT (dành cho Cloud Secrets như Hugging Face / Streamlit Cloud).
-    2. Các file cục bộ: cookies.txt hoặc cookies_master.txt tại BASE_DIR hoặc TEMP_DIR.
+    Tự động phục hồi định dạng chuẩn Netscape từ Cloud Secrets hoặc local files.
     """
-    env_cookies = os.getenv("YOUTUBE_COOKIES_CONTENT", "").strip()
-    if not env_cookies:
-        try:
-            import streamlit as st
-
-            if hasattr(st, "secrets") and "YOUTUBE_COOKIES_CONTENT" in st.secrets:
-                env_cookies = str(st.secrets["YOUTUBE_COOKIES_CONTENT"]).strip()
-        except Exception:
-            pass
-
-    if env_cookies:
-        runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
-        try:
-            runtime_cookie.write_text(env_cookies, encoding="utf-8")
-            return runtime_cookie
-        except Exception:
-            pass
+    raw_content = find_cookie_content_from_secrets_or_env()
+    if raw_content:
+        normalized, count = normalize_netscape_cookies(raw_content)
+        if normalized and count > 0:
+            runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
+            try:
+                runtime_cookie.write_text(normalized, encoding="utf-8")
+                return runtime_cookie
+            except Exception:
+                pass
 
     for candidate in [
         BASE_DIR / "cookies.txt",
@@ -138,6 +282,45 @@ def get_cookie_file_path() -> Path | None:
         TEMP_DIR / "cookie_runtime.txt",
     ]:
         if candidate.exists() and candidate.stat().st_size > 0:
-            return candidate
+            try:
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+                normalized, count = normalize_netscape_cookies(content)
+                if normalized and count > 0:
+                    runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
+                    if candidate != runtime_cookie:
+                        runtime_cookie.write_text(normalized, encoding="utf-8")
+                    return runtime_cookie
+            except Exception:
+                return candidate
 
     return None
+
+
+def get_cookie_status() -> tuple[bool, int, str]:
+    """
+    Kiểm tra trạng thái cấu hình cookies YouTube.
+    Trả về: (has_cookies: bool, cookie_count: int, message: str)
+    """
+    cookie_path = get_cookie_file_path()
+    if not cookie_path or not cookie_path.exists():
+        return False, 0, "Chưa tìm thấy YouTube cookies trong Secrets/Môi trường."
+
+    try:
+        content = cookie_path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
+        return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công"
+    except Exception as e:
+        return False, 0, f"Lỗi đọc cookie: {e}"
+
+
+def get_local_cookies_as_base64() -> str | None:
+    """Đọc file cookies.txt cục bộ và chuyển đổi thành chuỗi Base64 để dán vào Secrets an toàn 100%."""
+    for candidate in [BASE_DIR / "cookies.txt", BASE_DIR / "cookies_master.txt"]:
+        if candidate.exists() and candidate.stat().st_size > 0:
+            try:
+                raw_bytes = candidate.read_bytes()
+                return base64.b64encode(raw_bytes).decode("ascii")
+            except Exception:
+                pass
+    return None
+

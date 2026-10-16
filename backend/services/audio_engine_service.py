@@ -50,11 +50,57 @@ class AudioEngineService(IAudioEngine):
         try:
             if track.input_type == InputType.LOCAL_FILE and os.path.isfile(track.raw_query):
                 raw_audio_path = Path(track.raw_query)
-                metadata = {"title": Path(track.raw_query).stem}
+                metadata = {
+                    "title": Path(track.raw_query).stem,
+                    "webpage_url": str(track.raw_query),
+                    "url": str(track.raw_query),
+                }
             else:
                 url_to_download = track.resolved_url
-                if not url_to_download or not url_to_download.startswith("http"):
-                    url_to_download = f"ytsearch1:{track.raw_query}"
+                if not url_to_download and track.input_type not in (InputType.LOCAL_FILE, InputType.URL):
+                    from ..core.container import get_container
+
+                    res_svc = get_container().resolver
+                    try:
+                        resolved_track = res_svc.resolve_track(
+                            track.raw_query, artist=track.artist or ""
+                        )
+                    except TypeError:
+                        resolved_track = res_svc.resolve_track(track.raw_query)
+
+                    if resolved_track and getattr(resolved_track, "resolved_url", None):
+                        res_url = str(resolved_track.resolved_url)
+                        if res_url and not res_url.startswith("<MagicMock"):
+                            url_to_download = res_url
+                            track.resolved_url = res_url
+                        if getattr(resolved_track, "track_title", None) and isinstance(
+                            resolved_track.track_title, str
+                        ):
+                            track.track_title = resolved_track.track_title
+                        if getattr(resolved_track, "artist", None) and isinstance(
+                            resolved_track.artist, str
+                        ):
+                            track.artist = resolved_track.artist
+                        if getattr(resolved_track, "is_verified_match", None) is not None:
+                            track.is_verified_match = bool(resolved_track.is_verified_match)
+                        if getattr(resolved_track, "match_score", None) is not None and isinstance(
+                            resolved_track.match_score, (int, float)
+                        ):
+                            track.match_score = float(resolved_track.match_score)
+                        if getattr(resolved_track, "duration_sec", None) is not None and isinstance(
+                            resolved_track.duration_sec, (int, float)
+                        ):
+                            track.duration_sec = float(resolved_track.duration_sec)
+                        if getattr(resolved_track, "platform", None) and isinstance(
+                            resolved_track.platform, str
+                        ):
+                            track.platform = resolved_track.platform
+
+                if not url_to_download:
+                    raise AudioProcessingException(
+                        f"Không tìm thấy URL hợp lệ để tải bài hát '{track.track_title or track.raw_query}'"
+                    )
+
                 try:
                     raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
                 except Exception as dl_err:
@@ -164,10 +210,20 @@ class AudioEngineService(IAudioEngine):
                         if first_entry:
                             info = first_entry
 
+                    info_dict = dict(info) if isinstance(info, dict) else {}
+                    if not info_dict.get("webpage_url"):
+                        video_id = info_dict.get("id")
+                        if video_id and not str(video_id).startswith("http"):
+                            info_dict["webpage_url"] = f"https://www.youtube.com/watch?v={video_id}"
+                        elif info_dict.get("url") and str(info_dict["url"]).startswith("http"):
+                            info_dict["webpage_url"] = info_dict["url"]
+                        elif url.startswith("http"):
+                            info_dict["webpage_url"] = url
+
                     candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
                     if candidates:
                         raw_file = candidates[0]
-                        return raw_file, dict(info) if isinstance(info, dict) else {}
+                        return raw_file, info_dict
 
                     raise FileNotFoundError(
                         f"Không tìm thấy file audio đã tải về cho ID {track_id}"
@@ -212,7 +268,9 @@ class AudioEngineService(IAudioEngine):
                         "2",
                         str(output_sample),
                     ]
-                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    res = subprocess.run(
+                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                    )
                     if res.returncode == 0 and output_sample.exists():
                         return output_sample
                 else:
@@ -242,7 +300,9 @@ class AudioEngineService(IAudioEngine):
                         "2",
                         str(output_sample),
                     ]
-                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    res = subprocess.run(
+                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                    )
                     if res.returncode == 0 and output_sample.exists():
                         return output_sample
             except Exception as ffmpeg_err:
@@ -297,7 +357,9 @@ class AudioEngineService(IAudioEngine):
         """Trích xuất độ dài audio bằng FFmpeg khi định dạng không được soundfile hỗ trợ trực tiếp."""
         try:
             cmd = [self.ffmpeg_path, "-i", str(audio_path)]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
             m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", res.stderr)
             if m:
                 return float(m.group(1)) * 3600 + float(m.group(2)) * 60 + float(m.group(3))
@@ -332,7 +394,9 @@ class AudioEngineService(IAudioEngine):
             "2",
             str(output_sample),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
         if result.returncode != 0:
             raise AudioProcessingException(f"FFmpeg slicing failed: {result.stderr}")
 

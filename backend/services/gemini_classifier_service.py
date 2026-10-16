@@ -1,12 +1,18 @@
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..core.config import DEFAULT_GEMINI_MODEL, GEMINI_API_KEYS, get_ffmpeg_binary
+from ..core.config import (
+    DEFAULT_GEMINI_MODEL,
+    GEMINI_API_KEYS,
+    GEMINI_FALLBACK_MODELS,
+    get_ffmpeg_binary,
+)
 from ..core.exceptions import ClassificationException
 from ..core.interfaces.services.classifier_interface import IAIClassifier
 from ..core.models.entities import (
@@ -85,6 +91,30 @@ def clean_forensic_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return cleaned
 
 
+def is_derivative_or_remix_context(metadata: dict[str, Any] | None) -> bool:
+    """
+    Xác định bài hát có thuộc nhóm thể loại phái sinh (Remix, Slowed, Lo-Fi, EDM) hay không.
+    LƯU Ý QUAN TRỌNG: Tuyệt đối không quét từ khóa trong trường 'description' vì hầu hết các video
+    YouTube đều có điều khoản bản quyền boilerplate ('vui lòng không reup hoặc remix...', 'nếu bạn muốn cover, remix...'),
+    dẫn đến nhận diện nhầm các ca khúc Ballad/Pop thông thường thành bản Remix phái sinh.
+    """
+    if not metadata:
+        return False
+    song_type = str(metadata.get("song_type") or "").strip().lower()
+    title_text = f"{metadata.get('title', '')} {metadata.get('target_title', '')} {metadata.get('raw_query', '')}".strip().lower()
+
+    pattern = r"\b(remix|remake|slowed|speed\s*up|sped\s*up|lofi|lo-fi|edm|club\s*mix|drill|vinahouse|bass\s*boosted|nightcore)\b"
+    if re.search(pattern, title_text, re.IGNORECASE):
+        return True
+    if song_type and re.search(pattern, song_type, re.IGNORECASE):
+        return True
+
+    # Chỉ kiểm tra tags khi tag là nhãn thể loại đơn lẻ khớp chính xác
+    genre_tags = {"remix", "vinahouse", "edm", "slowed", "speed up", "sped up", "lofi", "lo-fi", "club mix", "drill", "nightcore"}
+    tags = [str(t).strip().lower() for t in metadata.get("tags") or [] if t]
+    return any(t in genre_tags for t in tags)
+
+
 class GeminiResponseSchema(BaseModel):
     verdict_type: str = Field(
         description="One of 5 labels: 'CONFIRMED_HUMAN' (100% human organic acoustic), 'PROCESSED_HUMAN' (100% human artist & 100% human beat with modern studio production/Auto-tune), 'HYBRID_AI' (ANY AI participation: AI beat + human voice, or AI voice + human beat, or AI remix), 'AI_GENERATED' (fully AI generated via Suno/Udio), 'UNCERTAIN' (inconclusive evidence, severe noise/distortion, or conflicting indicators)"
@@ -110,9 +140,10 @@ Your mission: Examine the provided audio sample (multi-segment composite of Vers
 
 1. 'CONFIRMED_HUMAN': Music composed and performed by humans with organic/acoustic production (Acoustic, acoustic Pop, traditional Ballads, Rock, live orchestra). Vocals are entirely natural without industrial pitch correction. Both vocals and instrumentation are 100% human-made.
 2. 'PROCESSED_HUMAN': Music composed and performed by HUMANS (real artists/singers), produced in professional or home studios, USING MODERN DIGITAL STUDIO PRODUCTION:
-   - Standard studio production: DAW recording, MIDI synths, drums, EQ, compressor.
-   - Commercial pitch correction (Auto-Tune / Melodyne) applied over an AUTHENTIC human microphone recording.
-   - STRICT REQUIREMENT: BOTH the vocal performance AND the backing beat/arrangement must be 100% created by humans using conventional studio software. If the backing beat or vocal is AI-generated/assisted, IT IS NOT PROCESSED_HUMAN — IT IS HYBRID_AI!
+   - Contemporary genres: Electronic Pop, Dance/EDM, Rap/Drill, R&B, Trap, Remixes, commercial Ballads.
+   - Commercial pitch correction (Auto-Tune / Melodyne, pitch quantization, formant shifting) applied over an AUTHENTIC human microphone recording.
+   - Studio multitrack techniques: Sidechain compression to 808 drums, synthetic vocoder/autotune textures, DAW multitrack stems, digital reverbs.
+   - CRITICAL DISCRIMINATION RULE: Heavy Auto-Tune, aggressive 808 compression, or electronic synth beats ARE NOT EVIDENCE OF GENERATIVE AI! Commercial Auto-Tune is a ubiquitous creative choice used in modern human music worldwide. NEVER classify genuine human electronic pop, trap/drill, or studio Auto-Tuned vocals as AI!
 3. 'HYBRID_AI': Music with ANY participation of Generative AI in any stage:
    - Human singer/rapper performing over an AI-generated backing beat (e.g. beat from Suno/Udio, AI Lo-fi backing loop).
    - AI-cloned vocal or synthetic vocal performing over a human-produced beat.
@@ -129,9 +160,10 @@ Your mission: Examine the provided audio sample (multi-segment composite of Vers
 
 PRACTICAL & OBJECTIVE FORENSIC GUIDELINES (CRITICAL):
 
-A. STRICT ZERO-TOLERANCE BROAD AI POLICY (AI YES FOR ANY AI INVOLVEMENT):
-   - If you detect that EITHER the backing instrumental track OR the vocal track was generated/assisted by AI (Suno, Udio, AI Voice Model, AI Lo-fi beat, AI remix) -> Classify as 'HYBRID_AI' (or 'AI_GENERATED') with 'is_ai: true'!
-   - Only conclude 'PROCESSED_HUMAN' or 'CONFIRMED_HUMAN' if you are confident that BOTH vocals AND backing beat are 100% human-created.
+A. BALANCED FORENSIC OBJECTIVITY:
+   - Distinguish carefully between MODERN STUDIO DAW PRODUCTION (DAW plugins, commercial Auto-Tune, MIDI synths, clean multitrack stems) and GENERATIVE AI (Suno, Udio, single-pass latent diffusion).
+   - If audio exhibits authentic human acoustic recording quality with full harmonic air band (extending naturally above 16-18 kHz) and clean multitrack stems without neural diffusion smearing -> Classify as 'PROCESSED_HUMAN' (is_ai: false).
+   - Classify as 'HYBRID_AI' or 'AI_GENERATED' (is_ai: true) when there is acoustic, spectral, or physical evidence of generative AI synthesis (such as collapsed spectral rolloff <12kHz, Suno neural vocoder wateriness, comb-filter residue, or single-pass neural timbral entanglement).
 
 B. 3-TIER SPECTROGRAM & ACOUSTIC UNMASKING (HPSS):
    - The visual spectrogram has 3 tiers:
@@ -142,7 +174,8 @@ B. 3-TIER SPECTROGRAM & ACOUSTIC UNMASKING (HPSS):
 
 C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
    - Modern neural audio models (Suno v3.5, Suno v4, Udio) and vocal clone engines (RVC, Diff-SVC) frequently simulate studio pitch-correction (Auto-Tune), realistic breath friction, and vibrato!
-   - DO NOT assume that pitch quantization, breath intakes, or Vietnamese folk singing equals a real human microphone recording!
+   - FATAL FORENSIC TRAP: NEVER classify a track as 'PROCESSED_HUMAN' purely based on hearing breath intakes or vibrato! Suno v3.5/v4 specifically synthesizes biological breath dynamics.
+   - You MUST cross-correlate with spectral rolloff and acoustic extension: if Spectral Rolloff 95% is collapsed below 12-14 kHz, it indicates latent diffusion downsampling regardless of breath sounds!
    - Key forensic signatures of modern AI synthesis:
      * Unnatural lack of true physical respiratory effort or chest resonance.
      * Synthetic vocal sheen: Vocals sound artificially polished, slightly metallic, or have flat formant dynamics.
@@ -156,15 +189,14 @@ C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
 
 D. VIETNAMESE LINGUISTIC RULE (ANTI-BIAS):
    - In Vietnamese, the word "ai" is a ubiquitous pronoun meaning "who / someone / anyone" (e.g., 'Nỗi Buồn Mang Tên Ai' means 'A Sorrow Named Someone').
-   - Any standalone word "ai" in titles has been neutralized to [***] to prevent confirmation bias. Base your judgment purely on audio and spectral forensic evidence.
+   - NEVER conclude a song is AI simply because the title contains "Ai" or "[***]"! Concluding AI based on the title is a fatal forensic failure. Base your judgment strictly on physical acoustics and spectral evidence.
 
 E. DOUBLE-BLIND FORENSIC PROTOCOL & PITCH JITTER INTERPRETATION:
    - You are evaluating under strict double-blind conditions. Track metadata and artist names are masked to prevent anchoring bias.
    - Do NOT attempt to guess the singer or assume a song is human-produced based on vocal familiarity or genre style.
-   - Correlate with Vocal Pitch Micro-Fluctuation (Jitter) and Tier 2 Harmonic Spectrogram:
-     * If pitch rigidity is elevated AND marked as 'CONFIRMED HUMAN VOCAL TRACT WITH STUDIO AUTO-TUNE', the singer is a real human using studio pitch quantization (e.g. Rap/RnB Auto-Tune); DO NOT misclassify this as AI if backing stems are human studio mix!
-     * If pitch rigidity is marked as '⚠️ SYNTHETIC ANOMALY DETECTED', neural vocoders have frozen the pitch frames on an artificial latent grid.
-     * When pitch rigidity anomaly is present OR vocal reverb bleeds into synth stems without physical boundaries -> Classify as 'AI_GENERATED' or 'HYBRID_AI' with 'is_ai: true'.
+   - Correlate with Vocal Pitch Stability and Tier 2 Harmonic Spectrogram:
+     * Note that modern generative AI engines (Suno v3.5/v4, Udio, Diff-SVC) can synthesize pitch quantization, vibrato, and dynamic vocal formant variations.
+     * Examine both vocal and backing instrumental tracks holistically. If you detect synthetic generation in either the vocal or instrumental arrangement -> Classify as 'AI_GENERATED' or 'HYBRID_AI' with 'is_ai: true'.
 
 F. MULTI-STEM BLEED & INTERMODULATION DISTORTION (END-TO-END AI DISCRIMINATION):
    - In conventional human multitrack studio production, drums/percussion and vocals are tracked on independent channels. Transients from kick/snare do NOT mechanically modulate the vocal harmonic envelope.
@@ -186,6 +218,7 @@ class GeminiClassifierService(IAIClassifier):
         api_key: str | None = None,
         api_keys: list[str] | None = None,
         model_name: str | None = None,
+        fallback_models: list[str] | None = None,
     ):
         if api_keys:
             self.api_keys: list[str] = [k.strip() for k in api_keys if k and k.strip()]
@@ -196,8 +229,42 @@ class GeminiClassifierService(IAIClassifier):
             self.api_keys = list(GEMINI_API_KEYS)
 
         self.api_key = self.api_keys[0] if self.api_keys else ""
-        self.model_name = model_name or DEFAULT_GEMINI_MODEL
+        if fallback_models is not None:
+            self.fallback_models = [m.strip() for m in fallback_models if m and m.strip()]
+            self.model_name = model_name or (
+                self.fallback_models[0] if self.fallback_models else DEFAULT_GEMINI_MODEL
+            )
+        else:
+            self.fallback_models = list(GEMINI_FALLBACK_MODELS)
+            self.model_name = model_name or DEFAULT_GEMINI_MODEL
         self._clients: dict = {}
+
+    def _resolve_model_chain(self, model_override: str | None = None) -> list[str]:
+        """
+        Xác định danh sách chuỗi mô hình fallback theo đúng thứ tự ưu tiên:
+        1. Gemini 3.8 Flash
+        2. Gemini 3.7 Flash
+        3. Gemini 3.6 Flash
+        Nếu có model_override hoặc self.model_name:
+        - Nếu model nằm trong fallback_models: bắt đầu từ model đó và lần lượt lùi về sau.
+        - Nếu model là tên mới/tùy biến: đặt lên đầu danh sách và nối tiếp bằng fallback_models.
+        """
+        chain = list(self.fallback_models)
+        if model_override:
+            chosen_model = model_override.strip()
+        elif self.model_name:
+            chosen_model = self.model_name.strip()
+        elif chain:
+            chosen_model = chain[0]
+        else:
+            chosen_model = DEFAULT_GEMINI_MODEL or "gemini-3.8-flash"
+
+        if chosen_model in chain:
+            start_idx = chain.index(chosen_model)
+            resolved = chain[start_idx:]
+        else:
+            resolved = [chosen_model] + [m for m in chain if m != chosen_model]
+        return resolved or ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
 
     def _get_client(self, key: str):
         if not key:
@@ -223,23 +290,42 @@ class GeminiClassifierService(IAIClassifier):
         metrics_text = "No acoustic metrics available."
         if metrics:
             if metrics.fakeprint_score >= 0.50:
-                fp_line = f"- Fourier Deconvolution Fakeprint (ISMIR 2025): ELEVATED COMB SIGNATURE ({metrics.fakeprint_score * 100:.1f}%) - Characteristic of neural deconvolution/transposed-convolution upsamplers (Suno/Udio vocoders).\n"
+                fp_line = f"- Fourier Deconvolution Fakeprint (ISMIR 2025): HIGH COMB SIGNATURE ({metrics.fakeprint_score * 100:.1f}%) - Characteristic of neural deconvolution/transposed-convolution upsamplers (Suno/Udio vocoders).\n"
+            elif metrics.fakeprint_score >= 0.24:
+                fp_line = f"- Fourier Deconvolution Fakeprint (ISMIR 2025): MODERATE RESIDUAL COMB SPIKES ({metrics.fakeprint_score * 100:.1f}%) - Notable periodic artifacts consistent with neural audio vocoders or latent diffusion decoders.\n"
             else:
                 fp_line = "- Fourier Deconvolution Fakeprint: INCONCLUSIVE / BYPASSED by continuous latent diffusion (Suno v3.5/v4, Udio). Lossy streaming codecs (Opus/MP3) suppress periodic comb spikes. A low score MUST NOT be treated as evidence of human production.\n"
 
             if getattr(metrics, "is_studio_autotune", False):
-                pitch_line = f"- Vocal Pitch Micro-Fluctuation (Jitter): Studio Auto-Tuned (Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%) | Studio Pitch Correction: CONFIRMED HUMAN VOCAL TRACT WITH STUDIO AUTO-TUNE (Formant dynamics verified natural, NOT AI grid).\n"
+                pitch_line = f"- Vocal Pitch Stability: Studio Pitch Quantization Detected (Studio Auto-Tuned / Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%, Jitter: {metrics.pitch_jitter:.4f}, Formant Variance: {getattr(metrics, 'vocal_formant_variance', 0.0):.1f} Hz²). Note: Quantization can stem from commercial Auto-Tune OR synthetic vocoder grid.\n"
             elif getattr(metrics, "pitch_anomaly_detected", False):
-                pitch_line = f"- Vocal Pitch Micro-Fluctuation (Jitter): ⚠️ SYNTHETIC ANOMALY DETECTED ({metrics.pitch_stability_label}, Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%, Jitter: {metrics.pitch_jitter:.4f}). Indicates artificial pitch freezing / latent-grid quantization typical of Suno/Udio text-to-music models.\n"
+                pitch_line = f"- Vocal Pitch Stability: Elevated Rigidity / Synthetic Grid Detected ({metrics.pitch_stability_label}, Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%, Jitter: {metrics.pitch_jitter:.4f}).\n"
             else:
-                pitch_line = f"- Vocal Pitch Micro-Fluctuation (Jitter): Normal biological micro-tremors detected ({metrics.pitch_stability_label}, Jitter: {metrics.pitch_jitter:.4f}).\n"
+                pitch_line = f"- Vocal Pitch Stability: Natural Biological Micro-tremors ({metrics.pitch_stability_label}, Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%, Jitter: {metrics.pitch_jitter:.4f}).\n"
 
             bleed_line = ""
             if getattr(metrics, "stem_bleed_score", None) is not None:
                 if getattr(metrics, "stem_bleed_detected", False):
-                    bleed_line = f"- Multi-Stem Bleed (Intermodulation): HIGH RESIDUAL INTERACTION ({metrics.stem_bleed_score:.2f}) - Significant cross-modulation between beat transients and vocal harmonics, characteristic of End-to-End single-pass diffusion synthesis (Suno/Udio).\n"
+                    bleed_line = f"- Multi-Stem Bleed Index: {metrics.stem_bleed_score:.2f} (Elevated Intermodulation between percussion transients and vocal harmonics, typical of single-pass neural audio synthesis).\n"
                 else:
-                    bleed_line = f"- Multi-Stem Bleed: Separated / Low Bleed ({metrics.stem_bleed_score:.2f}) - Clean isolation consistent with conventional multitrack studio production.\n"
+                    bleed_line = f"- Multi-Stem Bleed Index: {metrics.stem_bleed_score:.2f} (Low cross-modulation between percussion and vocal harmonics).\n"
+
+            cutoff_line = ""
+            if getattr(metrics, "ultrasonic_cutoff_detected", False):
+                slope = getattr(metrics, "high_freq_rolloff_slope", 0.0)
+                cutoff_line = f"- Ultrasonic Frequency Cutoff: DETECTED (Steep cutoff/shelf drop of {slope:.1f} dB above 16kHz - Characteristic of neural audio upsampling from 24k/32k latent space).\n"
+
+            rolloff_line = ""
+            if metrics.spectral_rolloff_95_hz < 12000.0 and not is_derivative_or_remix_context(
+                metadata
+            ):
+                rolloff_line = (
+                    f"- High-Frequency Rolloff Deficiency: SEVERE COLLAPSE DETECTED (Rolloff 95% is only {metrics.spectral_rolloff_95_hz:.0f} Hz, "
+                    "whereas human studio production reaches 16,000 - 20,000 Hz). "
+                    "CRITICAL FORENSIC DIRECTIVE: Sub-12kHz rolloff is NEVER caused by 'standard studio mixing' or 'commercial Auto-Tune'. "
+                    "It is an undeniable physical consequence of latent diffusion neural vocoders (Suno/Udio). "
+                    "Do NOT classify as PROCESSED_HUMAN based on vocal breathing when this severe high-frequency cutoff is present!\n"
+                )
 
             high_ratio_txt = (
                 f"- High-Frequency Energy Ratio (>16kHz): {metrics.high_freq_ratio_16k * 100:.2f}%\n"
@@ -255,7 +341,7 @@ class GeminiClassifierService(IAIClassifier):
 - Harmonic-to-Percussive Ratio: {metrics.harmonic_ratio:.2f}
 {high_ratio_txt}- Estimated Transmission Compression: {metrics.compression_source}
 - Brickwall Frequency Cutoff: {"Yes" if metrics.has_brickwall_cutoff else "No"}
-{pitch_line}{bleed_line}{fp_line}"""
+{rolloff_line}{cutoff_line}{pitch_line}{bleed_line}{fp_line}"""
 
         # Chế độ Thẩm định Mù Tuyệt Đối (Double-Blind Forensic Mode):
         blind_track_title = f"Track #{track_id} (Blind Forensic Sample)"
@@ -265,6 +351,16 @@ class GeminiClassifierService(IAIClassifier):
 - Audio Stream Type: Multi-Segment Excerpt (Verse, Chorus, Climax)
 - Forensic Directive: Base your verdict strictly on acoustic physics, vocal micro-fluctuations, spectrogram harmonic clarity, and stem separation without relying on named credits.
 """
+        genre_directive = ""
+        if is_derivative_or_remix_context(metadata):
+            genre_directive = """
+🎧 SPECIAL GENRE DIRECTIVE - REMIX / SLOWED / LO-FI / EDM CONTEXT DETECTED:
+- The analyzed track is identified as a Remix, Slowed, Lo-Fi, or EDM electronic production:
+  1. Time-stretching (in Slowed/Speed-up) and creative DAW pitch-manipulation intentionally produce spectral smearing, phase shifts, and metallic/robotic artifacts. These are HUMAN STUDIO FX, NOT neural diffusion smearing!
+  2. Electronic dance loops, repetitive synthesizer grooves, and sidechain compression against 808 kicks are standard DAW multitrack production techniques, NOT evidence of AI generative loops.
+  3. Lo-Fi aesthetic intentionally uses tape flutter, vinyl crackle, and aggressive low-pass filtering.
+  4. DO NOT classify this track as 'HYBRID_AI' or 'AI_GENERATED' solely due to electronic sample loops, time-stretch artifacts, or heavy commercial Auto-Tune!
+"""
 
         prompt = f"""
 PLEASE FORENSICALLY EVALUATE THE FOLLOWING AUDIO TRACK:
@@ -272,8 +368,7 @@ PLEASE FORENSICALLY EVALUATE THE FOLLOWING AUDIO TRACK:
 🎵 Track: {blind_track_title}
 
 📊 FORENSIC AUDIT PROTOCOL:
-{metadata_text}
-
+{metadata_text}{genre_directive}
 🔬 PHYSICAL ACOUSTIC & FORENSIC METRICS:
 {metrics_text}
 
@@ -281,10 +376,9 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
 1. Listen closely to the audio excerpt across all segments (Verse, Chorus, Climax) and inspect the 3-tier spectrogram:
    - Assess both vocal timbre quality AND backing instrumental production:
      * BROAD AI DETECTION POLICY: If you detect that EITHER the backing instrumental track OR the vocal track was generated/assisted by AI (Suno, Udio, AI Voice Model, AI Lo-fi beat, AI remix) -> Classify as 'HYBRID_AI' (or 'AI_GENERATED') with is_ai: true.
-     * If the singing voice has the characteristic synthetic sheen, flat/mechanical phrasing, lack of genuine biological breath friction, or bleeds/melts directly into the instrumental arrangement -> Classify as 'AI_GENERATED' (is_ai: true).
-     * If pitch micro-jitter rigidity is marked as Studio Auto-Tuned (Natural Vocal Tract), it is a human singer using pitch correction; DO NOT flag as AI if the rest of the production is organic/studio.
-     * If pitch micro-jitter rigidity is marked as SYNTHETIC ANOMALY DETECTED, this is strong physical evidence of latent grid quantization.
-     * Check Stem Bleed (Intermodulation): If High Residual Interaction is detected, vocal harmonics are physically modulated by percussion transients, proving end-to-end diffusion synthesis (Suno/Udio).
+     * If the singing voice has the characteristic synthetic sheen, flat/mechanical phrasing, bleeds/melts directly into the instrumental arrangement, or is paired with an accompaniment suffering from low-rolloff (<12kHz) air-band deficiency -> Classify as 'AI_GENERATED' or 'HYBRID_AI' (is_ai: true). Note: Modern Suno v3.5/v4 artificially generates realistic breath intakes, so breath friction alone does NOT disprove AI.
+     * Correlate Vocal Pitch Stability and Formant Dynamics: Modern AI generators (Suno v3.5/v4, Udio) can synthesize pitch-correction and micro-vibrato. Look holistically at vocal timbre and backing track: if either vocal or accompaniment exhibits synthetic generation, classify as HYBRID_AI or AI_GENERATED (is_ai: true).
+     * Check Stem Bleed (Intermodulation): If Elevated Intermodulation is detected, vocal harmonics are physically modulated by percussion transients, indicating single-pass neural audio synthesis.
      * Only classify as 'PROCESSED_HUMAN' (is_ai: false) if you are confident that BOTH the vocal AND the backing beat are 100% human-produced multi-track studio recordings.
      * If acoustic arrangement with completely natural, organic vocals -> Classify as 'CONFIRMED_HUMAN' (is_ai: false).
      * If audio quality is too degraded, contradictory, or inconclusive -> Classify as 'UNCERTAIN' (is_ai: false).
@@ -292,7 +386,10 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
      * Check Tier 2 of the attached image: Percussion and heavy drums (e.g. lion dance / múa lân drums) have been stripped away using HPSS. Look closely at Tier 2 to inspect pure vocal harmonics for artificial smearing or synthetic sheen that was masked by drums.
    - MANDATORY REASON FORMAT FOR HYBRID_AI: If you classify as 'HYBRID_AI', the FIRST reason in reasons MUST start with:
      "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
-   - REMINDER ON BREATHS & SUNO V3.5/V4: Modern AI models can synthesize intake breaths and micro-vibrato. Do NOT conclude human based solely on the presence of a breath sound!
+   - SUNO V3.5/V4 BALLAD DECEPTION COUNTERMEASURES:
+     * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads specifically GENERATE realistic human-like intake breaths, chest voice formants, and Auto-Tune-like vibrato.
+     * The presence of natural-sounding breath intakes or sweet ballad vocal phrasing MUST NOT be treated as definitive proof of a human singer!
+     * Inspect Tier 2 Harmonic Vocal carefully: look for faint digital fuzz beneath sustained vowels and check if the backing accompaniment has true acoustic multitrack depth or monolithic latent space entanglement.
 2. Correlate with the provided acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and the 3-tier spectrogram image.
 3. Deliver an objective, rigorous verdict based purely on the real sonic evidence.
 """
@@ -311,7 +408,7 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         input_type: InputType | None = None,
         raw_query: str | None = None,
     ) -> DetectionResult:
-        model: str = model_override or self.model_name or DEFAULT_GEMINI_MODEL or "gemini-2.5-flash"
+        candidate_models = self._resolve_model_chain(model_override)
         prompt = self._build_forensic_prompt(track_id, metrics, metadata)
 
         candidate_keys = list(self.api_keys)
@@ -323,156 +420,197 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                 "Không tìm thấy Gemini API Key nào trong cấu hình môi trường (.env)."
             )
 
-        last_error = None
-        for key_idx, current_key in enumerate(candidate_keys, 1):
-            client = self._get_client(current_key)
-            if not client:
-                continue
+        from google.genai import types
+
+        contents: list[Any] = [prompt]
+
+        if spectrogram_path and Path(spectrogram_path).exists():
+            try:
+                spec_bytes = Path(spectrogram_path).read_bytes()
+                contents.append(
+                    types.Part.from_bytes(
+                        data=spec_bytes,
+                        mime_type="image/png",
+                    )
+                )
+            except Exception as upload_err:  # noqa: BLE001
+                print(f"[GeminiClassifierService] Không thể đính kèm ảnh phổ: {upload_err}")
+
+        compressed_audio: Path | None = None
+        if audio_path and Path(audio_path).exists():
+            raw_p = Path(audio_path)
+            upload_target = raw_p
+            if raw_p.suffix.lower() == ".wav":
+                mp3_p = raw_p.with_suffix(".mp3")
+                try:
+                    ffmpeg_bin = get_ffmpeg_binary()
+                    cmd = [
+                        ffmpeg_bin,
+                        "-y",
+                        "-i",
+                        str(raw_p),
+                        "-b:a",
+                        "160k",
+                        "-ac",
+                        "2",
+                        str(mp3_p),
+                    ]
+                    res = subprocess.run(
+                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                    )
+                    if res.returncode == 0 and mp3_p.exists():
+                        compressed_audio = mp3_p
+                        upload_target = mp3_p
+                except Exception as comp_err:  # noqa: BLE001
+                    print(f"[GeminiClassifierService] Không thể nén MP3: {comp_err}")
 
             try:
-                from google.genai import types
-
-                contents: list[Any] = [prompt]
-
-                if spectrogram_path and Path(spectrogram_path).exists():
-                    try:
-                        spec_bytes = Path(spectrogram_path).read_bytes()
-                        contents.append(
-                            types.Part.from_bytes(
-                                data=spec_bytes,
-                                mime_type="image/png",
-                            )
-                        )
-                    except Exception as upload_err:  # noqa: BLE001
-                        print(f"[GeminiClassifierService] Không thể đính kèm ảnh phổ: {upload_err}")
-
-                compressed_audio: Path | None = None
-                if audio_path and Path(audio_path).exists():
-                    raw_p = Path(audio_path)
-                    upload_target = raw_p
-                    if raw_p.suffix.lower() == ".wav":
-                        mp3_p = raw_p.with_suffix(".mp3")
-                        try:
-                            ffmpeg_bin = get_ffmpeg_binary()
-                            cmd = [
-                                ffmpeg_bin,
-                                "-y",
-                                "-i",
-                                str(raw_p),
-                                "-b:a",
-                                "160k",
-                                "-ac",
-                                "2",
-                                str(mp3_p),
-                            ]
-                            res = subprocess.run(cmd, capture_output=True, text=True)
-                            if res.returncode == 0 and mp3_p.exists():
-                                compressed_audio = mp3_p
-                                upload_target = mp3_p
-                        except Exception as comp_err:  # noqa: BLE001
-                            print(f"[GeminiClassifierService] Không thể nén MP3: {comp_err}")
-
-                    try:
-                        mime = (
-                            "audio/mp3" if upload_target.suffix.lower() == ".mp3" else "audio/wav"
-                        )
-                        audio_bytes = upload_target.read_bytes()
-                        contents.append(
-                            types.Part.from_bytes(
-                                data=audio_bytes,
-                                mime_type=mime,
-                            )
-                        )
-                    except Exception as upload_err:  # noqa: BLE001
-                        print(
-                            f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}"
-                        )
-                    finally:
-                        if compressed_audio and compressed_audio.exists():
-                            compressed_audio.unlink(missing_ok=True)
-
-                config = types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    response_mime_type="application/json",
-                    response_schema=GeminiResponseSchema,
-                    temperature=0.1,
-                    http_options=types.HttpOptions(timeout=45000),
-                )
-
-                response = client.models.generate_content(
-                    model=model, contents=contents, config=config
-                )
-
-                if key_idx > 1:
-                    print(
-                        f"[GeminiClassifierService] [SUCCESS] Đã tự động chuyển đổi thành công sang Key dự phòng #{key_idx}!"
+                mime = "audio/mp3" if upload_target.suffix.lower() == ".mp3" else "audio/wav"
+                audio_bytes = upload_target.read_bytes()
+                contents.append(
+                    types.Part.from_bytes(
+                        data=audio_bytes,
+                        mime_type=mime,
                     )
-
-                raw_json = response.text
-                if not raw_json:
-                    raise ClassificationException("Mô hình Gemini trả về kết quả rỗng (None).")
-                data = json.loads(raw_json)
-
-                v_type_str = data.get("verdict_type", "CONFIRMED_HUMAN")
-                try:
-                    v_type = VerdictType(v_type_str)
-                except ValueError:
-                    v_type = (
-                        VerdictType.AI_GENERATED
-                        if data.get("is_ai")
-                        else VerdictType.CONFIRMED_HUMAN
-                    )
-
-                if v_type == VerdictType.CONFIRMED_HUMAN:
-                    verdict_label = "CONFIRMED HUMAN (Người làm)"
-                elif v_type == VerdictType.PROCESSED_HUMAN:
-                    verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
-                elif v_type == VerdictType.HYBRID_AI:
-                    verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
-                elif v_type == VerdictType.UNCERTAIN:
-                    verdict_label = "UNCERTAIN (Chưa thể kết luận)"
-                else:
-                    verdict_label = "AI-GENERATED (Nhạc AI tạo)"
-
-                final_is_ai = (
-                    True
-                    if v_type in (VerdictType.AI_GENERATED, VerdictType.HYBRID_AI)
-                    else bool(data.get("is_ai", False))
                 )
+            except Exception as upload_err:  # noqa: BLE001
+                print(f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}")
+            finally:
+                if compressed_audio and compressed_audio.exists():
+                    compressed_audio.unlink(missing_ok=True)
 
-                return DetectionResult(
-                    track_id=track_id,
-                    track_title=track_title,
-                    source_url=source_url,
-                    input_type=input_type,
-                    raw_query=raw_query,
-                    is_ai=final_is_ai,
-                    verdict_type=v_type,
-                    verdict_label=verdict_label,
-                    confidence_score=data.get("confidence_score", 0.5),
-                    suspected_engine=data.get("suspected_engine", "None"),
-                    reasons=data.get("reasons", []),
-                    detailed_explanation=data.get("detailed_explanation", ""),
-                    acoustic_metrics=metrics,
-                    spectrogram_image_path=str(spectrogram_path) if spectrogram_path else None,
-                )
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            response_mime_type="application/json",
+            response_schema=GeminiResponseSchema,
+            temperature=0.1,
+            http_options=types.HttpOptions(timeout=45000),
+        )
 
-            except Exception as e:  # noqa: BLE001
-                err_str = str(e)
-                print(
-                    f"[GeminiClassifierService] [WARNING] Key #{key_idx} (***) gặp lỗi khi gọi ({model}): {err_str}"
-                )
-                last_error = e
-                if key_idx < len(candidate_keys):
-                    print(
-                        f"[GeminiClassifierService] [FAILOVER] Đang tự động chuyển sang Key dự phòng kế tiếp #{key_idx + 1}/{len(candidate_keys)} (thứ tự 1>2>3)..."
-                    )
+        last_error = None
+
+        # Failover 2 tầng: Mô hình (Gemini 3.8 Flash -> 3.7 Flash -> 3.6 Flash) x Khóa API (Key 1 -> 2 -> 3)
+        for model_idx, model in enumerate(candidate_models, 1):
+            for key_idx, current_key in enumerate(candidate_keys, 1):
+                client = self._get_client(current_key)
+                if not client:
                     continue
-                else:
-                    print(
-                        f"[GeminiClassifierService] [ERROR] Đã thử tất cả {len(candidate_keys)} API keys nhưng đều thất bại."
-                    )
+
+                for attempt in range(2):
+                    try:
+                        response = client.models.generate_content(
+                            model=model, contents=contents, config=config
+                        )
+
+                        if key_idx > 1 or model_idx > 1:
+                            try:
+                                print(
+                                    f"[GeminiClassifierService] [SUCCESS] Đã tự động chuyển đổi thành công sang Key dự phòng #{key_idx} (Model: {model})!"
+                                )
+                            except Exception:
+                                pass
+
+                        raw_json = response.text
+                        if not raw_json:
+                            raise ClassificationException(
+                                "Mô hình Gemini trả về kết quả rỗng (None)."
+                            )
+                        data = json.loads(raw_json)
+
+                        v_type_str = data.get("verdict_type", "CONFIRMED_HUMAN")
+                        try:
+                            v_type = VerdictType(v_type_str)
+                        except ValueError:
+                            v_type = (
+                                VerdictType.AI_GENERATED
+                                if data.get("is_ai")
+                                else VerdictType.CONFIRMED_HUMAN
+                            )
+
+                        if v_type == VerdictType.CONFIRMED_HUMAN:
+                            verdict_label = "CONFIRMED HUMAN (Người làm)"
+                        elif v_type == VerdictType.PROCESSED_HUMAN:
+                            verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
+                        elif v_type == VerdictType.HYBRID_AI:
+                            verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
+                        elif v_type == VerdictType.UNCERTAIN:
+                            verdict_label = "UNCERTAIN (Chưa thể kết luận)"
+                        else:
+                            verdict_label = "AI-GENERATED (Nhạc AI tạo)"
+
+                        final_is_ai = (
+                            True
+                            if v_type in (VerdictType.AI_GENERATED, VerdictType.HYBRID_AI)
+                            else bool(data.get("is_ai", False))
+                        )
+
+                        return DetectionResult(
+                            track_id=track_id,
+                            track_title=track_title,
+                            source_url=source_url,
+                            input_type=input_type,
+                            raw_query=raw_query,
+                            is_ai=final_is_ai,
+                            verdict_type=v_type,
+                            verdict_label=verdict_label,
+                            confidence_score=data.get("confidence_score", 0.5),
+                            suspected_engine=data.get("suspected_engine", "None"),
+                            reasons=data.get("reasons", []),
+                            detailed_explanation=data.get("detailed_explanation", ""),
+                            acoustic_metrics=metrics,
+                            spectrogram_image_path=str(spectrogram_path)
+                            if spectrogram_path
+                            else None,
+                            model_used=model,
+                        )
+
+                    except Exception as e:  # noqa: BLE001
+                        err_str = str(e)
+                        last_error = e
+                        is_server_busy = (
+                            "503" in err_str or "unavailable" in err_str.lower()
+                        ) and "429" not in err_str
+                        if is_server_busy and attempt == 0:
+                            wait_sec = 1.5
+                            try:
+                                print(
+                                    f"[GeminiClassifierService] [RETRY] Model ({model}) quá tải máy chủ tạm thời (503). Thử lại sau {wait_sec}s..."
+                                )
+                            except Exception:
+                                pass
+                            time.sleep(wait_sec)
+                            continue
+
+                        try:
+                            print(
+                                f"[GeminiClassifierService] [WARNING] Key #{key_idx} (***) gặp lỗi khi gọi ({model}): {err_str}"
+                            )
+                        except Exception:
+                            pass
+                        if key_idx < len(candidate_keys):
+                            try:
+                                print(
+                                    f"[GeminiClassifierService] [FAILOVER] Đang tự động chuyển sang Key dự phòng kế tiếp #{key_idx + 1}/{len(candidate_keys)} (thứ tự 1>2>3)..."
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                print(
+                                    f"[GeminiClassifierService] [ERROR] Đã thử tất cả {len(candidate_keys)} API keys nhưng đều thất bại cho model ({model})."
+                                )
+                            except Exception:
+                                pass
+                        break
+
+            # Cả candidate_keys đều thất bại cho model này -> Chuyển sang model tiếp theo
+            if model_idx < len(candidate_models):
+                next_model = candidate_models[model_idx]
+                print(
+                    f"[GeminiClassifierService] [MODEL FAILOVER] Cả {len(candidate_keys)} keys đều lỗi/hết quota cho model ({model}). "
+                    f"Đang tự động chuyển sang Model dự phòng tiếp theo: '{next_model}' (bắt đầu lại từ Key #1)..."
+                )
 
         raise ClassificationException(
-            f"Tất cả {len(candidate_keys)} Gemini API Keys đều thất bại. Lỗi cuối cùng: {last_error}"
+            f"Tất cả {len(candidate_keys)} Gemini API Keys đều thất bại trên tất cả mô hình ({', '.join(candidate_models)}). Lỗi cuối cùng: {last_error}"
         )

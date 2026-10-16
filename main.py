@@ -1,6 +1,6 @@
 import argparse
-import sys
 import subprocess
+import sys
 from pathlib import Path
 
 # Add project root to sys.path
@@ -12,15 +12,16 @@ if str(root_dir) not in sys.path:
 if sys.platform == "win32":
     try:
         if hasattr(sys.stdout, "reconfigure"):
-            getattr(sys.stdout, "reconfigure")(encoding='utf-8')
+            sys.stdout.reconfigure(encoding='utf-8')
         if hasattr(sys.stderr, "reconfigure"):
-            getattr(sys.stderr, "reconfigure")(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
     except Exception:
         pass
 
-from backend.core.config import DEFAULT_GEMINI_MODEL, API_HOST, API_PORT
-from backend.core.container import get_container
 from backend.api.schemas.dtos import TrackDetectRequest
+from backend.core.config import API_HOST, API_PORT, DEFAULT_GEMINI_MODEL
+from backend.core.container import get_container
+
 
 def run_streamlit():
     """Khởi động giao diện người dùng Streamlit Web từ thư mục frontend/."""
@@ -40,7 +41,7 @@ def main():
     parser.add_argument("--api", action="store_true", help="Khởi chạy REST API Server (FastAPI)")
     parser.add_argument("--query", type=str, help="Kiểm tra 1 bài hát (Link URL hoặc Tên bài hát)")
     parser.add_argument("--file", type=str, help="Kiểm tra hàng loạt từ file (.txt, .csv, .xlsx)")
-    parser.add_argument("--model", type=str, default=DEFAULT_GEMINI_MODEL, help="Model: gemini-3.1-flash-lite hoặc gemini-3.5-flash-lite")
+    parser.add_argument("--model", type=str, default=DEFAULT_GEMINI_MODEL, help="Model khởi đầu: gemini-3.8-flash (mặc định), gemini-3.7-flash, gemini-3.6-flash...")
 
     args = parser.parse_args()
 
@@ -79,7 +80,7 @@ def main():
             print(f"📦 ĐÁNH GIÁ NÉN TRUYỀN TẢI: {m.compression_source}")
             print(f"🎼 TỶ LỆ SÓNG HÀI (HARMONIC): {m.harmonic_ratio * 100:.1f}%")
         print(f"🤖 NỀN TẢNG NGHI VẤN: {result.suspected_engine}")
-        print(f"📌 LUẬN CỨ CHÍNH:")
+        print("📌 LUẬN CỨ CHÍNH:")
         for r in result.reasons:
             print(f"   - {r}")
         print(f"📝 GIẢI THÍCH CHI TIẾT:\n{result.detailed_explanation}")

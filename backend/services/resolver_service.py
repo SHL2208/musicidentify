@@ -606,15 +606,24 @@ class InputResolverService(IInputResolver):
 
         # Danh sách các câu truy vấn tìm kiếm theo thứ tự ưu tiên
         candidate_queries: list[str] = []
+        clean_title = re.sub(r"\(.*?\)|\[.*?\]", "", song_name).strip()
+
+        # Pass 0: Tìm kiếm chính xác có trích dẫn ngoặc kép nghệ sĩ
+        # (Giúp YouTube ưu tiên đúng kênh/nghệ sĩ chính chủ thay vì các bản mashup/remix/cover nổi tiếng khác)
+        if target_artist:
+            candidate_queries.append(f'{clean_title or song_name} "{target_artist}"')
+            if clean_title and clean_title != song_name:
+                candidate_queries.append(f'{song_name} "{target_artist}"')
+
         base_search = (
             f"{song_name} {target_artist}".strip()
             if target_artist and target_artist not in song_name
             else song_name.strip()
         )
-        candidate_queries.append(base_search)
+        if base_search not in candidate_queries:
+            candidate_queries.append(base_search)
 
         # Pass 2: Rút gọn hậu tố trong ngoặc như (Trung Thu EDM Version) và lược bỏ nghệ sĩ phụ sau dấu phẩy/ft
-        clean_title = re.sub(r"\(.*?\)|\[.*?\]", "", song_name).strip()
         primary_artist = ""
         if target_artist:
             raw_first = re.split(
@@ -752,42 +761,100 @@ class InputResolverService(IInputResolver):
     def parse_batch_file(self, file_path: Path) -> list[TrackItem]:
         """Đọc file đầu vào (.txt, .csv, .xlsx) và trả về danh sách các TrackItem."""
         suffix = file_path.suffix.lower()
-        queries: list[str] = []
 
         if suffix == ".txt":
             with open(file_path, encoding="utf-8") as f:
                 queries = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            tracks: list[TrackItem] = []
+            for q in queries:
+                item_id = str(uuid.uuid4())[:8]
+                input_type = self.detect_input_type(q)
+                tracks.append(
+                    TrackItem(
+                        id=item_id,
+                        raw_query=q,
+                        input_type=input_type,
+                        track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
+                        resolved_url=q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None,
+                    )
+                )
+            return tracks
 
         elif suffix == ".csv":
             try:
                 df = pd.read_csv(file_path, encoding="utf-8")
             except Exception:  # noqa: BLE001
                 df = pd.read_csv(file_path, encoding="latin-1")
-            queries = self._extract_queries_from_df(df)
+            return self._extract_tracks_from_df(df)
 
         elif suffix in [".xlsx", ".xls"]:
             df = pd.read_excel(file_path)
-            queries = self._extract_queries_from_df(df)
+            return self._extract_tracks_from_df(df)
 
         else:
             raise InvalidInputException(
                 f"Định dạng tệp không được hỗ trợ: {suffix}. Vui lòng dùng .txt, .csv, hoặc .xlsx"
             )
 
-        tracks: list[TrackItem] = []
-        for q in queries:
-            item_id = str(uuid.uuid4())[:8]
+    def _extract_tracks_from_df(self, df: pd.DataFrame) -> list[TrackItem]:
+        """Trích xuất danh sách TrackItem từ DataFrame (tự động nhận diện cột Title, Artist, URL)."""
+        url_col = None
+        title_col = None
+        artist_col = None
+
+        for col in df.columns:
+            c_low = str(col).strip().lower()
+            if any(k in c_low for k in ["url", "link", "đường dẫn", "liên kết", "youtube", "source_url", "webpage"]):
+                if url_col is None:
+                    url_col = col
+            elif any(k in c_low for k in ["tên bài", "tiêu đề", "song title", "track", "title"]):
+                if title_col is None:
+                    title_col = col
+            elif any(k in c_low for k in ["ca sĩ", "nghệ sĩ", "artist", "singer"]):
+                if artist_col is None:
+                    artist_col = col
+
+        if not title_col and not url_col:
+            queries = self._extract_queries_from_df(df)
+            tracks: list[TrackItem] = []
+            for q in queries:
+                item_id = str(uuid.uuid4())[:8]
+                input_type = self.detect_input_type(q)
+                tracks.append(
+                    TrackItem(
+                        id=item_id,
+                        raw_query=q,
+                        input_type=input_type,
+                        track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
+                        resolved_url=q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None,
+                    )
+                )
+            return tracks
+
+        tracks = []
+        for _, row in df.iterrows():
+            raw_u = str(row[url_col]).strip() if (url_col is not None and pd.notna(row[url_col])) else ""
+            raw_t = str(row[title_col]).strip() if (title_col is not None and pd.notna(row[title_col])) else ""
+            raw_a = str(row[artist_col]).strip() if (artist_col is not None and pd.notna(row[artist_col])) else ""
+
+            if not raw_u and not raw_t:
+                continue
+
+            resolved_u = raw_u if (raw_u.startswith("http://") or raw_u.startswith("https://") or Path(raw_u).exists()) else None
+            effective_title = raw_t or (Path(raw_u).stem if raw_u else "")
+            q = raw_u if resolved_u else (f"{raw_t} {raw_a}".strip() if raw_a else raw_t)
             input_type = self.detect_input_type(q)
+
             tracks.append(
                 TrackItem(
-                    id=item_id,
+                    id=str(uuid.uuid4())[:8],
                     raw_query=q,
                     input_type=input_type,
-                    track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
-                    resolved_url=q if input_type == InputType.URL else None,
+                    track_title=effective_title,
+                    artist=raw_a or None,
+                    resolved_url=resolved_u or (q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None),
                 )
             )
-
         return tracks
 
     def _extract_queries_from_df(self, df: pd.DataFrame) -> list[str]:

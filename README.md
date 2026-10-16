@@ -1,6 +1,6 @@
 # 🎵 AI Music Detector Agent (Deep Forensic 4-Tier)
 
-Hệ thống AI Agent thông minh giúp phân loại chính xác các bài hát do **AI sáng tác (Suno, Udio, Stable Audio...)** hay do **Con người làm**, sử dụng phân tích vật lý âm học sâu kết hợp phát hiện vết vân deconvolution **Fourier Fakeprint (Deezer ISMIR 2025)** và mô hình đa phương thức **Gemini 3.1 / 3.5 Flash Lite** từ Google AI Studio với chi phí **$0** (Free Tier).
+Hệ thống AI Agent thông minh giúp phân loại chính xác các bài hát do **AI sáng tác (Suno, Udio, Stable Audio...)** hay do **Con người làm**, sử dụng phân tích vật lý âm học sâu kết hợp phát hiện vết vân deconvolution **Fourier Fakeprint (Deezer ISMIR 2025)** và mô hình đa phương thức **Gemini 3.8 Flash** (kèm cơ chế tự động luân chuyển dự phòng **Gemini 3.7 Flash** và **Gemini 3.6 Flash** qua 3 API Keys) từ Google AI Studio với chi phí **$0** (Free Tier).
 
 ---
 
@@ -88,7 +88,7 @@ d:/test/musicidentify/
 │   │   ├── audio_engine_service.py       # Tải & cắt phân đoạn âm thanh đa tầng
 │   │   ├── signal_analyzer_service.py    # Phân tích âm học (inject IFakeprintDetector)
 │   │   ├── fakeprint_detector_service.py # Thuật toán Fourier Deconvolution ISMIR 2025
-│   │   ├── gemini_classifier_service.py  # Giám định AI kèm Failover 1 > 2 > 3
+│   │   ├── gemini_classifier_service.py  # Giám định AI kèm Failover 2 tầng (Models 3.8 > 3.7 > 3.6 x Keys 1 > 2 > 3)
 │   │   ├── resolver_service.py           # Phân giải dữ liệu đầu vào (URL, file, YouTube)
 │   │   ├── detection_service.py          # Điều phối nhận diện đơn bài (Orchestrator)
 │   │   ├── batch_service.py              # Xử lý hàng loạt có Rate Limiting & bảo toàn 100% bài

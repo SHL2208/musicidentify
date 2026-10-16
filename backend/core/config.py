@@ -34,8 +34,37 @@ if _legacy_key and _legacy_key not in _keys_list:
 GEMINI_API_KEYS: list[str] = _keys_list
 GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
-DEFAULT_GEMINI_MODEL = os.getenv("DEFAULT_GEMINI_MODEL")
-AVAILABLE_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+# Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
+DEFAULT_GEMINI_MODEL = (
+    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.8-flash") or "gemini-3.8-flash"
+).strip()
+
+# Thứ tự mô hình dự phòng tự động khi cạn Quota hoặc lỗi (Multi-tier Model Failover)
+DEFAULT_FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+]
+
+_env_fallback = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
+if _env_fallback:
+    GEMINI_FALLBACK_MODELS = [m.strip() for m in _env_fallback.split(",") if m.strip()]
+else:
+    GEMINI_FALLBACK_MODELS = DEFAULT_FALLBACK_MODELS
+
+AVAILABLE_MODELS = list(
+    dict.fromkeys(
+        GEMINI_FALLBACK_MODELS
+        + [
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+        ]
+    )
+)
 
 # Audio Processing Configuration
 AUDIO_SAMPLE_DURATION = int(os.getenv("AUDIO_SAMPLE_DURATION", "30"))

@@ -1,5 +1,7 @@
 import streamlit as st
+
 from backend.core.models.entities import DetectionResult, VerdictType
+
 
 def render_verdict_card(result: DetectionResult):
     """Hiển thị thẻ phán quyết 4 tầng với phong cách giao diện trực quan cao cấp."""

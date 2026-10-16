@@ -1,14 +1,14 @@
 import os
 from pathlib import Path
-from typing import Optional
-import streamlit as st
-import pandas as pd
 
+import pandas as pd
+import streamlit as st
+
+from backend.core.container import get_container
 from benchmark_evaluator import (
+    export_audit_excel,
     load_testcase_dataset,
     select_samples,
-    run_benchmark,
-    export_audit_excel
 )
 
 
@@ -70,11 +70,9 @@ def render_benchmark_view():
         try:
             with st.spinner("Đang nạp dữ liệu từ file testcase..."):
                 dataset = load_testcase_dataset(file_path=selected_file_path, sheet_name=sheet_name)
-                total_ai = sum(1 for d in dataset if d["gt_is_ai"])
-                total_human = sum(1 for d in dataset if not d["gt_is_ai"])
 
             if sample_mode == "Lấy mẫu nhanh (Stratified Sample)":
-                samples = select_samples(dataset, sample_size=sample_count, balanced=balanced, seed=int(seed_val))
+                samples = select_samples(dataset, sample_size=sample_count, balanced=balanced, seed=seed_val)
             else:
                 samples = dataset
 
@@ -98,6 +96,7 @@ def render_benchmark_view():
                 progress_bar.progress(pct)
                 status_box.text(f"[{i}/{len(samples)}] Đang thẩm định: '{item['query']}' (Ground Truth: {item['gt_label']})...")
 
+                track = None
                 try:
                     track = resolver.resolve_track(item["query"])
                     res = detection_service.detect_single(track, model_override=st.session_state.get("model_name"))
@@ -123,6 +122,7 @@ def render_benchmark_view():
                         "Mã bài": item["media_id"],
                         "Tên bài hát": item["title"],
                         "Ca sĩ": item["artist"],
+                        "Nguồn link": res.source_url or getattr(track, "resolved_url", "N/A") or "N/A",
                         "Thực tế": item["gt_label"],
                         "Dự đoán": pred_label,
                         "Kết quả": "✅ ĐÚNG" if is_correct else "❌ SAI",
@@ -138,6 +138,7 @@ def render_benchmark_view():
                         "Mã bài": item["media_id"],
                         "Tên bài hát": item["title"],
                         "Ca sĩ": item["artist"],
+                        "Nguồn link": getattr(track, "resolved_url", "N/A") if track else "N/A",
                         "Thực tế": item["gt_label"],
                         "Dự đoán": "ERROR",
                         "Kết quả": "❌ LỖI",

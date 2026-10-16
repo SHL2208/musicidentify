@@ -37,6 +37,7 @@ class TrackItem(BaseModel):
     error_message: str | None = None
     song_type: str | None = None
     release_date: str | None = None
+    distributor: str | None = None
 
 
 class AcousticMetrics(BaseModel):
@@ -107,6 +108,14 @@ class AcousticMetrics(BaseModel):
         default=False,
         description="True nếu phát hiện hiện tượng dính chùm âm học (Stem Bleed) đặc trưng của AI nguyên khối Suno/Udio",
     )
+    ultrasonic_cutoff_detected: bool = Field(
+        default=False,
+        description="True nếu phát hiện dốc suy giảm đột ngột hoặc bậc thềm triệt tiêu dải siêu cao tần đặc thù của AI",
+    )
+    high_freq_rolloff_slope: float = Field(
+        default=0.0,
+        description="Độ dốc suy giảm dải cao (dB/octave giữa 14k-16k và 16k-20k)",
+    )
 
 
 class DetectionResult(BaseModel):
@@ -136,6 +145,10 @@ class DetectionResult(BaseModel):
     acoustic_metrics: AcousticMetrics | None = None
     spectrogram_image_path: str | None = None
     processed_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    model_used: str | None = Field(
+        default=None,
+        description="Mô hình Gemini thực tế đã được sử dụng thành công (VD: gemini-3.8-flash)",
+    )
 
 
 class BatchReport(BaseModel):

@@ -95,6 +95,20 @@ class ReportService(IReportService):
         records: list[dict[str, Any]] = []
         for idx, r in enumerate(results):
             display_title = format_display_title(r)
+            url_str = (
+                (r.source_url or "").strip()
+                or (
+                    (r.raw_query or "").strip()
+                    if (r.raw_query or "").strip().startswith("http://")
+                    or (r.raw_query or "").strip().startswith("https://")
+                    else ""
+                )
+            )
+            if not url_str:
+                url_str = "N/A"
+            if not r.source_url and url_str != "N/A":
+                r.source_url = url_str
+
             if r.verdict_type == VerdictType.ERROR:
                 records.append(
                     {
@@ -111,7 +125,7 @@ class ReportService(IReportService):
                         if r.reasons
                         else "Lỗi không xác định",
                         "Giải thích chi tiết": r.detailed_explanation,
-                        "Nguồn link": r.source_url or "N/A",
+                        "Nguồn link": url_str,
                         "Thời gian quét": r.processed_at,
                     }
                 )
@@ -142,7 +156,7 @@ class ReportService(IReportService):
                         "Nền tảng nghi vấn": r.suspected_engine,
                         "Luận cứ chính / Chi tiết lỗi": " | ".join(r.reasons),
                         "Giải thích chi tiết": r.detailed_explanation,
-                        "Nguồn link": r.source_url or "N/A",
+                        "Nguồn link": url_str,
                         "Thời gian quét": r.processed_at,
                     }
                 )

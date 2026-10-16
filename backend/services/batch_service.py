@@ -7,7 +7,7 @@ from ..core.interfaces.repositories.track_repository_interface import ITrackRepo
 from ..core.interfaces.services.batch_service_interface import IBatchService
 from ..core.interfaces.services.detection_service_interface import IDetectionService
 from ..core.interfaces.services.report_service_interface import IReportService
-from ..core.models.entities import BatchReport, DetectionResult, TrackItem, VerdictType
+from ..core.models.entities import BatchReport, DetectionResult, InputType, TrackItem, VerdictType
 from ..repositories.file_report_repository import clean_excel_text
 
 logger = logging.getLogger(__name__)
@@ -81,10 +81,18 @@ class BatchService(IBatchService):
                     f"[BatchService] Lỗi xử lý bài '{track.track_title or track.raw_query}': {error_msg}"
                 )
 
+                err_source_url = track.resolved_url or (
+                    track.raw_query
+                    if (track.raw_query and str(track.raw_query).startswith("http"))
+                    else None
+                )
+                if not err_source_url and track.input_type == InputType.LOCAL_FILE:
+                    err_source_url = str(track.raw_query)
+
                 error_result = DetectionResult(
                     track_id=track.id,
                     track_title=track.track_title or track.raw_query,
-                    source_url=track.resolved_url or track.raw_query,
+                    source_url=err_source_url,
                     input_type=track.input_type,
                     raw_query=track.raw_query,
                     is_ai=False,

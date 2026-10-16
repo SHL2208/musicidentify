@@ -8,18 +8,19 @@ if str(root_dir) not in sys.path:
 
 import streamlit as st
 
-# State & Services
-from frontend.state.session_state import init_session_state
-from frontend.services.backend_client import BackendClient
+from frontend.components.batch_view import render_batch_view
+from frontend.components.benchmark_view import render_benchmark_view
 
 # UI Components
 from frontend.components.header import render_header
-from frontend.components.sidebar import render_sidebar
-from frontend.components.verdict_card import render_verdict_card
 from frontend.components.metrics_display import render_metrics_display
+from frontend.components.sidebar import render_sidebar
 from frontend.components.spectrogram_viewer import render_spectrogram_viewer
-from frontend.components.batch_view import render_batch_view
-from frontend.components.benchmark_view import render_benchmark_view
+from frontend.components.verdict_card import render_verdict_card
+from frontend.services.backend_client import BackendClient
+
+# State & Services
+from frontend.state.session_state import init_session_state
 
 # Page Config
 st.set_page_config(
@@ -32,7 +33,7 @@ st.set_page_config(
 # Load CSS Styles
 css_file = Path(__file__).parent / "assets" / "styles.css"
 if css_file.exists():
-    with open(css_file, "r", encoding="utf-8") as f:
+    with open(css_file, encoding="utf-8") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # Initialize Session State
@@ -102,7 +103,7 @@ with tab1:
         col_reasons, col_detail = st.columns([1, 1])
         with col_reasons:
             st.subheader("📌 Luận cứ Giám định Chính")
-            for idx, r in enumerate(res.reasons, 1):
+            for r in res.reasons:
                 st.markdown(f"- **{r}**")
 
         with col_detail:

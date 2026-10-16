@@ -176,6 +176,68 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 "reason": f"Phát hiện định dạng phát hành hàng loạt đặc trưng của dự án nhạc AI: '{match_batch.group()}'.",
             }
 
+        # 2d. Kiểm tra nhà phân phối chuyên phát hành nhạc AI thương mại (Catalog / Distributor Intelligence)
+        distributor = str(metadata.get("distributor") or "").strip()
+        distributor_lower = distributor.lower()
+        artist_lower = str(
+            metadata.get("target_artist")
+            or metadata.get("artist")
+            or metadata.get("uploader")
+            or ""
+        ).lower()
+
+        # Whitelist bảo vệ hãng đĩa lớn và nhà phân phối chính thống chống False Positive
+        human_distributor_whitelist = [
+            "sony",
+            "warner music vietnam",
+            "bmz",
+            "vieent",
+            "believe",
+            "loops",
+        ]
+        is_whitelisted_distributor = any(
+            w in distributor_lower for w in human_distributor_whitelist
+        )
+
+        # 1. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được xác thực 100% qua catalog
+        ai_artist_regexes = [
+            (r"\blofi quê hương\b", "Lofi Quê Hương"),
+            (r"\bhanzen\b", "HanZen"),
+            (r"\ban deep\b", "An Deep"),
+            (r"\bgmhd\b", "GMHD"),
+            (r"\bsinbadai\b", "SinbadAI"),
+            (r"\bđặng bảo trung\b", "Đặng Bảo Trung"),
+            (r"\btiểu mai tử\b", "Tiểu Mai Tử"),
+            (r"\bf47\b", "F47"),
+            (r"\bhoàng k\b", "Hoàng K"),
+            (r"\bhlc\b", "HLC"),
+        ]
+        for pat, proj_name in ai_artist_regexes:
+            if re.search(pat, artist_lower):
+                return {
+                    "is_ai": True,
+                    "verdict_type": VerdictType.AI_GENERATED,
+                    "confidence": 0.98,
+                    "engine": "AI Virtual Project",
+                    "reason": f"Dự án âm nhạc '{proj_name}' là sản phẩm phát hành hàng loạt từ mô hình sinh nhạc AI.",
+                }
+
+        # 2. Kiểm tra nhà phân phối chuyên phát hành nhạc AI thương mại (Catalog / Distributor Intelligence)
+        if not is_whitelisted_distributor:
+            pure_ai_distributors = [
+                "incom",
+                "tte fast considerate",
+            ]
+            for ai_dist in pure_ai_distributors:
+                if ai_dist in distributor_lower:
+                    return {
+                        "is_ai": True,
+                        "verdict_type": VerdictType.AI_GENERATED,
+                        "confidence": 0.98,
+                        "engine": "AI Studio/Catalog",
+                        "reason": f"Nhà phân phối '{distributor}' nằm trong danh mục đơn vị phát hành nhạc AI chuyên biệt.",
+                    }
+
         return None
 
     def _compute_pitch_jitter(self, mono_harm: np.ndarray, sr: int = 44100) -> dict[str, Any]:
@@ -353,6 +415,19 @@ class SignalAnalyzerService(ISignalAnalyzer):
             high_freq_power = np.sum((stft[high_freq_mask, :]) ** 2)
             high_freq_ratio = float(high_freq_power / total_power)
 
+            # 3b. Phân tích bậc thềm suy giảm dải siêu cao tần (Ultrasonic Shelf & Cutoff)
+            mask_mid_high = (freqs >= 12000) & (freqs < 16000)
+            mask_ultra = (freqs >= 16000) & (freqs <= 20000)
+            power_mid_high = (
+                float(np.mean(stft[mask_mid_high, :] ** 2)) if np.any(mask_mid_high) else 0.0
+            ) + 1e-12
+            power_ultra = (
+                float(np.mean(stft[mask_ultra, :] ** 2)) if np.any(mask_ultra) else 0.0
+            ) + 1e-12
+            shelf_drop_db = float(10 * np.log10(power_mid_high / power_ultra))
+            ultrasonic_cutoff = bool(shelf_drop_db >= 25.0 and rolloff_95 < 18000.0)
+            high_freq_slope = round(float(shelf_drop_db), 2)
+
             # 4. Phân tích thành phần sóng hài toàn bài (HPSS Harmonic-Percussive Sound Separation)
             mono_harm, mono_perc = librosa.effects.hpss(mono_y)
             harm_power = np.sum(mono_harm**2) + 1e-12
@@ -399,6 +474,8 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 is_studio_autotune=pitch_res.get("is_studio_autotune", False),
                 stem_bleed_score=stem_bleed_res["stem_bleed_score"],
                 stem_bleed_detected=stem_bleed_res["stem_bleed_detected"],
+                ultrasonic_cutoff_detected=ultrasonic_cutoff,
+                high_freq_rolloff_slope=high_freq_slope,
             )
 
             # 7. Vẽ biểu đồ Forensic 3 tầng (Full Mix + Harmonic Vocal HPSS + Fourier Fakeprint)

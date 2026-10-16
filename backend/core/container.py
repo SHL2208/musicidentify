@@ -22,6 +22,7 @@ from .config import (
     BATCH_SLEEP_INTERVAL,
     DEFAULT_GEMINI_MODEL,
     GEMINI_API_KEYS,
+    GEMINI_FALLBACK_MODELS,
     OUTPUT_DIR,
     TEMP_DIR,
     get_ffmpeg_binary,
@@ -52,6 +53,7 @@ class AppContainer:
         self,
         api_keys: list[str] | None = None,
         default_model: str | None = None,
+        fallback_models: list[str] | None = None,
         temp_dir: Path | None = None,
         output_dir: Path | None = None,
         custom_classifier: IAIClassifier | None = None,
@@ -74,7 +76,9 @@ class AppContainer:
             fakeprint_detector=self.fakeprint_detector, storage_repo=self.storage_repository
         )
         self.classifier: IAIClassifier = custom_classifier or GeminiClassifierService(
-            api_keys=api_keys or GEMINI_API_KEYS, model_name=default_model or DEFAULT_GEMINI_MODEL
+            api_keys=api_keys or GEMINI_API_KEYS,
+            model_name=default_model or DEFAULT_GEMINI_MODEL,
+            fallback_models=fallback_models or GEMINI_FALLBACK_MODELS,
         )
         self.resolver: IInputResolver = InputResolverService()
         self.report_service: IReportService = ReportService(report_repo=self.report_repository)
@@ -111,13 +115,24 @@ _container_instance: AppContainer | None = None
 def get_container(
     api_keys: list[str] | None = None,
     default_model: str | None = None,
+    fallback_models: list[str] | None = None,
     custom_classifier: IAIClassifier | None = None,
     force_new: bool = False,
 ) -> AppContainer:
     """Singleton getter / factory cho Dependency Injection Container."""
     global _container_instance
-    if _container_instance is None or force_new or custom_classifier or api_keys or default_model:
+    if (
+        _container_instance is None
+        or force_new
+        or custom_classifier
+        or api_keys
+        or default_model
+        or fallback_models
+    ):
         _container_instance = AppContainer(
-            api_keys=api_keys, default_model=default_model, custom_classifier=custom_classifier
+            api_keys=api_keys,
+            default_model=default_model,
+            fallback_models=fallback_models,
+            custom_classifier=custom_classifier,
         )
     return _container_instance

@@ -74,6 +74,7 @@ def load_testcase_dataset(
     note_idx = -1
     song_type_idx = -1
     release_date_idx = -1
+    distributor_idx = -1
 
     for idx, h in enumerate(headers):
         h_low = h.lower()
@@ -91,6 +92,8 @@ def load_testcase_dataset(
             song_type_idx = idx
         elif "release" in h_low or "ngày phát hành" in h_low:
             release_date_idx = idx
+        elif "distributor" in h_low or "nhà phân phối" in h_low:
+            distributor_idx = idx
 
     if title_idx == -1:
         title_idx = 1 if len(headers) > 1 else 0
@@ -121,6 +124,12 @@ def load_testcase_dataset(
             else ""
         )
 
+        distributor = (
+            str(r[distributor_idx]).strip()
+            if (distributor_idx != -1 and r[distributor_idx] is not None)
+            else ""
+        )
+
         ai_val = (
             str(r[ai_col_idx]).strip().lower()
             if (ai_col_idx != -1 and r[ai_col_idx] is not None)
@@ -141,6 +150,7 @@ def load_testcase_dataset(
                 "note": note,
                 "song_type": song_type,
                 "release_date": release_date,
+                "distributor": distributor,
                 "row_idx": r_idx,
             }
         )
@@ -218,6 +228,7 @@ def run_benchmark(
             track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
             track.song_type = item.get("song_type") or ""
             track.release_date = str(item.get("release_date") or "")
+            track.distributor = str(item.get("distributor") or "")
             is_verified = track.is_verified_match is not False
             if not is_verified:
                 unverified_matches += 1
@@ -276,7 +287,7 @@ def run_benchmark(
                     "verdict_label": res.verdict_label,
                     "confidence_score": f"{res.confidence_score * 100:.1f}%",
                     "suspected_engine": res.suspected_engine,
-                    "source_url": res.source_url or "",
+                    "source_url": res.source_url or getattr(track, "resolved_url", "") or "",
                     "reasons": " | ".join(res.reasons or []),
                     "error": "",
                 }
@@ -337,7 +348,7 @@ def run_benchmark(
                         "verdict_label": "LỖI HỆ THỐNG",
                         "confidence_score": "0%",
                         "suspected_engine": "N/A",
-                        "source_url": "",
+                        "source_url": getattr(track, "resolved_url", "") if "track" in locals() and track and track.resolved_url else "",
                         "reasons": str(e),
                         "error": str(e),
                     }
@@ -481,7 +492,10 @@ def export_audit_excel(metrics: dict[str, Any], results: list[dict[str, Any]]) -
         summary_rows = [
             {"Chỉ số": "Tổng số bài mẫu thành công", "Giá trị": metrics["total_samples"]},
             {"Chỉ số": "Số bài thành công", "Giá trị": metrics["evaluated_successfully"]},
-            {"Chỉ số": "Số bài gặp sự cố (Đã nạp bù)", "Giá trị": metrics.get("replaced_errors_count", metrics["errors"])},
+            {
+                "Chỉ số": "Số bài gặp sự cố (Đã nạp bù)",
+                "Giá trị": metrics.get("replaced_errors_count", metrics["errors"]),
+            },
             {
                 "Chỉ số": "Số bài sai lệch nguồn âm thanh (Unverified)",
                 "Giá trị": metrics.get("unverified_matches", 0),

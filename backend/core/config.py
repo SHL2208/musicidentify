@@ -72,10 +72,9 @@ AUDIO_SAMPLE_OFFSET = int(os.getenv("AUDIO_SAMPLE_OFFSET", "45"))
 BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "3.0"))
 
 # Media Cloud Storage Configuration
-CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = (
-    os.getenv("CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD", "true").strip().lower()
-    in ("true", "1", "yes")
-)
+CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = os.getenv(
+    "CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD", "true"
+).strip().lower() in ("true", "1", "yes")
 
 # Server / API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
@@ -122,4 +121,3 @@ def get_cookie_file_path() -> Path | None:
             return candidate
 
     return None
-

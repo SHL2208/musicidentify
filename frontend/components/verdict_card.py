@@ -44,7 +44,8 @@ def render_verdict_card(result: DetectionResult):
         tier_title = "ERROR (Lỗi thẩm định)"
         desc = "Có lỗi kỹ thuật xảy ra trong quá trình xử lý bài hát này."
 
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="{box_class}">
         <div class="verdict-title" style="color: {title_color};">{icon} {tier_title}</div>
         <div style="font-size: 1.15rem; font-weight: 700; margin-top: 0.3rem;">
@@ -53,4 +54,6 @@ def render_verdict_card(result: DetectionResult):
         <div class="badge-engine">Mô hình nghi vấn: {result.suspected_engine}</div>
         <div style="margin-top: 0.8rem; font-size: 0.95rem; color: #CBD5E1;">{desc}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )

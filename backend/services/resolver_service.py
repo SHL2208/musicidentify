@@ -772,7 +772,9 @@ class InputResolverService(IInputResolver):
                         raw_query=q,
                         input_type=input_type,
                         track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
-                        resolved_url=q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None,
+                        resolved_url=q
+                        if input_type in (InputType.URL, InputType.LOCAL_FILE)
+                        else None,
                     )
                 )
             return tracks
@@ -801,7 +803,18 @@ class InputResolverService(IInputResolver):
 
         for col in df.columns:
             c_low = str(col).strip().lower()
-            if any(k in c_low for k in ["url", "link", "đường dẫn", "liên kết", "youtube", "source_url", "webpage"]):
+            if any(
+                k in c_low
+                for k in [
+                    "url",
+                    "link",
+                    "đường dẫn",
+                    "liên kết",
+                    "youtube",
+                    "source_url",
+                    "webpage",
+                ]
+            ):
                 if url_col is None:
                     url_col = col
             elif any(k in c_low for k in ["tên bài", "tiêu đề", "song title", "track", "title"]):
@@ -823,21 +836,43 @@ class InputResolverService(IInputResolver):
                         raw_query=q,
                         input_type=input_type,
                         track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
-                        resolved_url=q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None,
+                        resolved_url=q
+                        if input_type in (InputType.URL, InputType.LOCAL_FILE)
+                        else None,
                     )
                 )
             return tracks
 
         tracks = []
         for _, row in df.iterrows():
-            raw_u = str(row[url_col]).strip() if (url_col is not None and pd.notna(row[url_col])) else ""
-            raw_t = str(row[title_col]).strip() if (title_col is not None and pd.notna(row[title_col])) else ""
-            raw_a = str(row[artist_col]).strip() if (artist_col is not None and pd.notna(row[artist_col])) else ""
+            raw_u = (
+                str(row[url_col]).strip()
+                if (url_col is not None and pd.notna(row[url_col]))
+                else ""
+            )
+            raw_t = (
+                str(row[title_col]).strip()
+                if (title_col is not None and pd.notna(row[title_col]))
+                else ""
+            )
+            raw_a = (
+                str(row[artist_col]).strip()
+                if (artist_col is not None and pd.notna(row[artist_col]))
+                else ""
+            )
 
             if not raw_u and not raw_t:
                 continue
 
-            resolved_u = raw_u if (raw_u.startswith("http://") or raw_u.startswith("https://") or Path(raw_u).exists()) else None
+            resolved_u = (
+                raw_u
+                if (
+                    raw_u.startswith("http://")
+                    or raw_u.startswith("https://")
+                    or Path(raw_u).exists()
+                )
+                else None
+            )
             effective_title = raw_t or (Path(raw_u).stem if raw_u else "")
             q = raw_u if resolved_u else (f"{raw_t} {raw_a}".strip() if raw_a else raw_t)
             input_type = self.detect_input_type(q)
@@ -849,7 +884,8 @@ class InputResolverService(IInputResolver):
                     input_type=input_type,
                     track_title=effective_title,
                     artist=raw_a or None,
-                    resolved_url=resolved_u or (q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None),
+                    resolved_url=resolved_u
+                    or (q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None),
                 )
             )
         return tracks

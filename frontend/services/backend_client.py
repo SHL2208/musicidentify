@@ -15,10 +15,7 @@ class BackendClient:
 
     def __init__(self, api_key_override: str | None = None, model_override: str | None = None):
         api_keys = [api_key_override] if api_key_override else None
-        self.container = get_container(
-            api_keys=api_keys,
-            default_model=model_override
-        )
+        self.container = get_container(api_keys=api_keys, default_model=model_override)
         self.track_controller = self.container.track_controller
         self.batch_controller = self.container.batch_controller
         self.report_controller = self.container.report_controller
@@ -35,7 +32,8 @@ class BackendClient:
         self,
         queries: list[str],
         model_override: str | None = None,
-        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None] | None = None
+        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
+        | None = None,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ danh sách queries."""
         req = BatchDetectRequest(queries=queries, model_override=model_override)
@@ -48,10 +46,13 @@ class BackendClient:
         self,
         file_path: Path,
         model_override: str | None = None,
-        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None] | None = None
+        on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
+        | None = None,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ tệp (.txt, .csv, .xlsx)."""
-        resp = self.batch_controller.process_file(file_path, model_override=model_override, on_progress=on_progress)
+        resp = self.batch_controller.process_file(
+            file_path, model_override=model_override, on_progress=on_progress
+        )
         if not resp.success or resp.data is None:
             raise RuntimeError(resp.error or resp.message)
         return resp.data

@@ -83,22 +83,16 @@ def get_dynamic_catalog() -> tuple[list[str], list[str], list[tuple[str, str]]]:
                 ).all()
 
                 whitelist = [
-                    d.name.lower()
-                    for d in dist_records
-                    if d.catalog_type == "HUMAN_WHITELIST"
+                    d.name.lower() for d in dist_records if d.catalog_type == "HUMAN_WHITELIST"
                 ]
                 ai_dist = [
-                    d.name.lower()
-                    for d in dist_records
-                    if d.catalog_type == "AI_DISTRIBUTOR"
+                    d.name.lower() for d in dist_records if d.catalog_type == "AI_DISTRIBUTOR"
                 ]
                 ai_artists = [(a.regex_pattern, a.project_name) for a in artist_records]
 
                 merged_wl = list(dict.fromkeys(_DEFAULT_HUMAN_WHITELIST + whitelist))
                 merged_ai = list(dict.fromkeys(_DEFAULT_PURE_AI_DISTRIBUTORS + ai_dist))
-                merged_artists = (
-                    ai_artists if ai_artists else list(_DEFAULT_AI_ARTIST_REGEXES)
-                )
+                merged_artists = ai_artists if ai_artists else list(_DEFAULT_AI_ARTIST_REGEXES)
 
                 _catalog_cache["whitelist"] = merged_wl
                 _catalog_cache["ai_distributors"] = merged_ai
@@ -281,9 +275,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             or ""
         ).lower()
 
-        human_distributor_whitelist, pure_ai_distributors, ai_artist_regexes = (
-            get_dynamic_catalog()
-        )
+        human_distributor_whitelist, pure_ai_distributors, ai_artist_regexes = get_dynamic_catalog()
         is_whitelisted_distributor = any(
             w in distributor_lower for w in human_distributor_whitelist
         )
@@ -320,16 +312,18 @@ class SignalAnalyzerService(ISignalAnalyzer):
         """
         try:
             target_sr = 16000
-            if sr != target_sr:
-                y_vocal = librosa.resample(mono_harm, orig_sr=sr, target_sr=target_sr)
+            # Chọn phân đoạn 15-20s tiêu biểu ở giữa để tối ưu tốc độ CPU trước khi resample
+            total_len = len(mono_harm)
+            if total_len > sr * 20:
+                start = (total_len - sr * 20) // 2
+                raw_seg = mono_harm[start : start + sr * 20]
             else:
-                y_vocal = mono_harm
+                raw_seg = mono_harm
 
-            # Chọn phân đoạn 15-20s tiêu biểu ở giữa để tối ưu tốc độ CPU
-            total_len = len(y_vocal)
-            if total_len > target_sr * 20:
-                start = (total_len - target_sr * 20) // 2
-                y_vocal = y_vocal[start : start + target_sr * 20]
+            if sr != target_sr:
+                y_vocal = librosa.resample(raw_seg, orig_sr=sr, target_sr=target_sr)
+            else:
+                y_vocal = raw_seg
 
             f0 = librosa.yin(
                 y_vocal, fmin=80, fmax=550, sr=target_sr, frame_length=1024, hop_length=256
@@ -362,9 +356,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
             # Nếu cao độ phẳng (rigidity >= 0.35 hoặc jitter < 0.015) nhưng Formant chuyển động
             # linh hoạt (formant_var >= 300.0) do khẩu hình phát âm tự nhiên -> Auto-Tune phòng thu của người
-            is_studio_autotune = ((rigidity_ratio >= 0.35 or jitter < 0.015) and formant_var >= 300.0)
-            is_anomaly = ((rigidity_ratio >= 0.40 or (jitter < 0.015 and rigidity_ratio > 0.32))
-                and not is_studio_autotune)
+            is_studio_autotune = (rigidity_ratio >= 0.35 or jitter < 0.015) and formant_var >= 300.0
+            is_anomaly = (
+                rigidity_ratio >= 0.40 or (jitter < 0.015 and rigidity_ratio > 0.32)
+            ) and not is_studio_autotune
 
             if is_anomaly:
                 label = "Synthetic / Quantized Latent Grid"
@@ -428,7 +423,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             corr = float(corr_matrix[0, 1])
             bleed_score = float(max(0.0, corr)) if not np.isnan(corr) else 0.0
 
-            is_bleed = (bleed_score >= 0.40)
+            is_bleed = bleed_score >= 0.40
             return {
                 "stem_bleed_score": round(bleed_score, 3),
                 "stem_bleed_detected": is_bleed,
@@ -468,7 +463,8 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 stereo_corr = 1.0
 
             # 2. Phân tích phổ tần STFT và Spectral Rolloff (1-Pass STFT)
-            stft = np.abs(librosa.stft(mono_y, n_fft=2048, hop_length=512))
+            D = librosa.stft(mono_y, n_fft=2048, hop_length=512)
+            stft = np.abs(D)
             freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
             rolloff_95 = float(
@@ -494,14 +490,16 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 float(np.mean(stft[mask_ultra, :] ** 2)) if np.any(mask_ultra) else 0.0
             ) + 1e-12
             shelf_drop_db = float(10 * np.log10(power_mid_high / power_ultra))
-            ultrasonic_cutoff = (shelf_drop_db >= 25.0 and rolloff_95 < 18000.0)
+            ultrasonic_cutoff = shelf_drop_db >= 25.0 and rolloff_95 < 18000.0
             high_freq_slope = round(float(shelf_drop_db), 2)
 
             # 4. Phân tích thành phần sóng hài toàn bài (HPSS Harmonic-Percussive Sound Separation)
-            mono_harm, mono_perc = librosa.effects.hpss(mono_y)
-            harm_power = np.sum(mono_harm**2) + 1e-12
-            perc_power = np.sum(mono_perc**2) + 1e-12
+            H, P = librosa.decompose.hpss(D)
+            harm_power = float(np.sum(np.abs(H) ** 2)) + 1e-12
+            perc_power = float(np.sum(np.abs(P) ** 2)) + 1e-12
             harmonic_ratio = float(harm_power / (harm_power + perc_power))
+            mono_harm = librosa.istft(H, hop_length=512, length=len(mono_y))
+            mono_perc = librosa.istft(P, hop_length=512, length=len(mono_y))
 
             # 4b. Phân tích vi biến thiên cao độ thanh âm (Pitch Micro-Jitter & Latent Rigidity)
             pitch_res = self._compute_pitch_jitter(mono_harm, sr=sr)
@@ -556,6 +554,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 metrics=metrics,
                 fakeprint_res=fakeprint_res,
                 stft_mag=stft,
+                harm_stft_mag=np.abs(H),
             )
 
             return metrics, image_path
@@ -582,6 +581,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         metrics: AcousticMetrics,
         fakeprint_res: dict[str, Any],
         stft_mag: np.ndarray | None = None,
+        harm_stft_mag: np.ndarray | None = None,
     ) -> Path | None:
         """Tạo biểu đồ phổ hình 3 tầng chuyên nghiệp chống hiện tượng che mờ âm học (Acoustic Masking)."""
         out_image_path = self.temp_dir / f"{audio_stem}_forensic.png"
@@ -615,8 +615,15 @@ class SignalAnalyzerService(ISignalAnalyzer):
             cbar1.ax.tick_params(colors="#94A3B8")
 
             # TẦNG 2: Mel-Spectrogram sóng hài (Harmonic Vocal - Đã khử trống lân/bộ gõ qua HPSS)
-            target_harm = mono_harm if mono_harm is not None else mono_y
-            S_harm = librosa.feature.melspectrogram(y=target_harm, sr=sr, n_mels=128, fmax=sr // 2)
+            if harm_stft_mag is not None:
+                S_harm = librosa.feature.melspectrogram(
+                    S=harm_stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2
+                )
+            else:
+                target_harm = mono_harm if mono_harm is not None else mono_y
+                S_harm = librosa.feature.melspectrogram(
+                    y=target_harm, sr=sr, n_mels=128, fmax=sr // 2
+                )
             S_harm_dB = librosa.power_to_db(S_harm, ref=np.max)
             img2 = librosa.display.specshow(
                 S_harm_dB, x_axis="time", y_axis="mel", sr=sr, fmax=sr // 2, ax=ax2, cmap="inferno"

@@ -48,6 +48,7 @@ sample_songs.xlsx
 testcase.xlsx
 
 # IDEs
+.agents/
 .vscode/
 .idea/
 *.swp

@@ -15,9 +15,10 @@ def render_sidebar():
         model_selected = st.selectbox(
             "Mô hình AI Thẩm định:",
             options=AVAILABLE_MODELS,
-            index=AVAILABLE_MODELS.index(
-                DEFAULT_GEMINI_MODEL) if DEFAULT_GEMINI_MODEL in AVAILABLE_MODELS else 0,
-            help="gemini-3.8-flash xịn nhất, 3.5-flash-lite nhanh nhất"
+            index=AVAILABLE_MODELS.index(DEFAULT_GEMINI_MODEL)
+            if DEFAULT_GEMINI_MODEL in AVAILABLE_MODELS
+            else 0,
+            help="gemini-3.8-flash xịn nhất, 3.5-flash-lite nhanh nhất",
         )
         st.session_state.model_name = model_selected
 

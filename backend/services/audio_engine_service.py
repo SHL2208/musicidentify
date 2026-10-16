@@ -62,7 +62,10 @@ class AudioEngineService(IAudioEngine):
                 }
             else:
                 url_to_download = track.resolved_url
-                if not url_to_download and track.input_type not in (InputType.LOCAL_FILE, InputType.URL):
+                if not url_to_download and track.input_type not in (
+                    InputType.LOCAL_FILE,
+                    InputType.URL,
+                ):
                     from ..core.container import get_container
 
                     res_svc = get_container().resolver

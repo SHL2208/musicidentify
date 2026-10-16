@@ -14,10 +14,12 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 def clean_excel_text(val: Any) -> Any:
-    """Lọc bỏ ANSI escape codes và các ký tự điều khiển không hợp lệ trong Excel XML."""
+    """Lọc bỏ ANSI escape codes, các ký tự điều khiển không hợp lệ và phòng chống CSV/Excel Formula Injection."""
     if isinstance(val, str):
         val = ANSI_ESCAPE_RE.sub("", val)
         val = ILLEGAL_CHARACTERS_RE.sub("", val)
+        if val and val[0] in ("=", "+", "-", "@"):
+            val = f"'{val}"
     return val
 
 
@@ -39,9 +41,10 @@ class FileReportRepository(IReportRepository):
 
             if hasattr(df, "map"):
                 df = df.map(clean_excel_text)
-            elif hasattr(df, "applymap"):
-                applymap_fn = df.applymap
-                df = applymap_fn(clean_excel_text)
+            else:
+                legacy_applymap = getattr(df, "applymap", None)
+                if callable(legacy_applymap):
+                    df = legacy_applymap(clean_excel_text)
 
             if format.lower() == "csv":
                 out_path = self.output_dir / f"ai_music_report_{timestamp}.csv"

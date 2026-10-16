@@ -348,7 +348,9 @@ def run_benchmark(
                         "verdict_label": "LỖI HỆ THỐNG",
                         "confidence_score": "0%",
                         "suspected_engine": "N/A",
-                        "source_url": getattr(track, "resolved_url", "") if "track" in locals() and track and track.resolved_url else "",
+                        "source_url": getattr(track, "resolved_url", "")
+                        if "track" in locals() and track and track.resolved_url
+                        else "",
                         "reasons": str(e),
                         "error": str(e),
                     }

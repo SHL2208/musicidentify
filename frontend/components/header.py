@@ -6,5 +6,5 @@ def render_header():
     st.markdown('<div class="main-header">🎵 AI MUSIC DETECTOR AGENT</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="sub-header">Hệ thống Giám định Âm học Đa Tầng (Deep Audio Forensics + Fourier Fakeprint ISMIR 2025 + Gemini Flash Lite)</div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )

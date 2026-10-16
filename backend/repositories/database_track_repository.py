@@ -241,7 +241,9 @@ class DatabaseTrackRepository(ITrackRepository):
                     public_spec_url = str(result.spectrogram_image_path)
 
                     if spec_path.exists() and not public_spec_url.startswith("http"):
-                        uploaded_url = self._storage_service.upload_file(spec_path, bucket="spectrograms")
+                        uploaded_url = self._storage_service.upload_file(
+                            spec_path, bucket="spectrograms"
+                        )
                         if uploaded_url.startswith("http"):
                             public_spec_url = uploaded_url
                             result.spectrogram_image_path = public_spec_url
@@ -266,7 +268,9 @@ class DatabaseTrackRepository(ITrackRepository):
                 audio_sample_path = TEMP_DIR / f"{result.track_id}_multisegment.wav"
                 if audio_sample_path.exists():
                     file_sz = audio_sample_path.stat().st_size
-                    uploaded_audio_url = self._storage_service.upload_file(audio_sample_path, bucket="audio-samples")
+                    uploaded_audio_url = self._storage_service.upload_file(
+                        audio_sample_path, bucket="audio-samples"
+                    )
                     audio_asset_id = f"asset_audio_{result.track_id}"
                     existing_audio_asset = session.get(MediaAssetModel, audio_asset_id)
                     if existing_audio_asset:
@@ -371,9 +375,7 @@ class DatabaseTrackRepository(ITrackRepository):
             logger.warning(f"Lỗi lấy ai_artist_projects catalog: {e}")
             return []
 
-    def save_benchmark_run(
-        self, summary: dict[str, Any], results: list[dict[str, Any]]
-    ) -> str:
+    def save_benchmark_run(self, summary: dict[str, Any], results: list[dict[str, Any]]) -> str:
         """Lưu toàn bộ đợt chạy Benchmark vào CSDL."""
         run_id = f"bm_{uuid.uuid4().hex[:12]}"
         try:
@@ -408,7 +410,9 @@ class DatabaseTrackRepository(ITrackRepository):
                         artist=str(r.get("Ca sĩ") or r.get("artist") or ""),
                         ground_truth=str(r.get("Thực tế") or r.get("ground_truth") or ""),
                         prediction=str(r.get("Dự đoán") or r.get("prediction") or ""),
-                        classification_type=str(r.get("Phân loại") or r.get("classification_type") or ""),
+                        classification_type=str(
+                            r.get("Phân loại") or r.get("classification_type") or ""
+                        ),
                         is_correct=str(r.get("Kết quả") or r.get("is_correct") or ""),
                         source_url=str(r.get("Nguồn link") or r.get("source_url") or ""),
                     )

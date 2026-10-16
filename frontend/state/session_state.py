@@ -1,4 +1,3 @@
-
 import streamlit as st
 
 from backend.core.config import DEFAULT_GEMINI_MODEL

@@ -11,5 +11,5 @@ __all__ = [
     "render_verdict_card",
     "render_metrics_display",
     "render_spectrogram_viewer",
-    "render_batch_view"
+    "render_batch_view",
 ]

@@ -24,7 +24,10 @@ def render_benchmark_view():
     col1, col2 = st.columns([2, 1])
     with col1:
         default_file = str(BASE_DIR / "testcase.xlsx")
-        file_options = ["Sử dụng file có sẵn trong project (testcase.xlsx)", "Tải lên file Excel khác"]
+        file_options = [
+            "Sử dụng file có sẵn trong project (testcase.xlsx)",
+            "Tải lên file Excel khác",
+        ]
         file_source = st.radio("Nguồn file test sample:", file_options, horizontal=True)
 
         selected_file_path = default_file
@@ -50,12 +53,20 @@ def render_benchmark_view():
     # Cấu hình lấy mẫu
     c_sample, c_balance, c_seed = st.columns([2, 2, 1])
     with c_sample:
-        sample_mode = st.radio("Chế độ kiểm thử:", ["Lấy mẫu nhanh (Stratified Sample)", "Toàn bộ danh sách (Full)"], horizontal=True)
+        sample_mode = st.radio(
+            "Chế độ kiểm thử:",
+            ["Lấy mẫu nhanh (Stratified Sample)", "Toàn bộ danh sách (Full)"],
+            horizontal=True,
+        )
         if sample_mode == "Lấy mẫu nhanh (Stratified Sample)":
-            sample_count = st.slider("Số lượng bài hát muốn thẩm định:", min_value=4, max_value=100, value=10, step=2)
+            sample_count = st.slider(
+                "Số lượng bài hát muốn thẩm định:", min_value=4, max_value=100, value=10, step=2
+            )
         else:
             sample_count = None
-            st.warning("⚠️ Chạy toàn bộ (>1,600 bài) sẽ mất vài tiếng và tiêu tốn nhiều request YouTube/Gemini!")
+            st.warning(
+                "⚠️ Chạy toàn bộ (>1,600 bài) sẽ mất vài tiếng và tiêu tốn nhiều request YouTube/Gemini!"
+            )
 
     with c_balance:
         st.write("")
@@ -72,13 +83,17 @@ def render_benchmark_view():
                 dataset = load_testcase_dataset(file_path=selected_file_path, sheet_name=sheet_name)
 
             if sample_mode == "Lấy mẫu nhanh (Stratified Sample)":
-                samples = select_samples(dataset, sample_size=sample_count, balanced=balanced, seed=seed_val)
+                samples = select_samples(
+                    dataset, sample_size=sample_count, balanced=balanced, seed=seed_val
+                )
             else:
                 samples = dataset
 
             s_ai = sum(1 for s in samples if s["gt_is_ai"])
             s_human = sum(1 for s in samples if not s["gt_is_ai"])
-            st.success(f"Đã chọn {len(samples)} bài để thẩm định đối soát (AI: {s_ai} | Con người: {s_human})")
+            st.success(
+                f"Đã chọn {len(samples)} bài để thẩm định đối soát (AI: {s_ai} | Con người: {s_human})"
+            )
 
             # Tiến trình chạy
             progress_bar = st.progress(0.0)
@@ -94,16 +109,20 @@ def render_benchmark_view():
             for i, item in enumerate(samples, 1):
                 pct = i / len(samples)
                 progress_bar.progress(pct)
-                status_box.text(f"[{i}/{len(samples)}] Đang thẩm định: '{item['query']}' (Ground Truth: {item['gt_label']})...")
+                status_box.text(
+                    f"[{i}/{len(samples)}] Đang thẩm định: '{item['query']}' (Ground Truth: {item['gt_label']})..."
+                )
 
                 track = None
                 try:
                     track = resolver.resolve_track(item["query"])
-                    res = detection_service.detect_single(track, model_override=st.session_state.get("model_name"))
+                    res = detection_service.detect_single(
+                        track, model_override=st.session_state.get("model_name")
+                    )
 
                     pred_is_ai = res.is_ai
                     pred_label = "AI" if pred_is_ai else "HUMAN"
-                    is_correct = (pred_is_ai == item["gt_is_ai"])
+                    is_correct = pred_is_ai == item["gt_is_ai"]
 
                     if item["gt_is_ai"] and pred_is_ai:
                         m_type = "TP (Đoán đúng AI)"
@@ -118,36 +137,42 @@ def render_benchmark_view():
                         m_type = "FN (Bỏ sót AI)"
                         fn += 1
 
-                    results.append({
-                        "Mã bài": item["media_id"],
-                        "Tên bài hát": item["title"],
-                        "Ca sĩ": item["artist"],
-                        "Nguồn link": res.source_url or getattr(track, "resolved_url", "N/A") or "N/A",
-                        "Thực tế": item["gt_label"],
-                        "Dự đoán": pred_label,
-                        "Kết quả": "✅ ĐÚNG" if is_correct else "❌ SAI",
-                        "Phân loại": m_type,
-                        "Nhãn chi tiết": res.verdict_label,
-                        "Độ tin cậy": f"{res.confidence_score*100:.1f}%",
-                        "Nghi vấn nền tảng": res.suspected_engine,
-                        "Luận cứ": " | ".join(res.reasons or [])[:120]
-                    })
+                    results.append(
+                        {
+                            "Mã bài": item["media_id"],
+                            "Tên bài hát": item["title"],
+                            "Ca sĩ": item["artist"],
+                            "Nguồn link": res.source_url
+                            or getattr(track, "resolved_url", "N/A")
+                            or "N/A",
+                            "Thực tế": item["gt_label"],
+                            "Dự đoán": pred_label,
+                            "Kết quả": "✅ ĐÚNG" if is_correct else "❌ SAI",
+                            "Phân loại": m_type,
+                            "Nhãn chi tiết": res.verdict_label,
+                            "Độ tin cậy": f"{res.confidence_score * 100:.1f}%",
+                            "Nghi vấn nền tảng": res.suspected_engine,
+                            "Luận cứ": " | ".join(res.reasons or [])[:120],
+                        }
+                    )
                 except Exception as ex:
                     errors += 1
-                    results.append({
-                        "Mã bài": item["media_id"],
-                        "Tên bài hát": item["title"],
-                        "Ca sĩ": item["artist"],
-                        "Nguồn link": getattr(track, "resolved_url", "N/A") if track else "N/A",
-                        "Thực tế": item["gt_label"],
-                        "Dự đoán": "ERROR",
-                        "Kết quả": "❌ LỖI",
-                        "Phân loại": "ERROR",
-                        "Nhãn chi tiết": "Lỗi kỹ thuật",
-                        "Độ tin cậy": "0%",
-                        "Nghi vấn nền tảng": "N/A",
-                        "Luận cứ": str(ex)
-                    })
+                    results.append(
+                        {
+                            "Mã bài": item["media_id"],
+                            "Tên bài hát": item["title"],
+                            "Ca sĩ": item["artist"],
+                            "Nguồn link": getattr(track, "resolved_url", "N/A") if track else "N/A",
+                            "Thực tế": item["gt_label"],
+                            "Dự đoán": "ERROR",
+                            "Kết quả": "❌ LỖI",
+                            "Phân loại": "ERROR",
+                            "Nhãn chi tiết": "Lỗi kỹ thuật",
+                            "Độ tin cậy": "0%",
+                            "Nghi vấn nền tảng": "N/A",
+                            "Luận cứ": str(ex),
+                        }
+                    )
 
             progress_bar.progress(1.0)
             status_box.text("🎉 Đã hoàn thành đối soát toàn bộ tập mẫu!")
@@ -164,8 +189,15 @@ def render_benchmark_view():
                 "total_samples": len(samples),
                 "evaluated_successfully": evaluated_total,
                 "errors": errors,
-                "TP": tp, "TN": tn, "FP": fp, "FN": fn,
-                "accuracy": acc, "precision": prec, "recall": rec, "specificity": spec, "f1_score": f1
+                "TP": tp,
+                "TN": tn,
+                "FP": fp,
+                "FN": fn,
+                "accuracy": acc,
+                "precision": prec,
+                "recall": rec,
+                "specificity": spec,
+                "f1_score": f1,
             }
 
             st.session_state["benchmark_summary"] = benchmark_summary
@@ -178,7 +210,9 @@ def render_benchmark_view():
             # Tự động đồng bộ lịch sử đợt chấm điểm lên CSDL Supabase Cloud
             if hasattr(container.track_repository, "save_benchmark_run"):
                 try:
-                    run_id = container.track_repository.save_benchmark_run(benchmark_summary, results)
+                    run_id = container.track_repository.save_benchmark_run(
+                        benchmark_summary, results
+                    )
                     st.toast(f"☁️ Đã lưu đợt Benchmark '{run_id}' lên Supabase Cloud!", icon="✅")
                 except Exception as db_save_err:
                     st.warning(f"Không thể lưu đợt benchmark vào Cloud DB: {db_save_err}")
@@ -196,10 +230,10 @@ def render_benchmark_view():
 
         # Thẻ chỉ số chính
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("⭐ Accuracy (Độ chính xác)", f"{bm['accuracy']*100:.1f}%")
-        m2.metric("🎯 Precision (Tránh bắt oan)", f"{bm['precision']*100:.1f}%")
-        m3.metric("📡 Recall (Độ nhạy bắt AI)", f"{bm['recall']*100:.1f}%")
-        m4.metric("⚖️ F1-Score (Cân bằng)", f"{bm['f1_score']*100:.1f}%")
+        m1.metric("⭐ Accuracy (Độ chính xác)", f"{bm['accuracy'] * 100:.1f}%")
+        m2.metric("🎯 Precision (Tránh bắt oan)", f"{bm['precision'] * 100:.1f}%")
+        m3.metric("📡 Recall (Độ nhạy bắt AI)", f"{bm['recall'] * 100:.1f}%")
+        m4.metric("⚖️ F1-Score (Cân bằng)", f"{bm['f1_score'] * 100:.1f}%")
 
         # Ma trận nhầm lẫn
         st.markdown("#### 🔢 Ma Trận Nhầm Lẫn (Confusion Matrix)")
@@ -223,7 +257,7 @@ def render_benchmark_view():
                     data=f.read(),
                     file_name=Path(audit_path).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
                 )
 
     # Hiển thị lịch sử các lần chạy Benchmark từ Cloud DB (nếu có)
@@ -232,10 +266,20 @@ def render_benchmark_view():
         past_runs = container.track_repository.list_benchmark_runs(limit=10)
         if past_runs:
             st.divider()
-            with st.expander("📜 Xem Lịch Sử Các Đợt Chấm Điểm Trên Cloud (Supabase)", expanded=False):
+            with st.expander(
+                "📜 Xem Lịch Sử Các Đợt Chấm Điểm Trên Cloud (Supabase)", expanded=False
+            ):
                 df_history = pd.DataFrame(past_runs)
                 if not df_history.empty:
-                    cols_to_show = ["id", "total_samples", "accuracy", "precision", "recall", "f1_score", "created_at"]
+                    cols_to_show = [
+                        "id",
+                        "total_samples",
+                        "accuracy",
+                        "precision",
+                        "recall",
+                        "f1_score",
+                        "created_at",
+                    ]
                     existing_cols = [c for c in cols_to_show if c in df_history.columns]
                     st.dataframe(
                         df_history[existing_cols].rename(
@@ -246,9 +290,8 @@ def render_benchmark_view():
                                 "precision": "Precision",
                                 "recall": "Recall",
                                 "f1_score": "F1-Score",
-                                "created_at": "Thời gian chạy"
+                                "created_at": "Thời gian chạy",
                             }
                         ),
-                        use_container_width=True
+                        use_container_width=True,
                     )
-

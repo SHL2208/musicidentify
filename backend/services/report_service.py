@@ -95,14 +95,11 @@ class ReportService(IReportService):
         records: list[dict[str, Any]] = []
         for idx, r in enumerate(results):
             display_title = format_display_title(r)
-            url_str = (
-                (r.source_url or "").strip()
-                or (
-                    (r.raw_query or "").strip()
-                    if (r.raw_query or "").strip().startswith("http://")
-                    or (r.raw_query or "").strip().startswith("https://")
-                    else ""
-                )
+            url_str = (r.source_url or "").strip() or (
+                (r.raw_query or "").strip()
+                if (r.raw_query or "").strip().startswith("http://")
+                or (r.raw_query or "").strip().startswith("https://")
+                else ""
             )
             if not url_str:
                 url_str = "N/A"

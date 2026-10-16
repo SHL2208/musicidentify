@@ -15,9 +15,7 @@ class SupabaseStorageService:
     def __init__(self):
         raw_url = os.getenv("SUPABASE_URL", "").strip()
         # Chuẩn hóa Base URL: loại bỏ /rest/v1/ nếu người dùng vô tình copy thừa
-        self.supabase_url = (
-            raw_url.removesuffix("/rest/v1/").removesuffix("/rest/v1").rstrip("/")
-        )
+        self.supabase_url = raw_url.removesuffix("/rest/v1/").removesuffix("/rest/v1").rstrip("/")
         self.supabase_key = os.getenv("SUPABASE_KEY", "").strip()
         self.client = None
 
@@ -58,8 +56,12 @@ class SupabaseStorageService:
 
             # Lấy URL công khai
             public_url = self.client.storage.from_(bucket).get_public_url(file_name)
-            logger.info(f"Đã upload '{file_name}' lên Supabase Storage bucket '{bucket}': {public_url}")
+            logger.info(
+                f"Đã upload '{file_name}' lên Supabase Storage bucket '{bucket}': {public_url}"
+            )
             return public_url
         except Exception as e:
-            logger.warning(f"Lỗi khi upload lên Supabase Storage ({file_name}): {e}. Dùng file local.")
+            logger.warning(
+                f"Lỗi khi upload lên Supabase Storage ({file_name}): {e}. Dùng file local."
+            )
             return str(local_path)

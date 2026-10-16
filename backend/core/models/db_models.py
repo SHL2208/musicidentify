@@ -57,7 +57,9 @@ class DetectionResultModel(Base):
     __tablename__ = "detection_results"
 
     id = Column(String(64), primary_key=True)
-    track_id = Column(String(64), ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id = Column(
+        String(64), ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     is_ai = Column(Boolean, nullable=False, index=True)
     verdict_type = Column(String(30), nullable=False)
     verdict_label = Column(String(50), nullable=False)
@@ -84,7 +86,10 @@ class AcousticMetricsModel(Base):
 
     id = Column(String(64), primary_key=True)
     result_id = Column(
-        String(64), ForeignKey("detection_results.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64),
+        ForeignKey("detection_results.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sample_rate = Column(Integer, nullable=True)
     duration_sec = Column(Float, nullable=True)
@@ -113,7 +118,9 @@ class MediaAssetModel(Base):
     __tablename__ = "media_assets"
 
     id = Column(String(64), primary_key=True)
-    track_id = Column(String(64), ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True)
+    track_id = Column(
+        String(64), ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     asset_type = Column(String(30), nullable=False)  # 'AUDIO_SAMPLE', 'SPECTROGRAM_FORENSIC'
     file_path = Column(Text, nullable=False)
     public_url = Column(Text, nullable=True)
@@ -173,7 +180,9 @@ class BenchmarkRunModel(Base):
     confusion_matrix_image_url = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
-    items = relationship("BenchmarkItemModel", back_populates="benchmark_run", cascade="all, delete-orphan")
+    items = relationship(
+        "BenchmarkItemModel", back_populates="benchmark_run", cascade="all, delete-orphan"
+    )
 
 
 class BenchmarkItemModel(Base):

@@ -110,7 +110,19 @@ def is_derivative_or_remix_context(metadata: dict[str, Any] | None) -> bool:
         return True
 
     # Chỉ kiểm tra tags khi tag là nhãn thể loại đơn lẻ khớp chính xác
-    genre_tags = {"remix", "vinahouse", "edm", "slowed", "speed up", "sped up", "lofi", "lo-fi", "club mix", "drill", "nightcore"}
+    genre_tags = {
+        "remix",
+        "vinahouse",
+        "edm",
+        "slowed",
+        "speed up",
+        "sped up",
+        "lofi",
+        "lo-fi",
+        "club mix",
+        "drill",
+        "nightcore",
+    }
     tags = [str(t).strip().lower() for t in metadata.get("tags") or [] if t]
     return any(t in genre_tags for t in tags)
 

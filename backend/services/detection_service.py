@@ -42,10 +42,7 @@ class DetectionService(IDetectionService):
     def detect_single(self, track: TrackItem, model_override: str | None = None) -> DetectionResult:
         """Thực hiện toàn bộ quy trình nhận diện 1 bài hát từ A đến Z."""
         # 0. Phân giải URL và xác thực bài hát nếu track chưa có resolved_url hợp lệ
-        if (
-            not track.resolved_url
-            and track.input_type not in (InputType.LOCAL_FILE, InputType.URL)
-        ):
+        if not track.resolved_url and track.input_type not in (InputType.LOCAL_FILE, InputType.URL):
             try:
                 try:
                     resolved_item = self.resolver.resolve_track(
@@ -119,16 +116,17 @@ class DetectionService(IDetectionService):
                 metadata["match_score"] = track.match_score
 
             real_title = str(metadata.get("title") or "").strip()
-            if real_title and (
-                track.is_verified_match is True
-                or not track.track_title
-            ):
+            if real_title and (track.is_verified_match is True or not track.track_title):
                 track.track_title = real_title
 
             resolved_web_url = str(
                 metadata.get("webpage_url")
                 or metadata.get("original_url")
-                or (f"https://www.youtube.com/watch?v={metadata.get('id')}" if metadata.get("id") else "")
+                or (
+                    f"https://www.youtube.com/watch?v={metadata.get('id')}"
+                    if metadata.get("id")
+                    else ""
+                )
                 or metadata.get("url")
                 or ""
             ).strip()
@@ -153,7 +151,11 @@ class DetectionService(IDetectionService):
         source_url_val = (
             track.resolved_url
             or resolved_web_url
-            or (track.raw_query if track.raw_query and str(track.raw_query).startswith("http") else None)
+            or (
+                track.raw_query
+                if track.raw_query and str(track.raw_query).startswith("http")
+                else None
+            )
         )
         if not source_url_val and track.input_type == InputType.LOCAL_FILE:
             source_url_val = str(track.raw_query)
@@ -327,10 +329,16 @@ class DetectionService(IDetectionService):
             )
             result.is_ai = True
             if (
-                (metrics.fakeprint_score >= 0.50 and getattr(metrics, "stem_bleed_score", 0.0) >= 0.40)
+                (
+                    metrics.fakeprint_score >= 0.50
+                    and getattr(metrics, "stem_bleed_score", 0.0) >= 0.40
+                )
                 or (
                     has_low_rolloff_ai_deficiency
-                    and (metrics.fakeprint_score >= 0.24 or getattr(metrics, "ultrasonic_cutoff_detected", False))
+                    and (
+                        metrics.fakeprint_score >= 0.24
+                        or getattr(metrics, "ultrasonic_cutoff_detected", False)
+                    )
                 )
                 or (
                     getattr(metrics, "ultrasonic_cutoff_detected", False)

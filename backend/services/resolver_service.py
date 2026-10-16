@@ -594,8 +594,7 @@ class InputResolverService(IInputResolver):
             "remote_components": ["ejs:github"],
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web_safari", "web_embedded", "mweb"],
-                    "player_skip": ["webpage", "configs"],
+                    "player_client": ["web", "mweb"],
                 }
             },
         }
@@ -740,8 +739,7 @@ class InputResolverService(IInputResolver):
             "remote_components": ["ejs:github"],
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web_safari", "web_embedded", "mweb"],
-                    "player_skip": ["webpage", "configs"],
+                    "player_client": ["web", "mweb"],
                 }
             },
         }

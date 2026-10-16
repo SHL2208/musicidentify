@@ -164,18 +164,19 @@ class AudioEngineService(IAudioEngine):
         """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi và chống 403 Forbidden / bot block."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
-        # Chuỗi Fallback Client tối ưu cho Cloud/Datacenter (loại trừ TV vì TV client gây 'The page needs to be reloaded')
+        # Chuỗi Fallback Client: Ưu tiên client web dùng Cookies đăng nhập từ trình duyệt Desktop
+        # TUYỆT ĐỐI KHÔNG dùng web_embedded vì video âm nhạc bản quyền luôn chặn embed (lỗi 152)
         client_fallbacks = [
-            # 1. web_safari + web_embedded: Bỏ qua kiểm tra PO-token gắt gao, rất mượt trên Datacenter/Cloud
-            ["web_safari", "web_embedded"],
-            # 2. web_embedded: Trình nhúng, ít bị bot-detection chặn
-            ["web_embedded"],
-            # 3. mweb: Mobile web ít bị lỗi reload trang
+            # 1. web: Trình duyệt Desktop chính chủ (tận dụng 100% cookies của user)
+            ["web"],
+            # 2. web_creator: YouTube Creator Studio (dùng cookies, không bị giới hạn embed)
+            ["web_creator"],
+            # 3. mweb: Mobile web (hỗ trợ session cookies)
             ["mweb"],
-            # 4. default trừ TV (bỏ -tv để không dính lỗi player reload)
-            ["default", "-tv"],
-            # 5. ios + android kèm missing_pot
-            ["ios", "android"],
+            # 4. android_creator: API YouTube Studio Android
+            ["android_creator"],
+            # 5. android: Khách hàng Android tiêu chuẩn
+            ["android"],
             # 6. yt-dlp mặc định
             None,
         ]
@@ -194,6 +195,12 @@ class AudioEngineService(IAudioEngine):
         else:
             print("[AudioEngineService] ⚠️ CẢNH BÁO: Không có cookie YouTube. Cloud/Datacenter IP có thể bị YouTube chặn.")
 
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+
         last_exception = None
         for client_pref in client_fallbacks:
             ydl_opts: dict[str, Any] = {
@@ -208,12 +215,17 @@ class AudioEngineService(IAudioEngine):
                 "geo_bypass": True,
                 "retries": 3,
                 "socket_timeout": 20,
+                "user_agent": user_agent,
+                "http_headers": {
+                    "User-Agent": user_agent,
+                    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Referer": "https://www.youtube.com/",
+                },
                 "remote_components": ["ejs:github"],
             }
             extractor_args: dict[str, Any] = {
                 # QUAN TRỌNG: missing_pot giúp yt-dlp KHÔNG tự ý ẩn các định dạng khi thiếu PO-Token
                 "formats": ["missing_pot", "duplicate"],
-                "player_skip": ["webpage", "configs"],
             }
             if client_pref:
                 extractor_args["player_client"] = client_pref
@@ -223,6 +235,7 @@ class AudioEngineService(IAudioEngine):
                 ydl_opts["cookiefile"] = cookie_file
             if js_runtimes_cfg:
                 ydl_opts["js_runtimes"] = js_runtimes_cfg
+
 
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
@@ -252,6 +265,7 @@ class AudioEngineService(IAudioEngine):
                     )
             except Exception as e:
                 last_exception = e
+                print(f"[AudioEngineService] Fallback client {client_pref} thất bại: {e}")
                 continue
 
         raise AudioProcessingException(f"Lỗi tải âm thanh từ URL/Tìm kiếm: {last_exception}")

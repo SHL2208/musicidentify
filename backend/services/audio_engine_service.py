@@ -165,9 +165,9 @@ class AudioEngineService(IAudioEngine):
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
         client_fallbacks = [
-            ["android", "ios"],
-            ["mweb", "tv"],
-            ["web_embedded"],
+            ["android"],
+            ["ios"],
+            ["tv"],
             ["web"],
             None,
         ]
@@ -185,9 +185,9 @@ class AudioEngineService(IAudioEngine):
         last_exception = None
         for client_pref in client_fallbacks:
             ydl_opts: dict[str, Any] = {
-                # Tải audio stream nén gốc nhẹ (~1-2MB) thay vì convert toàn bộ bài sang WAV 100MB
-                "format": "ba[ext=m4a]/ba[ext=webm]/ba[ext=mp3]/bestaudio/ba",
-                "max_filesize": 35 * 1024 * 1024,
+                # Ưu tiên audio stream nén gốc, nếu client (như Android) chỉ có stream kèm video thì tự động fallback sang video nhẹ (<=480p) để FFmpeg bóc tách audio
+                "format": "ba[ext=m4a]/ba[ext=webm]/ba[ext=mp3]/bestaudio/b[height<=480]/b/best",
+                "max_filesize": 75 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
                 "no_warnings": True,

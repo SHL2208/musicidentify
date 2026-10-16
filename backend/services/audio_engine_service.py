@@ -138,16 +138,26 @@ class AudioEngineService(IAudioEngine):
                     # Nhánh 2: Nếu chưa tải được (do YouTube bị chặn Datacenter/bot/format trên Cloud),
                     # Tự động Fallback sang SoundCloud (hoàn toàn mở, không bị bot block trên Cloud Datacenter)
                     if not raw_audio_path or not raw_audio_path.exists():
-                        try:
-                            clean_t = re.sub(r"\(.*?\)|\[.*?\]", "", target_t).strip()
-                            sc_search = f"scsearch1:{clean_t or target_t} {target_a}".strip()
-                            print(f"[AudioEngineService] 🔄 YouTube tải thất bại. Đang tự động thử tải bản thu dự phòng từ SoundCloud: {sc_search}")
-                            raw_audio_path, metadata = self._download_audio(sc_search, track.id)
-                            metadata["is_fallback_audio"] = True
-                            metadata["fallback_from_url"] = url_to_download
-                            metadata["fallback_platform"] = "soundcloud"
-                        except Exception as sc_err:
-                            print(f"[AudioEngineService] ❌ SoundCloud fallback thất bại: {sc_err}")
+                        search_title = track.track_title or ""
+                        if not search_title or search_title.startswith("http") or "youtu" in search_title:
+                            from ..core.container import get_container
+
+                            res_svc = get_container().resolver
+                            meta_title, _ = res_svc.get_url_metadata(url_to_download)
+                            if meta_title and not meta_title.startswith("http"):
+                                search_title = meta_title
+
+                        if search_title and not search_title.startswith("http"):
+                            try:
+                                clean_t = re.sub(r"\(.*?\)|\[.*?\]", "", search_title).strip()
+                                sc_search = f"scsearch1:{clean_t or search_title} {target_a}".strip()
+                                print(f"[AudioEngineService] 🔄 YouTube tải thất bại. Đang tự động thử tải bản thu dự phòng từ SoundCloud: {sc_search}")
+                                raw_audio_path, metadata = self._download_audio(sc_search, track.id)
+                                metadata["is_fallback_audio"] = True
+                                metadata["fallback_from_url"] = url_to_download
+                                metadata["fallback_platform"] = "soundcloud"
+                            except Exception as sc_err:
+                                print(f"[AudioEngineService] ❌ SoundCloud fallback thất bại: {sc_err}")
             if not raw_audio_path or not raw_audio_path.exists():
                 raise AudioProcessingException(
                     f"Không thể tải tệp âm thanh hợp lệ cho bài '{track.track_title or track.raw_query}'"
@@ -188,7 +198,7 @@ class AudioEngineService(IAudioEngine):
             if Path(r"C:\Program Files\nodejs\node.exe").exists()
             else None
         )
-        js_runtimes_cfg: list[str] = ["node"] if node_bin else []
+        js_runtimes_cfg: dict[str, Any] = {"node": {}} if node_bin else {}
 
         user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

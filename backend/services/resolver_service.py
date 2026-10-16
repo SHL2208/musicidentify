@@ -600,7 +600,7 @@ class InputResolverService(IInputResolver):
             else None
         )
         if node_bin:
-            ydl_opts["js_runtimes"] = ["node"]
+            ydl_opts["js_runtimes"] = {"node": {}}
 
         # Danh sách các câu truy vấn tìm kiếm theo thứ tự ưu tiên
         candidate_queries: list[str] = []
@@ -722,7 +722,8 @@ class InputResolverService(IInputResolver):
 
         return None, song_name, None, False, 0.0
 
-    def _get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
+    def get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
+        """Trích xuất tiêu đề và thời lượng của một URL qua yt-dlp."""
         cookie_file = get_cookie_file_path()
 
         ydl_opts: dict[str, Any] = {
@@ -739,7 +740,7 @@ class InputResolverService(IInputResolver):
             else None
         )
         if node_bin:
-            ydl_opts["js_runtimes"] = ["node"]
+            ydl_opts["js_runtimes"] = {"node": {}}
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -752,6 +753,9 @@ class InputResolverService(IInputResolver):
         except Exception:  # noqa: BLE001, S110
             pass
         return None, None
+
+    # Alias tương thích ngược
+    _get_url_metadata = get_url_metadata
 
     def parse_batch_file(self, file_path: Path) -> list[TrackItem]:
         """Đọc file đầu vào (.txt, .csv, .xlsx) và trả về danh sách các TrackItem."""

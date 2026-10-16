@@ -36,6 +36,10 @@ class IInputResolver(ABC):
         Trả về: (url, title, duration, is_verified_match, match_score)
         """
 
+    def get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
+        """Trích xuất tiêu đề và thời lượng của một URL qua yt-dlp."""
+        return None, None
+
     def search_zingmp3(self, song_name: str, target_artist: str = "") -> dict[str, Any]:
         """Tìm kiếm link và metadata bài hát trên Zing MP3."""
         return {}

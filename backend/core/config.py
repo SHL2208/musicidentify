@@ -60,7 +60,7 @@ GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
 DEFAULT_GEMINI_MODEL = (
-    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.8-flash") or "gemini-3.8-flash"
+    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
 ).strip()
 
 # Thứ tự mô hình dự phòng tự động khi cạn Quota hoặc lỗi (Multi-tier Model Failover)
@@ -80,12 +80,12 @@ AVAILABLE_MODELS = list(
     dict.fromkeys(
         GEMINI_FALLBACK_MODELS
         + [
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
             "gemini-3.5-flash",
             "gemini-3.6-flash",
             "gemini-3.8-flash",
             "gemini-3.7-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
         ]
     )
 )

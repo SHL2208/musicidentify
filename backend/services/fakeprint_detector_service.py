@@ -137,7 +137,7 @@ class FakeprintDetectorService(IFakeprintDetector):
             factor = min(1.0, (effective_metric - 0.25) / 0.10)
             fakeprint_score = float(np.clip(0.75 + 0.25 * factor, 0.75, 1.0))
 
-        fakeprint_detected = fakeprint_score >= 0.50
+        fakeprint_detected = fakeprint_score >= 0.65
 
         return {
             "fakeprint_score": round(fakeprint_score, 3),

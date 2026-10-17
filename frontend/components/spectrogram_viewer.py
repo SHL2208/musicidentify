@@ -35,4 +35,3 @@ def render_spectrogram_viewer(image_path_str: str | None, audio_path_str: str | 
                 caption="Tầng 1: Mel Full Mix | Tầng 2: Harmonic Vocal HPSS | Tầng 3: Phổ vân Fourier Deconvolution ISMIR 2025",
                 **get_width_kwargs(st.image),
             )
-

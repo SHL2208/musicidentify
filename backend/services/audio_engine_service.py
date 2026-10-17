@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -14,11 +13,23 @@ from ..core.config import (
     AUDIO_SAMPLE_OFFSET,
     get_cookie_file_path,
     get_ffmpeg_binary,
+    get_js_runtimes_config,
 )
 from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
 from ..core.interfaces.services.audio_engine_interface import IAudioEngine
 from ..core.models.entities import InputType, TrackItem
+
+
+def _safe_log(msg: str) -> None:
+    """In log an toàn tránh UnicodeEncodeError trên môi trường Windows console cp1252."""
+    try:
+        print(msg)
+    except Exception:
+        try:
+            print(msg.encode("ascii", errors="replace").decode("ascii"))
+        except Exception:
+            pass
 
 
 def _extract_first_entry(entries: Any) -> dict | None:
@@ -34,6 +45,29 @@ def _extract_first_entry(entries: Any) -> dict | None:
             return dict(entry) if isinstance(entry, dict) else None
         except Exception:
             return None
+
+
+def clean_music_search_queries(title: str, artist: str = "") -> list[str]:
+    """Làm sạch các từ khóa boilerplate YouTube để tìm kiếm chính xác trên SoundCloud/Zing."""
+    if not title:
+        return [artist] if artist else []
+    t = re.sub(r"@[A-Za-z0-9_\.-]+", " ", title)
+    t = re.sub(r"\(.*?\)|\[.*?\]|\{.*?\}", " ", t)
+    t = re.sub(
+        r"\b(official\s*(audio|music\s*video|mv|video|lyric\s*video|visualizer)?|mv|video\s*lyric|audio|lyrics?)\b",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(r"[\/|\\_~#,\+\-]", " ", t)
+    clean_title = " ".join(t.split()).strip()
+
+    queries = []
+    if clean_title:
+        queries.append(clean_title)
+        if artist and artist.lower() not in clean_title.lower():
+            queries.insert(0, f"{clean_title} {artist}".strip())
+    return list(dict.fromkeys(queries))
 
 
 class AudioEngineService(IAudioEngine):
@@ -134,12 +168,20 @@ class AudioEngineService(IAudioEngine):
                                 metadata["fallback_platform"] = "youtube"
                             except Exception:
                                 raw_audio_path, metadata = None, {}
+                        else:
+                            raise AudioProcessingException(
+                                f"Bài hát '{target_t}' trên Zing MP3 bị khóa VIP và không tìm thấy bản phát hành chính chủ trên YouTube."
+                            ) from dl_err
 
                     # Nhánh 2: Nếu chưa tải được (do YouTube bị chặn Datacenter/bot/format trên Cloud),
                     # Tự động Fallback sang SoundCloud (hoàn toàn mở, không bị bot block trên Cloud Datacenter)
-                    if not raw_audio_path or not raw_audio_path.exists():
+                    if not raw_audio_path:
                         search_title = track.track_title or ""
-                        if not search_title or search_title.startswith("http") or "youtu" in search_title:
+                        if (
+                            not search_title
+                            or search_title.startswith("http")
+                            or "youtu" in search_title
+                        ):
                             from ..core.container import get_container
 
                             res_svc = get_container().resolver
@@ -148,17 +190,66 @@ class AudioEngineService(IAudioEngine):
                                 search_title = meta_title
 
                         if search_title and not search_title.startswith("http"):
-                            try:
-                                clean_t = re.sub(r"\(.*?\)|\[.*?\]", "", search_title).strip()
-                                sc_search = f"scsearch1:{clean_t or search_title} {target_a}".strip()
-                                print(f"[AudioEngineService] 🔄 YouTube tải thất bại. Đang tự động thử tải bản thu dự phòng từ SoundCloud: {sc_search}")
-                                raw_audio_path, metadata = self._download_audio(sc_search, track.id)
-                                metadata["is_fallback_audio"] = True
-                                metadata["fallback_from_url"] = url_to_download
-                                metadata["fallback_platform"] = "soundcloud"
-                            except Exception as sc_err:
-                                print(f"[AudioEngineService] ❌ SoundCloud fallback thất bại: {sc_err}")
-            if not raw_audio_path or not raw_audio_path.exists():
+                            candidate_queries = clean_music_search_queries(search_title, target_a)
+                            for q in candidate_queries:
+                                try:
+                                    sc_search = f"scsearch1:{q}"
+                                    _safe_log(
+                                        f"[AudioEngineService] [FALLBACK] YouTube tải thất bại. Đang thử tải từ SoundCloud: {sc_search}"
+                                    )
+                                    raw_audio_path, metadata = self._download_audio(
+                                        sc_search, track.id
+                                    )
+                                    if raw_audio_path:
+                                        metadata["is_fallback_audio"] = True
+                                        metadata["fallback_from_url"] = url_to_download
+                                        metadata["fallback_platform"] = "soundcloud"
+                                        break
+                                except Exception as sc_err:
+                                    _safe_log(
+                                        f"[AudioEngineService] [FAIL] SoundCloud fallback thất bại ({q}): {sc_err}"
+                                    )
+
+                    # Nhánh 3: Nếu SoundCloud cũng không có, thử tìm kiếm Zing MP3
+                    if not raw_audio_path:
+                        search_title = track.track_title or ""
+                        if (
+                            not search_title
+                            or search_title.startswith("http")
+                            or "youtu" in search_title
+                        ):
+                            from ..core.container import get_container
+
+                            res_svc = get_container().resolver
+                            meta_title, _ = res_svc.get_url_metadata(url_to_download)
+                            if meta_title and not meta_title.startswith("http"):
+                                search_title = meta_title
+
+                        if search_title and not search_title.startswith("http"):
+                            candidate_queries = clean_music_search_queries(search_title, target_a)
+                            for q in candidate_queries:
+                                try:
+                                    from ..core.container import get_container
+
+                                    res_svc = get_container().resolver
+                                    zing_meta = res_svc.search_zingmp3(q, target_artist=target_a)
+                                    if zing_meta and zing_meta.get("stream_url"):
+                                        _safe_log(
+                                            f"[AudioEngineService] [FALLBACK] Đang thử tải từ Zing MP3: {q}"
+                                        )
+                                        raw_audio_path, metadata = self._download_audio(
+                                            zing_meta["stream_url"], track.id
+                                        )
+                                        if raw_audio_path and raw_audio_path.exists():
+                                            metadata["is_fallback_audio"] = True
+                                            metadata["fallback_from_url"] = url_to_download
+                                            metadata["fallback_platform"] = "zingmp3"
+                                            break
+                                except Exception as zing_err:
+                                    _safe_log(
+                                        f"[AudioEngineService] [FAIL] Zing MP3 fallback thất bại ({q}): {zing_err}"
+                                    )
+            if not raw_audio_path:
                 raise AudioProcessingException(
                     f"Không thể tải tệp âm thanh hợp lệ cho bài '{track.track_title or track.raw_query}'"
                 )
@@ -169,7 +260,11 @@ class AudioEngineService(IAudioEngine):
             )
 
             # Xóa file audio gốc tải về nếu là file tạm
-            if raw_audio_path != sample_path and raw_audio_path.is_relative_to(self.temp_dir):
+            if (
+                raw_audio_path != sample_path
+                and raw_audio_path.exists()
+                and raw_audio_path.is_relative_to(self.temp_dir)
+            ):
                 self.storage_repo.cleanup_file(raw_audio_path)
 
             return sample_path, metadata
@@ -185,20 +280,18 @@ class AudioEngineService(IAudioEngine):
         """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi đa tầng và chống bot/format/cookie mismatch."""
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
-        # Tự động nạp cookies.txt hoặc YOUTUBE_COOKIES_CONTENT từ cấu hình
-        cookie_path = get_cookie_file_path()
-        cookie_file: str | None = str(cookie_path) if (cookie_path and cookie_path.exists()) else None
-        if cookie_file:
-            print(f"[AudioEngineService] 🍪 Nạp cookie YouTube từ: {cookie_file} ({Path(cookie_file).stat().st_size} bytes)")
-        else:
-            print("[AudioEngineService] ℹ️ Chạy chế độ không cookie.")
-
-        node_bin = shutil.which("node") or (
-            r"C:\Program Files\nodejs\node.exe"
-            if Path(r"C:\Program Files\nodejs\node.exe").exists()
-            else None
+        # Nạp cookies từ cấu hình (Guest cookie an toàn 100% trên Cloud, và Full cookie nếu có)
+        guest_cookie_path = get_cookie_file_path(mode="guest")
+        guest_cookie_file = (
+            str(guest_cookie_path) if (guest_cookie_path and guest_cookie_path.exists()) else None
         )
-        js_runtimes_cfg: dict[str, Any] = {"node": {}} if node_bin else {}
+
+        full_cookie_path = get_cookie_file_path(mode="full")
+        full_cookie_file = (
+            str(full_cookie_path) if (full_cookie_path and full_cookie_path.exists()) else None
+        )
+
+        js_runtimes_cfg = get_js_runtimes_config()
 
         user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -206,38 +299,72 @@ class AudioEngineService(IAudioEngine):
             "Chrome/131.0.0.0 Safari/537.36"
         )
 
-        # Ma trận chiến lược tải đa tầng (Multi-tier Strategy Matrix)
-        # Tự động chuyển đổi thông minh giữa có Cookie, không Cookie, và các client khác nhau
-        strategies: list[dict[str, Any]] = [
-            # 1. yt-dlp tự động đàm phán có cookie (nếu người dùng cung cấp)
-            {"name": "default_with_cookies", "client": None, "use_cookies": True},
-            # 2. yt-dlp tự động đàm phán KHÔNG cookie (tránh lỗi session/sidts trên Datacenter IP)
-            {"name": "default_no_cookies", "client": None, "use_cookies": False},
-            # 3. Android client KHÔNG cookie (API di động chính thống, không bị bot block desktop)
-            {"name": "android_no_cookies", "client": ["android"], "use_cookies": False},
-            # 4. iOS client KHÔNG cookie
-            {"name": "ios_no_cookies", "client": ["ios"], "use_cookies": False},
-            # 5. Web client có cookie
-            {"name": "web_with_cookies", "client": ["web"], "use_cookies": True},
-            # 6. Mobile web KHÔNG cookie
-            {"name": "mweb_no_cookies", "client": ["mweb"], "use_cookies": False},
-            # 7. TV client KHÔNG cookie
-            {"name": "tv_no_cookies", "client": ["tv"], "use_cookies": False},
-        ]
+        is_youtube = ("youtube.com" in url) or ("youtu.be" in url)
 
-        # Nếu không có file cookie, lọc bỏ các chiến lược use_cookies: True trùng lặp
-        if not cookie_file:
-            strategies = [s for s in strategies if not s["use_cookies"]]
+        # Ma trận chiến lược tải đa tầng (Multi-tier Strategy Matrix)
+        if is_youtube:
+            strategies: list[dict[str, Any]] = [
+                # 1. Client mặc định yt-dlp với Visitor/Guest Cookies (VISITOR_INFO1_LIVE, PREF)
+                # Tuyệt đối không chứa session tài khoản cá nhân, tránh 100% lỗi 'The page needs to be reloaded'
+                {
+                    "name": "default_guest_cookies",
+                    "client": None,
+                    "cookie_file": guest_cookie_file,
+                },
+                # 2. Android VR client KHÔNG cookie: Thường bỏ qua rào cản PO token khắt khe trên Datacenter IP
+                {
+                    "name": "android_vr_no_cookies",
+                    "client": ["android_vr"],
+                    "cookie_file": None,
+                },
+                # 3. Client mặc định yt-dlp KHÔNG cookie
+                {
+                    "name": "default_no_cookies",
+                    "client": None,
+                    "cookie_file": None,
+                },
+                # 4. Embedded Web CÓ Guest Cookies: Client nhúng YouTube
+                {
+                    "name": "embedded_guest_cookies",
+                    "client": ["web_embedded", "mweb"],
+                    "cookie_file": guest_cookie_file,
+                },
+                # 5. Full Cookies (nếu người dùng cấu hình cookies tài khoản)
+                {
+                    "name": "web_full_cookies",
+                    "client": ["web", "mweb"],
+                    "cookie_file": full_cookie_file,
+                },
+            ]
+            # Loại bỏ các chiến lược có cookie nếu không có file cookie tương ứng
+            strategies = [
+                s
+                for s in strategies
+                if not (
+                    s.get("cookie_file") is None
+                    and "cookies" in s["name"]
+                    and not s["name"].endswith("no_cookies")
+                )
+            ]
+        else:
+            # Đối với SoundCloud, Zing MP3 hoặc các nền tảng khác: Chỉ cần 1 lượt tải tiêu chuẩn
+            strategies = [
+                {
+                    "name": "standard_platform",
+                    "client": None,
+                    "cookie_file": None,
+                }
+            ]
 
         last_exception = None
         for strat in strategies:
             strat_name = strat["name"]
-            client_pref = strat["client"]
-            use_cookie = strat["use_cookies"] and bool(cookie_file)
+            client_pref = strat.get("client")
+            cookie_to_use = strat.get("cookie_file")
 
             ydl_opts: dict[str, Any] = {
-                # Linh hoạt tối đa: Chọn audio tốt nhất, nếu chỉ có video thì tải video và FFmpeg bóc tách audio
-                "format": "bestaudio/bestvideo+bestaudio/best",
+                # Format: bestaudio nếu có, hoặc muxed format (18) hoặc best video+audio để FFmpeg bóc tách MP3
+                "format": "bestaudio/bestaudio*/best/18",
                 "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
@@ -245,13 +372,15 @@ class AudioEngineService(IAudioEngine):
                 "ffmpeg_location": self.ffmpeg_path,
                 "nocheckcertificate": True,
                 "geo_bypass": True,
-                "retries": 3,
-                "socket_timeout": 25,
+                "retries": 2,
+                "socket_timeout": 20,
                 "user_agent": user_agent,
                 "http_headers": {
                     "User-Agent": user_agent,
                     "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Referer": "https://www.youtube.com/",
+                    "Referer": "https://www.youtube.com/"
+                    if is_youtube
+                    else "https://soundcloud.com/",
                 },
                 "postprocessors": [
                     {
@@ -262,14 +391,12 @@ class AudioEngineService(IAudioEngine):
                 ],
             }
 
-            extractor_args: dict[str, Any] = {}
-            if client_pref:
-                extractor_args["player_client"] = client_pref
-            if extractor_args:
-                ydl_opts["extractor_args"] = {"youtube": extractor_args}
+            if is_youtube and client_pref:
+                ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
 
-            if use_cookie and cookie_file:
-                ydl_opts["cookiefile"] = cookie_file
+            if cookie_to_use and Path(cookie_to_use).exists():
+                ydl_opts["cookiefile"] = str(cookie_to_use)
+
             if js_runtimes_cfg:
                 ydl_opts["js_runtimes"] = js_runtimes_cfg
 
@@ -277,7 +404,13 @@ class AudioEngineService(IAudioEngine):
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                     info = ydl.extract_info(url, download=True)
                     if isinstance(info, dict) and "entries" in info:
-                        first_entry = _extract_first_entry(info.get("entries"))
+                        raw_entries = info.get("entries")
+                        entries_list = list(cast(Any, raw_entries or []))
+                        if not entries_list:
+                            raise FileNotFoundError(
+                                f"Không tìm thấy kết quả tìm kiếm cho query: {url}"
+                            )
+                        first_entry = _extract_first_entry(entries_list)
                         if first_entry:
                             info = first_entry
 
@@ -291,7 +424,7 @@ class AudioEngineService(IAudioEngine):
                         elif url.startswith("http"):
                             info_dict["webpage_url"] = url
 
-                    # Tìm file kết quả (kể cả .mp3 do postprocessor tạo ra hoặc file gốc)
+                    # Tìm file kết quả (.mp3 do postprocessor tạo ra hoặc file gốc)
                     candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
                     if candidates:
                         mp3_cands = [c for c in candidates if c.suffix.lower() == ".mp3"]
@@ -303,7 +436,7 @@ class AudioEngineService(IAudioEngine):
                     )
             except Exception as e:
                 last_exception = e
-                print(f"[AudioEngineService] Chiến lược '{strat_name}' thất bại: {e}")
+                _safe_log(f"[AudioEngineService] Chiến lược '{strat_name}' thử nghiệm: {e}")
                 continue
 
         raise AudioProcessingException(f"Lỗi tải âm thanh từ URL/Tìm kiếm: {last_exception}")
@@ -380,7 +513,7 @@ class AudioEngineService(IAudioEngine):
                     if res.returncode == 0 and output_sample.exists():
                         return output_sample
             except Exception as ffmpeg_err:
-                print(
+                _safe_log(
                     f"[AudioEngineService] FFmpeg slice error, fallback to soundfile: {ffmpeg_err}"
                 )
 
@@ -424,7 +557,7 @@ class AudioEngineService(IAudioEngine):
             return output_sample
 
         except Exception as e:
-            print(f"[AudioEngineService] Fallback sang FFmpeg đơn đoạn do lỗi: {e}")
+            _safe_log(f"[AudioEngineService] Fallback sang FFmpeg đơn đoạn do lỗi: {e}")
             return self._slice_ffmpeg_fallback(input_audio, track_id, total_duration)
 
     def _get_audio_duration_ffmpeg(self, audio_path: Path) -> float:

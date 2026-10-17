@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -13,7 +12,7 @@ from typing import Any, cast
 import pandas as pd
 import yt_dlp
 
-from ..core.config import get_cookie_file_path
+from ..core.config import get_cookie_file_path, get_js_runtimes_config
 from ..core.exceptions import InvalidInputException, TrackNotFoundException
 from ..core.interfaces.services.resolver_interface import IInputResolver
 from ..core.models.entities import InputType, TrackItem
@@ -259,28 +258,29 @@ class InputResolverService(IInputResolver):
         if match_slug:
             search_kw = match_slug.group(1).replace("-", " ")
 
-        api_url = f"http://ac.mp3.zing.vn/complete?type=artist,song,key,album&query={urllib.parse.quote(search_kw)}"
-        req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                songs: list[dict[str, Any]] = []
-                for item in data.get("data", []):
-                    if isinstance(item, dict) and "song" in item:
-                        songs = item.get("song", [])
-                        break
-                if songs:
-                    s = songs[0]
-                    return {
-                        "title": s.get("name") or search_kw,
-                        "artist": s.get("artist") or "",
-                        "duration": float(s.get("duration", 0)),
-                        "stream_url": f"https://zingmp3.vn/bai-hat/{s.get('id')}.html",
-                        "is_vip": str(s.get("streamingStatus")) != "1"
-                        or str(s.get("block", "")).lower() in ["true", "1"],
-                    }
-        except Exception as e:  # noqa: BLE001
-            print(f"[InputResolverService] Lỗi gọi API Zing MP3: {e}")
+        for proto in ["https", "http"]:
+            api_url = f"{proto}://ac.mp3.zing.vn/complete?type=artist,song,key,album&query={urllib.parse.quote(search_kw)}"
+            req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    songs: list[dict[str, Any]] = []
+                    for item in data.get("data", []):
+                        if isinstance(item, dict) and "song" in item:
+                            songs = item.get("song", [])
+                            break
+                    if songs:
+                        s = songs[0]
+                        return {
+                            "title": s.get("name") or search_kw,
+                            "artist": s.get("artist") or "",
+                            "duration": float(s.get("duration", 0)),
+                            "stream_url": f"https://zingmp3.vn/bai-hat/{s.get('id')}.html",
+                            "is_vip": str(s.get("streamingStatus")) != "1"
+                            or str(s.get("block", "")).lower() in ["true", "1"],
+                        }
+            except Exception:
+                continue
 
         return {
             "title": search_kw,
@@ -584,23 +584,19 @@ class InputResolverService(IInputResolver):
         Tìm kiếm bài hát trên YouTube với bộ lọc Top 5, xác thực thông minh và Fallback đa Pass.
         Trả về: (url, title, duration, is_verified_match, match_score)
         """
-        cookie_file = get_cookie_file_path()
+        js_runtimes_cfg = get_js_runtimes_config()
 
+        # Tìm kiếm YouTube hoàn toàn mở: không truyền cookie tài khoản cá nhân (để tránh lỗi session reload)
+        # và chỉ định client web_embedded / mweb an toàn.
         ydl_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
+            "extractor_args": {"youtube": {"player_client": ["web_embedded", "mweb"]}},
         }
-        if cookie_file and cookie_file.exists():
-            ydl_opts["cookiefile"] = str(cookie_file)
-        node_bin = shutil.which("node") or (
-            r"C:\Program Files\nodejs\node.exe"
-            if Path(r"C:\Program Files\nodejs\node.exe").exists()
-            else None
-        )
-        if node_bin:
-            ydl_opts["js_runtimes"] = {"node": {}}
+        if js_runtimes_cfg:
+            ydl_opts["js_runtimes"] = js_runtimes_cfg
 
         # Danh sách các câu truy vấn tìm kiếm theo thứ tự ưu tiên
         candidate_queries: list[str] = []
@@ -723,8 +719,9 @@ class InputResolverService(IInputResolver):
         return None, song_name, None, False, 0.0
 
     def get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
-        """Trích xuất tiêu đề và thời lượng của một URL qua yt-dlp."""
-        cookie_file = get_cookie_file_path()
+        """Trích xuất tiêu đề và thời lượng của một URL qua yt-dlp với OEmbed fallback."""
+        cookie_file = get_cookie_file_path(mode="guest")
+        js_runtimes_cfg = get_js_runtimes_config()
 
         ydl_opts: dict[str, Any] = {
             "quiet": True,
@@ -732,15 +729,13 @@ class InputResolverService(IInputResolver):
             "extract_flat": True,
             "skip_download": True,
         }
+        if "youtube.com" in url or "youtu.be" in url:
+            ydl_opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded", "mweb"]}}
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
-        node_bin = shutil.which("node") or (
-            r"C:\Program Files\nodejs\node.exe"
-            if Path(r"C:\Program Files\nodejs\node.exe").exists()
-            else None
-        )
-        if node_bin:
-            ydl_opts["js_runtimes"] = {"node": {}}
+        if js_runtimes_cfg:
+            ydl_opts["js_runtimes"] = js_runtimes_cfg
+
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -749,9 +744,28 @@ class InputResolverService(IInputResolver):
                         first = _extract_first_entry(info.get("entries"))
                         if first:
                             info = first
-                    return info.get("title"), info.get("duration")
+                    title = info.get("title")
+                    dur = info.get("duration")
+                    if title:
+                        return title, dur
         except Exception:  # noqa: BLE001, S110
             pass
+
+        # Fallback YouTube OEmbed API chính thức (Không bao giờ bị bot block, không cần cookie, phản hồi 0.05s)
+        if "youtube.com" in url or "youtu.be" in url:
+            try:
+                oembed_url = (
+                    f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
+                )
+                req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    oe_title = data.get("title")
+                    if oe_title:
+                        return oe_title, None
+            except Exception:
+                pass
+
         return None, None
 
     # Alias tương thích ngược

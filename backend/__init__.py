@@ -13,4 +13,3 @@ def __getattr__(name: str):
 
 
 __all__ = ["get_container", "AppContainer"]
-

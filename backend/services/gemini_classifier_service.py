@@ -155,7 +155,9 @@ Your mission: Examine the provided audio sample (multi-segment composite of Vers
    - Contemporary genres: Electronic Pop, Dance/EDM, Rap/Drill, R&B, Trap, Remixes, commercial Ballads.
    - Commercial pitch correction (Auto-Tune / Melodyne, pitch quantization, formant shifting) applied over an AUTHENTIC human microphone recording.
    - Studio multitrack techniques: Sidechain compression to 808 drums, synthetic vocoder/autotune textures, DAW multitrack stems, digital reverbs.
-   - CRITICAL DISCRIMINATION RULE: Heavy Auto-Tune, aggressive 808 compression, or electronic synth beats ARE NOT EVIDENCE OF GENERATIVE AI! Commercial Auto-Tune is a ubiquitous creative choice used in modern human music worldwide. NEVER classify genuine human electronic pop, trap/drill, or studio Auto-Tuned vocals as AI!
+   - CRITICAL DISCRIMINATION RULE: Distinguish between genuine human studio processing (heavy Auto-Tune/Melodyne, sidechain compression, EDM/Drill arrangement) and Generative AI:
+     * In authentic human tracks, Auto-Tune quantizes pitch but PRESERVES human biological breathing dynamics, authentic vocal tract formants, and organic micro-fluctuations. These must remain 'PROCESSED_HUMAN' (is_ai: false).
+     * However, for Remix, Drill, or Remake versions where the vocal track itself is an AI vocal clone/synthesis (lacking chest resonance, flat formant trajectory, or neural vocoder wateriness) OR where the backing beat is an algorithmic AI-generated loop -> You MUST classify as 'HYBRID_AI' with 'is_ai: true'!
 3. 'HYBRID_AI': Music with ANY participation of Generative AI in any stage:
    - Human singer/rapper performing over an AI-generated backing beat (e.g. beat from Suno/Udio, AI Lo-fi backing loop).
    - AI-cloned vocal or synthetic vocal performing over a human-produced beat.
@@ -187,9 +189,9 @@ B. 3-TIER SPECTROGRAM & ACOUSTIC UNMASKING (HPSS):
 C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
    - Modern neural audio models (Suno v3.5, Suno v4, Udio) and vocal clone engines (RVC, Diff-SVC) frequently simulate studio pitch-correction (Auto-Tune), realistic breath friction, and vibrato!
    - FATAL FORENSIC TRAP: NEVER classify a track as 'PROCESSED_HUMAN' purely based on hearing breath intakes or vibrato! Suno v3.5/v4 specifically synthesizes biological breath dynamics.
-   - You MUST cross-correlate with spectral rolloff and acoustic extension: if Spectral Rolloff 95% is collapsed below 12-14 kHz, it indicates latent diffusion downsampling regardless of breath sounds!
+   - You MUST cross-correlate with high-frequency acoustic extension: inspect the 3-tier spectrogram for physical air-band extension (16kHz - 20kHz) and genuine multitrack stem separation versus single-pass neural diffusion smearing.
    - Key forensic signatures of modern AI synthesis:
-     * Unnatural lack of true physical respiratory effort or chest resonance.
+     * Modern neural audio models (Suno v3.5/v4, Udio, and Diff-SVC/RVC clones) easily synthesize convincing chest resonance, intake breaths, and natural micro-vibrato. NEVER cite "chest resonance", "natural breath dynamics", or "micro-vibrato" as proof that a track transcends AI capabilities!
      * Synthetic vocal sheen: Vocals sound artificially polished, slightly metallic, or have flat formant dynamics.
      * Stem bleed / timbral entanglement: Vocal reverb and high-frequency harmonics melt into synthesizer pads/drums without physical separation.
      * Consonant articulation & phrasing: Unnatural phrasing cadence, slurred consonants, robotic delivery or lack of authentic human pronunciation mechanics.
@@ -301,10 +303,14 @@ class GeminiClassifierService(IAIClassifier):
     ) -> str:
         metrics_text = "No acoustic metrics available."
         if metrics:
-            if metrics.fakeprint_score >= 0.50:
+            if metrics.fakeprint_score >= 0.65:
                 fp_line = f"- Fourier Deconvolution Fakeprint (ISMIR 2025): HIGH COMB SIGNATURE ({metrics.fakeprint_score * 100:.1f}%) - Characteristic of neural deconvolution/transposed-convolution upsamplers (Suno/Udio vocoders).\n"
             elif metrics.fakeprint_score >= 0.24:
-                fp_line = f"- Fourier Deconvolution Fakeprint (ISMIR 2025): MODERATE RESIDUAL COMB SPIKES ({metrics.fakeprint_score * 100:.1f}%) - Notable periodic artifacts consistent with neural audio vocoders or latent diffusion decoders.\n"
+                fp_line = (
+                    f"- Fourier Deconvolution Fakeprint (ISMIR 2025): MODERATE RESIDUAL COMB SPIKES ({metrics.fakeprint_score * 100:.1f}%) "
+                    "- Note: Moderate comb spikes (24-64%) can naturally occur due to lossy web streaming compression (Opus/AAC 128kbps) or digital synthesizer chords. "
+                    "Cross-reference with Harmonic Vocal tier (Tier 2) and vocal timbre before concluding AI.\n"
+                )
             else:
                 fp_line = "- Fourier Deconvolution Fakeprint: INCONCLUSIVE / BYPASSED by continuous latent diffusion (Suno v3.5/v4, Udio). Lossy streaming codecs (Opus/MP3) suppress periodic comb spikes. A low score MUST NOT be treated as evidence of human production.\n"
 
@@ -328,15 +334,26 @@ class GeminiClassifierService(IAIClassifier):
                 cutoff_line = f"- Ultrasonic Frequency Cutoff: DETECTED (Steep cutoff/shelf drop of {slope:.1f} dB above 16kHz - Characteristic of neural audio upsampling from 24k/32k latent space).\n"
 
             rolloff_line = ""
+            # =========================================================================
+            # [CODE CŨ ÉP CUNG ĐƯỢC COMMENT LẠI ĐỂ DỄ DÀNG ROLLBACK]
+            # if metrics.spectral_rolloff_95_hz < 12000.0 and not is_derivative_or_remix_context(
+            #     metadata
+            # ):
+            #     rolloff_line = (
+            #         f"- High-Frequency Rolloff Deficiency: SEVERE COLLAPSE DETECTED (Rolloff 95% is only {metrics.spectral_rolloff_95_hz:.0f} Hz, "
+            #         "whereas human studio production reaches 16,000 - 20,000 Hz). "
+            #         "CRITICAL FORENSIC DIRECTIVE: Sub-12kHz rolloff is NEVER caused by 'standard studio mixing' or 'commercial Auto-Tune'. "
+            #         "It is an undeniable physical consequence of latent diffusion neural vocoders (Suno/Udio). "
+            #         "Do NOT classify as PROCESSED_HUMAN based on vocal breathing when this severe high-frequency cutoff is present!\n"
+            #     )
+            # =========================================================================
             if metrics.spectral_rolloff_95_hz < 12000.0 and not is_derivative_or_remix_context(
                 metadata
             ):
                 rolloff_line = (
-                    f"- High-Frequency Rolloff Deficiency: SEVERE COLLAPSE DETECTED (Rolloff 95% is only {metrics.spectral_rolloff_95_hz:.0f} Hz, "
-                    "whereas human studio production reaches 16,000 - 20,000 Hz). "
-                    "CRITICAL FORENSIC DIRECTIVE: Sub-12kHz rolloff is NEVER caused by 'standard studio mixing' or 'commercial Auto-Tune'. "
-                    "It is an undeniable physical consequence of latent diffusion neural vocoders (Suno/Udio). "
-                    "Do NOT classify as PROCESSED_HUMAN based on vocal breathing when this severe high-frequency cutoff is present!\n"
+                    f"- High-Frequency Energy Distribution: Spectral Rolloff 95% is at {metrics.spectral_rolloff_95_hz:.0f} Hz. "
+                    "(Note: Many commercial Pop/Ballad tracks naturally concentrate 95% of spectral energy in low/mid bands below 12kHz. "
+                    "Cross-reference with visual spectrogram air-band extension and vocal timbre to evaluate authenticity).\n"
                 )
 
             high_ratio_txt = (
@@ -372,6 +389,10 @@ class GeminiClassifierService(IAIClassifier):
   2. Electronic dance loops, repetitive synthesizer grooves, and sidechain compression against 808 kicks are standard DAW multitrack production techniques, NOT evidence of AI generative loops.
   3. Lo-Fi aesthetic intentionally uses tape flutter, vinyl crackle, and aggressive low-pass filtering.
   4. DO NOT classify this track as 'HYBRID_AI' or 'AI_GENERATED' solely due to electronic sample loops, time-stretch artifacts, or heavy commercial Auto-Tune!
+  5. CRITICAL AI VOCAL / REMIX DISCRIMINATION:
+     - In digital releases, many 'Remix', 'Drill Ver', or 'Cover' tracks feature AI vocal clones (Diff-SVC/RVC/AI singer synthesis) or AI-generated backing arrangements.
+     - If the vocal track sounds like a synthetic vocal clone, lacks organic human chest resonance, or has robotic/watery neural artifacts, OR if the backing track was generated by an AI music model -> You MUST classify as 'HYBRID_AI' (is_ai: true).
+     - Only classify as 'PROCESSED_HUMAN' (is_ai: false) when the vocal performance is demonstrably an authentic human recording and the multitrack production was created without generative AI models.
 """
 
         prompt = f"""
@@ -400,7 +421,8 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
      "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
    - SUNO V3.5/V4 BALLAD DECEPTION COUNTERMEASURES:
      * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads specifically GENERATE realistic human-like intake breaths, chest voice formants, and Auto-Tune-like vibrato.
-     * The presence of natural-sounding breath intakes or sweet ballad vocal phrasing MUST NOT be treated as definitive proof of a human singer!
+     * The presence of natural-sounding breath intakes, sweet ballad vocal phrasing, or organic chest resonance MUST NOT be treated as definitive proof of a human singer!
+     * CRITICAL INSTRUCTION: Never conclude a song is human simply because "it exhibits chest resonance and micro-vibrato that go beyond AI limitations" — modern neural models routinely generate both. Look holistically at vocal timbre and arrangement.
      * Inspect Tier 2 Harmonic Vocal carefully: look for faint digital fuzz beneath sustained vowels and check if the backing accompaniment has true acoustic multitrack depth or monolithic latent space entanglement.
 2. Correlate with the provided acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and the 3-tier spectrogram image.
 3. Deliver an objective, rigorous verdict based purely on the real sonic evidence.
@@ -423,13 +445,22 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         candidate_models = self._resolve_model_chain(model_override)
         prompt = self._build_forensic_prompt(track_id, metrics, metadata)
 
-        candidate_keys = list(self.api_keys)
-        if not candidate_keys and self.api_key:
-            candidate_keys = [self.api_key]
+        candidate_keys = [k.strip() for k in self.api_keys if k and k.strip()]
+        if not candidate_keys and self.api_key and self.api_key.strip():
+            candidate_keys = [self.api_key.strip()]
+
+        if not candidate_keys:
+            from ..core.config import get_configured_gemini_api_keys
+
+            dynamic_keys = get_configured_gemini_api_keys()
+            if dynamic_keys:
+                candidate_keys = dynamic_keys
+                self.api_keys = dynamic_keys
+                self.api_key = dynamic_keys[0]
 
         if not candidate_keys:
             raise ClassificationException(
-                "Không tìm thấy Gemini API Key nào trong cấu hình môi trường (.env)."
+                "Không tìm thấy Gemini API Key nào. Vui lòng thêm biến GEMINI_API_KEY trong Streamlit Cloud (App Settings -> Secrets) hoặc nhập trực tiếp tại thanh bên (Sidebar)."
             )
 
         from google.genai import types

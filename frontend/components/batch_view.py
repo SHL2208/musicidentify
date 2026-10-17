@@ -5,7 +5,6 @@ import streamlit as st
 
 from backend.core.config import TEMP_DIR
 from backend.core.models.entities import BatchReport
-
 from frontend.services.backend_client import BackendClient
 
 

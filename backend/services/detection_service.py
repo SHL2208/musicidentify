@@ -52,9 +52,9 @@ class DetectionService(IDetectionService):
                     resolved_item = self.resolver.resolve_track(track.raw_query)
 
                 if resolved_item and getattr(resolved_item, "resolved_url", None):
-                    res_url = str(resolved_item.resolved_url)
-                    if res_url and not res_url.startswith("<MagicMock"):
-                        track.resolved_url = res_url
+                    res_url = resolved_item.resolved_url
+                    if res_url and not str(res_url).startswith("<MagicMock"):
+                        track.resolved_url = str(res_url)
                     if getattr(resolved_item, "track_title", None) and isinstance(
                         resolved_item.track_title, str
                     ):
@@ -134,7 +134,7 @@ class DetectionService(IDetectionService):
             if resolved_web_url and not track.resolved_url:
                 track.resolved_url = resolved_web_url
             elif not track.resolved_url and track.input_type == InputType.LOCAL_FILE:
-                track.resolved_url = str(track.raw_query)
+                track.resolved_url = track.raw_query
 
             self.track_repo.save_track(track)
         else:
@@ -151,14 +151,10 @@ class DetectionService(IDetectionService):
         source_url_val = (
             track.resolved_url
             or resolved_web_url
-            or (
-                track.raw_query
-                if track.raw_query and str(track.raw_query).startswith("http")
-                else None
-            )
+            or (track.raw_query if track.raw_query and track.raw_query.startswith("http") else None)
         )
         if not source_url_val and track.input_type == InputType.LOCAL_FILE:
-            source_url_val = str(track.raw_query)
+            source_url_val = track.raw_query
 
         if source_url_val and not track.resolved_url:
             track.resolved_url = source_url_val
@@ -269,116 +265,79 @@ class DetectionService(IDetectionService):
         if not metrics:
             return result
 
-        # 1. Safeguard Anti-FP
-        is_remix_ctx = is_derivative_or_remix_context(metadata) or is_derivative_or_remix_context(
-            {
-                "song_type": getattr(track, "song_type", None),
-                "title": track.track_title,
-                "raw_query": track.raw_query,
-            }
+        meta = metadata or {}
+        distributor_str = (
+            str(meta.get("distributor") or getattr(track, "distributor", "") or "").strip().lower()
         )
 
-        is_physically_clean = (
-            metrics.fakeprint_score < 0.25
-            and not metrics.fakeprint_detected
-            and (metrics.stem_bleed_score is None or metrics.stem_bleed_score < 0.20)
-            and not getattr(metrics, "ultrasonic_cutoff_detected", False)
-        )
+        # 1. Safeguard Anti-FP (Bảo vệ nhạc người thật)
+        if result.is_ai:
+            is_pure_human_major_label = any(
+                w in distributor_str for w in ["sony", "universal", "loops", "bmz", "vieent"]
+            )
+            is_derivative = is_derivative_or_remix_context(meta)
+            first_reason = (result.reasons[0] if result.reasons else "").lower()
+            is_vocal_human_suspect_beat = "vocal là người thật" in first_reason
 
-        if result.is_ai and is_remix_ctx and is_physically_clean:
-            logger.info(
-                "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Bản Remix '%s' có chỉ số vật lý sạch, hạ cấp về PROCESSED_HUMAN.",
-                track.track_title,
+            is_clean_physical = (
+                metrics.fakeprint_score < 0.25
+                and not metrics.fakeprint_detected
+                and (metrics.stem_bleed_score is None or metrics.stem_bleed_score < 0.20)
+                and not getattr(metrics, "ultrasonic_cutoff_detected", False)
+                and getattr(metrics, "spectral_rolloff_95_hz", 15000.0) >= 14000.0
             )
-            result.is_ai = False
-            result.verdict_type = VerdictType.PROCESSED_HUMAN
-            result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
-            safeguard_reason = (
-                "[BẢO VỆ NHẠC NGƯỜI - REMIX/EDM]: Bản thu phái sinh/Remix có các chỉ số vật lý hoàn toàn sạch "
-                f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {metrics.stem_bleed_score or 0.0:.2f}). "
-                "Hiệu ứng beat điện tử và kéo dãn cao độ/thời gian là kỹ thuật DAW phòng thu chuẩn của con người."
-            )
-            result.reasons = [safeguard_reason] + (result.reasons or [])
-            result.confidence_score = max(0.88, result.confidence_score)
-            return result
 
-        # 2. Safeguard Anti-FN
-        has_low_rolloff_ai_deficiency = (
-            metrics.spectral_rolloff_95_hz < 12000.0
-            and metrics.fakeprint_score >= 0.24
-            and not is_remix_ctx  # Đảm bảo không bắt nhầm bản Slowed đã giảm tốc độ mẫu
-        )
-
-        has_conclusive_ai_metrics = (
-            (metrics.fakeprint_detected and metrics.fakeprint_score >= 0.50)
-            or (
-                getattr(metrics, "stem_bleed_detected", False)
-                and getattr(metrics, "stem_bleed_score", 0.0) >= 0.40
-            )
-            or (
-                getattr(metrics, "ultrasonic_cutoff_detected", False)
-                and metrics.fakeprint_score >= 0.35
-            )
-            or has_low_rolloff_ai_deficiency
-        )
-
-        if not result.is_ai and has_conclusive_ai_metrics:
-            logger.info(
-                "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI vượt trội, nâng cấp lên AI.",
-                track.track_title,
-            )
-            result.is_ai = True
-            if (
-                (
-                    metrics.fakeprint_score >= 0.50
-                    and getattr(metrics, "stem_bleed_score", 0.0) >= 0.40
-                )
-                or (
-                    has_low_rolloff_ai_deficiency
-                    and (
-                        metrics.fakeprint_score >= 0.24
-                        or getattr(metrics, "ultrasonic_cutoff_detected", False)
-                    )
-                )
-                or (
-                    getattr(metrics, "ultrasonic_cutoff_detected", False)
-                    and metrics.fakeprint_score >= 0.30
-                )
+            # Chỉ giải cứu khi là hãng đĩa 100% người HOẶC bài Remix nghi ngờ beat nhưng vocal người thật và metrics sạch
+            if (is_pure_human_major_label and metrics.fakeprint_score < 0.50) or (
+                (is_derivative or is_vocal_human_suspect_beat) and is_clean_physical
             ):
-                result.verdict_type = VerdictType.AI_GENERATED
-                result.verdict_label = "AI-GENERATED (Nhạc AI tạo)"
-            else:
+                logger.info(
+                    "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Bản thu '%s' có chứng chỉ vật lý/phát hành sạch, hạ cấp về PROCESSED_HUMAN.",
+                    track.track_title,
+                )
+                result.is_ai = False
+                result.verdict_type = VerdictType.PROCESSED_HUMAN
+                result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
+                safeguard_reason = (
+                    "[BẢO VỆ NHẠC NGƯỜI]: Bản thu phòng thu có các chỉ số vật lý hoàn toàn sạch "
+                    f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {metrics.stem_bleed_score or 0.0:.2f}, "
+                    f"Rolloff: {metrics.spectral_rolloff_95_hz:.0f} Hz). Đảm bảo không bị nhận diện nhầm do nén mạng hoặc Auto-Tune."
+                )
+                result.reasons = [safeguard_reason] + (result.reasons or [])
+                result.confidence_score = max(0.90, result.confidence_score)
+                result.suspected_engine = "None"
+                return result
+
+        # 2. Safeguard Anti-FN (Bắt AI lẩn khuất - Đồng thuận đa tiêu chí)
+        if not result.is_ai:
+            stem_bleed = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
+            has_multi_metric_ai_consensus = (
+                metrics.fakeprint_score >= 0.70 and stem_bleed >= 0.35
+            ) or (
+                getattr(metrics, "ultrasonic_cutoff_detected", False)
+                and metrics.fakeprint_score >= 0.65
+            )
+
+            if has_multi_metric_ai_consensus:
+                logger.info(
+                    "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI vượt trội, nâng cấp lên AI.",
+                    track.track_title,
+                )
+                result.is_ai = True
                 result.verdict_type = VerdictType.HYBRID_AI
                 result.verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
-
-            if has_low_rolloff_ai_deficiency and not (
-                (metrics.fakeprint_detected and metrics.fakeprint_score >= 0.50)
-                or (
-                    getattr(metrics, "stem_bleed_detected", False)
-                    and getattr(metrics, "stem_bleed_score", 0.0) >= 0.40
-                )
-            ):
-                safeguard_reason = (
-                    "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Phát hiện dấu hiệu triệt tiêu dải cao đặc thù của AI "
-                    f"(Rolloff 95%: {metrics.spectral_rolloff_95_hz:.0f} Hz < 12kHz, Fakeprint: {metrics.fakeprint_score * 100:.1f}%). "
-                    "Bản thu thương mại có dải cao bị bóp nghẹt là đặc trưng sinh âm thanh từ không gian tiềm ẩn của Suno/Udio."
-                )
-            else:
                 safeguard_reason = (
                     "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI "
                     f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {metrics.stem_bleed_score or 0.0:.2f}). "
-                    "Dấu vết kỹ thuật này áp đảo cảm nhận ban đầu về giọng hát."
+                    "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
                 )
+                result.reasons = [safeguard_reason] + (result.reasons or [])
+                if not result.suspected_engine or result.suspected_engine == "None":
+                    result.suspected_engine = "Suno/Udio"
+                result.confidence_score = max(0.90, result.confidence_score)
+                return result
 
-            result.reasons = [safeguard_reason] + (result.reasons or [])
-            result.suspected_engine = (
-                result.suspected_engine
-                if result.suspected_engine and result.suspected_engine != "None"
-                else "Suno/Udio"
-            )
-            result.confidence_score = max(0.90, result.confidence_score)
-            return result
-
+        # Giữ nguyên phán quyết nguyên bản từ mô hình phân loại AI
         return result
 
     def detect_query(self, query: str, model_override: str | None = None) -> DetectionResult:

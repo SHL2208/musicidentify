@@ -41,6 +41,7 @@ _DEFAULT_AI_ARTIST_REGEXES = [
     (r"\bsinbadai\b", "SinbadAI"),
     (r"\bđặng bảo trung\b", "Đặng Bảo Trung"),
     (r"\btiểu mai tử\b", "Tiểu Mai Tử"),
+    (r"\btiểu di\b", "Tiểu Di"),
     (r"\bf47\b", "F47"),
     (r"\bhoàng k\b", "Hoàng K"),
     (r"\bhlc\b", "HLC"),
@@ -92,7 +93,7 @@ def get_dynamic_catalog() -> tuple[list[str], list[str], list[tuple[str, str]]]:
 
                 merged_wl = list(dict.fromkeys(_DEFAULT_HUMAN_WHITELIST + whitelist))
                 merged_ai = list(dict.fromkeys(_DEFAULT_PURE_AI_DISTRIBUTORS + ai_dist))
-                merged_artists = ai_artists if ai_artists else list(_DEFAULT_AI_ARTIST_REGEXES)
+                merged_artists = list(dict.fromkeys(_DEFAULT_AI_ARTIST_REGEXES + ai_artists))
 
                 _catalog_cache["whitelist"] = merged_wl
                 _catalog_cache["ai_distributors"] = merged_ai

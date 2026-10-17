@@ -15,4 +15,3 @@ __all__ = [
     "render_batch_view",
     "render_benchmark_view",
 ]
-

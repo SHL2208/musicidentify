@@ -15,6 +15,7 @@ try:
     import streamlit as st
 
     if hasattr(st, "secrets"):
+
         def _sync_secrets_to_env(obj: Any, prefix: str = "") -> None:
             if isinstance(obj, dict) or hasattr(obj, "items"):
                 for k, v in obj.items():
@@ -38,24 +39,56 @@ OUTPUT_DIR = BASE_DIR / "data" / "outputs"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def get_configured_gemini_api_keys() -> list[str]:
+    """
+    Thu thập động danh sách Gemini API Keys theo thứ tự ưu tiên:
+    1. Streamlit Secrets (st.secrets)
+    2. Biến môi trường hệ thống (os.environ)
+    3. File .env
+    Hỗ trợ cả GEMINI_API_KEY_1..9, GEMINI_API_KEY, GOOGLE_API_KEY.
+    """
+    keys: list[str] = []
+
+    # 1. Thử từ Streamlit Secrets
+    try:
+        import streamlit as st
+
+        if hasattr(st, "secrets"):
+            for i in range(1, 10):
+                k = f"GEMINI_API_KEY_{i}"
+                if k in st.secrets and str(st.secrets[k]).strip():
+                    val = str(st.secrets[k]).strip()
+                    if val not in keys:
+                        keys.append(val)
+            for k in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key", "api_key"]:
+                if k in st.secrets and str(st.secrets[k]).strip():
+                    val = str(st.secrets[k]).strip()
+                    if val not in keys:
+                        keys.append(val)
+    except Exception:
+        pass
+
+    # 2. Thử từ os.environ
+    for i in range(1, 10):
+        val = os.getenv(f"GEMINI_API_KEY_{i}", "").strip()
+        if val and val not in keys:
+            keys.append(val)
+
+    for k in ["GEMINI_API_KEY", "GOOGLE_API_KEY"]:
+        val = os.getenv(k, "").strip()
+        if val and val not in keys:
+            keys.append(val)
+
+    return keys
+
+
 # Google AI Studio Configuration
 GEMINI_API_KEY_1 = os.getenv("GEMINI_API_KEY_1", "").strip()
 GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "").strip()
 GEMINI_API_KEY_3 = os.getenv("GEMINI_API_KEY_3", "").strip()
 
-# Thu thập các key có giá trị theo đúng thứ tự ưu tiên 1 > 2 > 3...
-_keys_list: list[str] = []
-for i in range(1, 10):
-    k = os.getenv(f"GEMINI_API_KEY_{i}", "").strip()
-    if k and k not in _keys_list:
-        _keys_list.append(k)
-
-# Tương thích ngược: nếu có biến GEMINI_API_KEY đơn lẻ
-_legacy_key = os.getenv("GEMINI_API_KEY", "").strip()
-if _legacy_key and _legacy_key not in _keys_list:
-    _keys_list.insert(0, _legacy_key)
-
-GEMINI_API_KEYS: list[str] = _keys_list
+GEMINI_API_KEYS: list[str] = get_configured_gemini_api_keys()
 GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
@@ -118,20 +151,73 @@ def get_ffmpeg_binary() -> str:
         return "ffmpeg"
 
 
-def normalize_netscape_cookies(raw_text: str) -> tuple[str, int]:
+def get_js_runtimes_config() -> dict[str, Any]:
     """
-    Chuẩn hóa nội dung cookies sang định dạng chuẩn Netscape HTTP Cookie File cho yt-dlp:
-    1. Tự động giải mã Base64 (nếu chuỗi được mã hóa Base64 để chống lỗi trình soạn thảo web).
-    2. Bóc tách dấu ngoặc kép TOML/Python thừa (''' hoặc \"\"\").
-    3. Chuyển đổi escape characters ('\\n' -> '\n', '\\t' -> '\t').
-    4. TỰ ĐỘNG PHỤC HỒI TAB: Trình duyệt web (khi copy-paste) thường biến dấu Tab thành 2-4 khoảng trắng (Spaces).
-       yt-dlp bắt buộc phải có Tab chuẩn để phân tách 7 trường; nếu không có Tab yt-dlp sẽ âm thầm bỏ qua cookie.
-       Hàm này tự động phân tách và ghép lại bằng Tab thật 100%.
-    5. Đảm bảo có header '# Netscape HTTP Cookie File'.
-    Trả về: (nội dung chuẩn hóa, số lượng cookie hợp lệ)
+    Tự động phát hiện và cấu hình JavaScript Runtime cho yt-dlp (Node.js, Deno, Bun)
+    hỗ trợ đầy đủ cả Windows và môi trường Linux / Debian của Streamlit Cloud.
+    Gói 'nodejs' trên Debian cài binary tại /usr/bin/nodejs. Hàm này sẽ trỏ đúng binary
+    và tự động tạo symlink 'node' vào thư mục PATH nếu cần.
+    """
+    node_exe = (
+        shutil.which("node")
+        or shutil.which("nodejs")
+        or (Path("/usr/bin/nodejs") if Path("/usr/bin/nodejs").exists() else None)
+        or (Path("/usr/bin/node") if Path("/usr/bin/node").exists() else None)
+        or (
+            Path(r"C:\Program Files\nodejs\node.exe")
+            if Path(r"C:\Program Files\nodejs\node.exe").exists()
+            else None
+        )
+    )
+
+    if node_exe:
+        node_str = str(node_exe)
+        # Trên Linux nếu chỉ có nodejs mà không có lệnh node, tự động tạo symlink trợ giúp
+        if os.name != "nt" and not shutil.which("node"):
+            try:
+                tmp_bin = TEMP_DIR / "bin"
+                tmp_bin.mkdir(parents=True, exist_ok=True)
+                node_sym = tmp_bin / "node"
+                if not node_sym.exists():
+                    node_sym.symlink_to(node_str)
+                if str(tmp_bin) not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = f"{tmp_bin}:{os.environ.get('PATH', '')}"
+            except Exception:
+                pass
+        return {"node": {"path": node_str}}
+
+    deno_exe = (
+        shutil.which("deno")
+        or (Path("/usr/bin/deno") if Path("/usr/bin/deno").exists() else None)
+        or (
+            Path.home() / ".deno" / "bin" / "deno"
+            if (Path.home() / ".deno" / "bin" / "deno").exists()
+            else None
+        )
+    )
+    if deno_exe:
+        return {"deno": {"path": str(deno_exe)}}
+
+    bun_exe = shutil.which("bun")
+    if bun_exe:
+        return {"bun": {"path": str(bun_exe)}}
+
+    return {}
+
+
+def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
+    """
+    Chuẩn hóa nội dung cookies sang định dạng chuẩn Netscape HTTP Cookie File cho yt-dlp.
+    Tạo ra 2 phiên bản độc lập:
+    1. Full Cookies (toàn bộ cookie gốc, giữ nguyên các token chuẩn kể cả SIDTS, phục hồi tab).
+    2. Guest/Visitor Cookies (lọc chỉ giữ lại các token cookie khách an toàn trên Cloud Datacenter,
+       loại bỏ hoàn toàn session tài khoản cá nhân SID/LOGIN_INFO/PSID/SIDCC để ngăn YouTube
+       kích hoạt cơ chế chống chiếm đoạt tài khoản: 'The page needs to be reloaded').
+
+    Trả về: (full_content, guest_content, full_count, guest_count)
     """
     if not raw_text or not raw_text.strip():
-        return "", 0
+        return "", "", 0, 0
 
     content = raw_text.strip()
 
@@ -162,57 +248,89 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, int]:
         content = content.replace("\\t", "\t")
 
     lines = content.splitlines()
-    valid_cookies: list[str] = []
+    full_cookies: list[str] = []
+    guest_cookies: list[str] = []
+
+    # Danh sách cookie khách an toàn không mang định danh tài khoản cá nhân
+    guest_safe_names = {
+        "VISITOR_INFO1_LIVE",
+        "VISITOR_PRIVACY_METADATA",
+        "PREF",
+        "YSC",
+        "__Secure-BUCKET",
+        "GPS",
+        "SOCS",
+        "CONSENT",
+    }
+
+    # Danh sách các token tài khoản cá nhân gây lỗi 'The page needs to be reloaded' khi dùng chéo IP
+    account_session_names = {
+        "LOGIN_INFO",
+        "SID",
+        "HSID",
+        "SSID",
+        "APISID",
+        "SAPISID",
+        "__Secure-1PAPISID",
+        "__Secure-3PAPISID",
+        "__Secure-1PSID",
+        "__Secure-3PSID",
+        "__Secure-1PSIDTS",
+        "__Secure-3PSIDTS",
+        "SIDCC",
+        "__Secure-1PSIDCC",
+        "__Secure-3PSIDCC",
+        "__Secure-YNID",
+        "__Secure-ROLLOUT_TOKEN",
+        "DEVICE_INFO",
+        "__Secure-YT_TVFAS",
+        "__Secure-YT_DERP",
+    }
 
     for line in lines:
         line_str = line.strip()
         if not line_str or line_str.startswith("#"):
             continue
 
-        # Nếu dòng đã có ít nhất 6 dấu tab chuẩn Netscape
+        domain = sub = path = sec = exp = name = val = ""
+        # Trường hợp 1: Dòng đã có ít nhất 6 dấu tab chuẩn Netscape
         if line_str.count("\t") >= 6:
             parts = line_str.split("\t")
             if len(parts) >= 7 and parts[0]:
-                cookie_name = parts[5].strip()
-                # QUAN TRỌNG: Loại bỏ __Secure-1PSIDTS và __Secure-3PSIDTS
-                # sidts là token phiên TLS-fingerprint của máy cá nhân. Đem sang Cloud Datacenter (AWS)
-                # sẽ kích hoạt cơ chế chống bot của YouTube: "The page needs to be reloaded".
-                if cookie_name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
-                    continue
-                valid_cookies.append("\t".join(parts[:7]))
+                domain, sub, path, sec, exp, name = parts[:6]
+                val = parts[6]
             elif len(parts) == 6 and parts[0]:
-                cookie_name = parts[5].strip()
-                if cookie_name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
-                    continue
-                valid_cookies.append("\t".join(parts) + "\t")
-            continue
+                domain, sub, path, sec, exp, name = parts[:6]
+                val = ""
+        else:
+            # Trường hợp 2: Dòng bị biến thành khoảng trắng do copy-paste qua web
+            parts = re.split(r"\s+", line_str)
+            if len(parts) >= 7 and parts[0].startswith(
+                (".", "http", "www", "youtube", "google", "zing")
+            ):
+                domain, sub, path, sec, exp, name = parts[:6]
+                val = " ".join(parts[6:])
+            elif len(parts) == 6 and parts[0].startswith(
+                (".", "http", "www", "youtube", "google", "zing")
+            ):
+                domain, sub, path, sec, exp, name = parts[:6]
+                val = ""
 
-        # Nếu bị biến thành khoảng trắng do copy-paste trên trình duyệt web:
-        # Netscape format gồm 7 trường: domain, include_subdomains, path, secure, expires, name, value
-        # 6 trường đầu tiên tuyệt đối không bao giờ chứa khoảng trắng!
-        parts = re.split(r"\s+", line_str)
-        if len(parts) >= 7 and parts[0].startswith(
-            (".", "http", "www", "youtube", "google", "zing")
-        ):
-            domain, sub, path, sec, exp, name = parts[:6]
-            if name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
-                continue
-            val = " ".join(parts[6:])
-            valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
-        elif len(parts) == 6 and parts[0].startswith(
-            (".", "http", "www", "youtube", "google", "zing")
-        ):
-            domain, sub, path, sec, exp, name = parts
-            if name in ("__Secure-1PSIDTS", "__Secure-3PSIDTS"):
-                continue
-            valid_cookies.append(f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t")
+        if domain and name:
+            cookie_line = f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{val}"
+            full_cookies.append(cookie_line)
 
-    if not valid_cookies:
-        return "", 0
+            # Lọc cookie khách: chỉ giữ token khách an toàn, bỏ token session cá nhân
+            if name in guest_safe_names or (
+                name not in account_session_names and not name.startswith(("__Secure-", "SID"))
+            ):
+                guest_cookies.append(cookie_line)
 
     header = "# Netscape HTTP Cookie File\n# This file is generated for yt-dlp.\n\n"
-    normalized_content = header + "\n".join(valid_cookies) + "\n"
-    return normalized_content, len(valid_cookies)
+    full_content = (header + "\n".join(full_cookies) + "\n") if full_cookies else ""
+    guest_content = (header + "\n".join(guest_cookies) + "\n") if guest_cookies else ""
+
+    return full_content, guest_content, len(full_cookies), len(guest_cookies)
 
 
 def find_cookie_content_from_secrets_or_env() -> str:
@@ -271,19 +389,28 @@ def find_cookie_content_from_secrets_or_env() -> str:
     return ""
 
 
-def get_cookie_file_path() -> Path | None:
+def get_cookie_file_path(mode: str = "guest") -> Path | None:
     """
     Trả về đường dẫn file cookies.txt hợp lệ nếu có.
-    Tự động phục hồi định dạng chuẩn Netscape từ Cloud Secrets hoặc local files.
+    mode='guest': Cookie visitor/khách (VISITOR_INFO1_LIVE, PREF...) tuyệt đối không dính lỗi
+                  'The page needs to be reloaded' khi chạy trên Cloud Datacenter (AWS/Streamlit Cloud).
+    mode='full':  Toàn bộ cookies đầy đủ kể cả session tài khoản (nếu chạy local hoặc bypass được IP challenge).
     """
     raw_content = find_cookie_content_from_secrets_or_env()
     if raw_content:
-        normalized, count = normalize_netscape_cookies(raw_content)
-        if normalized and count > 0:
-            runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
+        full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(raw_content)
+        if mode == "guest" and guest_c and guest_cnt > 0:
+            cookie_path = TEMP_DIR / "cookie_guest_runtime.txt"
             try:
-                runtime_cookie.write_text(normalized, encoding="utf-8")
-                return runtime_cookie
+                cookie_path.write_text(guest_c, encoding="utf-8")
+                return cookie_path
+            except Exception:
+                pass
+        elif mode == "full" and full_c and full_cnt > 0:
+            cookie_path = TEMP_DIR / "cookie_full_runtime.txt"
+            try:
+                cookie_path.write_text(full_c, encoding="utf-8")
+                return cookie_path
             except Exception:
                 pass
 
@@ -292,19 +419,21 @@ def get_cookie_file_path() -> Path | None:
         BASE_DIR / "cookies_master.txt",
         TEMP_DIR / "cookies.txt",
         TEMP_DIR / "cookies_master.txt",
-        TEMP_DIR / "cookie_runtime.txt",
     ]:
         if candidate.exists() and candidate.stat().st_size > 0:
             try:
                 content = candidate.read_text(encoding="utf-8", errors="replace")
-                normalized, count = normalize_netscape_cookies(content)
-                if normalized and count > 0:
-                    runtime_cookie = TEMP_DIR / "cookie_runtime.txt"
-                    if candidate != runtime_cookie:
-                        runtime_cookie.write_text(normalized, encoding="utf-8")
-                    return runtime_cookie
+                full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(content)
+                if mode == "guest" and guest_c and guest_cnt > 0:
+                    cookie_path = TEMP_DIR / "cookie_guest_runtime.txt"
+                    cookie_path.write_text(guest_c, encoding="utf-8")
+                    return cookie_path
+                elif mode == "full" and full_c and full_cnt > 0:
+                    cookie_path = TEMP_DIR / "cookie_full_runtime.txt"
+                    cookie_path.write_text(full_c, encoding="utf-8")
+                    return cookie_path
             except Exception:
-                return candidate
+                pass
 
     return None
 
@@ -314,14 +443,20 @@ def get_cookie_status() -> tuple[bool, int, str]:
     Kiểm tra trạng thái cấu hình cookies YouTube.
     Trả về: (has_cookies: bool, cookie_count: int, message: str)
     """
-    cookie_path = get_cookie_file_path()
-    if not cookie_path or not cookie_path.exists():
+    guest_path = get_cookie_file_path(mode="guest")
+    full_path = get_cookie_file_path(mode="full")
+    if not guest_path and not full_path:
+        return False, 0, "Chưa tìm thấy YouTube cookies trong Secrets/Môi trường."
+
+    active_path = guest_path or full_path
+    if active_path is None:
         return False, 0, "Chưa tìm thấy YouTube cookies trong Secrets/Môi trường."
 
     try:
-        content = cookie_path.read_text(encoding="utf-8", errors="replace")
+        content = active_path.read_text(encoding="utf-8", errors="replace")
         lines = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
-        return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công"
+        mode_label = "Chế độ Cloud-Safe" if active_path == guest_path else "Chế độ Toàn phần"
+        return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công ({mode_label})"
     except Exception as e:
         return False, 0, f"Lỗi đọc cookie: {e}"
 
@@ -336,4 +471,3 @@ def get_local_cookies_as_base64() -> str | None:
             except Exception:
                 pass
     return None
-

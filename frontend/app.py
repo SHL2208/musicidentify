@@ -47,7 +47,10 @@ def main():
     render_header()
 
     # Initialize Backend Client
-    client = BackendClient(model_override=st.session_state.model_name)
+    api_key_override = st.session_state.get("gemini_api_key_override") or None
+    client = BackendClient(
+        api_key_override=api_key_override, model_override=st.session_state.model_name
+    )
 
     # Tabs
     # tab1, tab2, tab3 = st.tabs(
@@ -87,7 +90,10 @@ def main():
                 st.write("")
                 st.write("")
                 submit_btn = st.button(
-                    "🚀 Bắt đầu Giám định", type="primary", key="btn_url", **get_width_kwargs(st.button)
+                    "🚀 Bắt đầu Giám định",
+                    type="primary",
+                    key="btn_url",
+                    **get_width_kwargs(st.button),
                 )
             if submit_btn and query_input.strip():
                 query_to_process = query_input.strip()
@@ -104,7 +110,10 @@ def main():
                 st.write("")
                 st.write("")
                 submit_file_btn = st.button(
-                    "🚀 Bắt đầu Giám định", type="primary", key="btn_file", **get_width_kwargs(st.button)
+                    "🚀 Bắt đầu Giám định",
+                    type="primary",
+                    key="btn_file",
+                    **get_width_kwargs(st.button),
                 )
             if submit_file_btn and uploaded_audio:
                 save_path = TEMP_DIR / uploaded_audio.name
@@ -128,6 +137,8 @@ def main():
                         "Sign in to confirm you’re not a bot" in err_msg
                         or "HTTP Error 403" in err_msg
                         or "403: Forbidden" in err_msg
+                        or "The page needs to be reloaded" in err_msg
+                        or "Requested format is not available" in err_msg
                     ):
                         st.error(
                             "❌ **YouTube đã chặn tải trực tiếp từ máy chủ Cloud (Bot Detection / HTTP 403 Forbidden).**"

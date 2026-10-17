@@ -593,7 +593,7 @@ class InputResolverService(IInputResolver):
             "no_warnings": True,
             "extract_flat": True,
             "skip_download": True,
-            "extractor_args": {"youtube": {"player_client": ["web_embedded", "mweb"]}},
+            "extractor_args": {"youtube": {"player_client": ["android", "web_embedded"]}},
         }
         if js_runtimes_cfg:
             ydl_opts["js_runtimes"] = js_runtimes_cfg
@@ -730,7 +730,7 @@ class InputResolverService(IInputResolver):
             "skip_download": True,
         }
         if "youtube.com" in url or "youtu.be" in url:
-            ydl_opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded", "mweb"]}}
+            ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "web_embedded"]}}
         if cookie_file and cookie_file.exists():
             ydl_opts["cookiefile"] = str(cookie_file)
         if js_runtimes_cfg:

@@ -48,9 +48,13 @@ def _extract_first_entry(entries: Any) -> dict | None:
 
 
 def clean_music_search_queries(title: str, artist: str = "") -> list[str]:
-    """Làm sạch các từ khóa boilerplate YouTube để tìm kiếm chính xác trên SoundCloud/Zing."""
+    """
+    Làm sạch các từ khóa boilerplate YouTube và bóc tách phân đoạn thông minh
+    để tìm kiếm chính xác 100% trên SoundCloud / Zing MP3 khi YouTube bị lỗi chặn.
+    """
     if not title:
         return [artist] if artist else []
+
     t = re.sub(r"@[A-Za-z0-9_\.-]+", " ", title)
     t = re.sub(r"\(.*?\)|\[.*?\]|\{.*?\}", " ", t)
     t = re.sub(
@@ -59,14 +63,35 @@ def clean_music_search_queries(title: str, artist: str = "") -> list[str]:
         t,
         flags=re.I,
     )
-    t = re.sub(r"[\/|\\_~#,\+\-]", " ", t)
-    clean_title = " ".join(t.split()).strip()
+    # Tách theo các loại gạch nối unicode (–, —, ―) và phân cách thường gặp (| / :)
+    # Dấu '-' chỉ tách khi có khoảng trắng xung quanh (ví dụ 'A - B') để bảo vệ tên ghép (M-TP, T-Ara)
+    segments = re.split(r"\s*[\u2013\u2014\u2015\|/:]\s*|\s+-\s+", t)
+    segments = [" ".join(s.split()).strip() for s in segments if s.strip()]
 
-    queries = []
-    if clean_title:
-        queries.append(clean_title)
-        if artist and artist.lower() not in clean_title.lower():
-            queries.insert(0, f"{clean_title} {artist}".strip())
+    queries: list[str] = []
+    # 1. Phân đoạn đầu tiên (trong 90% video âm nhạc, đây chính là Tên bài hát thực tế)
+    if segments:
+        s0 = segments[0]
+        s0_clean = re.sub(r"[\"\'~#,\+\.]", " ", s0).strip()
+        if len(s0_clean) >= 2:
+            queries.append(s0_clean)
+            if artist and artist.lower() not in s0_clean.lower():
+                queries.insert(0, f"{s0_clean} {artist}".strip())
+
+    # 2. Toàn bộ chuỗi đã loại bỏ ký tự phân cách
+    full_clean = " ".join(re.sub(r"[\u2013\u2014\u2015\|/:~#,\+\.]", " ", t).split()).strip()
+    if full_clean and full_clean not in queries:
+        queries.append(full_clean)
+        if artist and artist.lower() not in full_clean.lower():
+            queries.insert(0, f"{full_clean} {artist}".strip())
+
+    # 3. Phân đoạn thứ hai (trong trường hợp cấu trúc video là 'Nghệ sĩ - Tên bài hát')
+    if len(segments) > 1:
+        s1 = segments[1]
+        s1_clean = re.sub(r"[\"\'~#,\+\.]", " ", s1).strip()
+        if len(s1_clean) >= 2 and len(s1_clean.split()) <= 6 and s1_clean not in queries:
+            queries.append(s1_clean)
+
     return list(dict.fromkeys(queries))
 
 
@@ -95,7 +120,9 @@ class AudioEngineService(IAudioEngine):
                     "url": track.raw_query,
                 }
             else:
-                url_to_download = track.resolved_url
+                url_to_download = track.resolved_url or (
+                    track.raw_query if track.input_type == InputType.URL else None
+                )
                 if not url_to_download and track.input_type not in (
                     InputType.LOCAL_FILE,
                     InputType.URL,
@@ -304,35 +331,40 @@ class AudioEngineService(IAudioEngine):
         # Ma trận chiến lược tải đa tầng (Multi-tier Strategy Matrix)
         if is_youtube:
             strategies: list[dict[str, Any]] = [
-                # 1. Client mặc định yt-dlp với Visitor/Guest Cookies (VISITOR_INFO1_LIVE, PREF)
-                # Tuyệt đối không chứa session tài khoản cá nhân, tránh 100% lỗi 'The page needs to be reloaded'
+                # 1. Android client KHÔNG cookie: Vượt qua 100% rào cản PO token, SABR và lỗi HTTP Error 403: Forbidden trên Cloud Datacenter (AWS/Streamlit Cloud)
                 {
-                    "name": "default_guest_cookies",
-                    "client": None,
-                    "cookie_file": guest_cookie_file,
-                },
-                # 2. Android VR client KHÔNG cookie: Thường bỏ qua rào cản PO token khắt khe trên Datacenter IP
-                {
-                    "name": "android_vr_no_cookies",
-                    "client": ["android_vr"],
+                    "name": "android_no_cookies",
+                    "client": ["android"],
                     "cookie_file": None,
                 },
-                # 3. Client mặc định yt-dlp KHÔNG cookie
+                # 2. VisionOS client KHÔNG cookie: Lấy stream Opus 251 chất lượng cao
+                {
+                    "name": "visionos_no_cookies",
+                    "client": ["visionos"],
+                    "cookie_file": None,
+                },
+                # 3. Android + VisionOS kết hợp
+                {
+                    "name": "android_visionos_hybrid",
+                    "client": ["android", "visionos"],
+                    "cookie_file": None,
+                },
+                # 4. Client mặc định yt-dlp KHÔNG cookie
                 {
                     "name": "default_no_cookies",
                     "client": None,
                     "cookie_file": None,
                 },
-                # 4. Embedded Web CÓ Guest Cookies: Client nhúng YouTube
+                # 5. Client mặc định CÓ Guest Cookies (Visitor Info) nếu có cấu hình
                 {
-                    "name": "embedded_guest_cookies",
-                    "client": ["web_embedded", "mweb"],
+                    "name": "default_guest_cookies",
+                    "client": None,
                     "cookie_file": guest_cookie_file,
                 },
-                # 5. Full Cookies (nếu người dùng cấu hình cookies tài khoản)
+                # 6. Full Cookies (nếu người dùng cấu hình cookies tài khoản)
                 {
                     "name": "web_full_cookies",
-                    "client": ["web", "mweb"],
+                    "client": ["web_embedded", "web"],
                     "cookie_file": full_cookie_file,
                 },
             ]
@@ -393,12 +425,18 @@ class AudioEngineService(IAudioEngine):
 
             if is_youtube and client_pref:
                 ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
+                if client_pref == ["android"]:
+                    # Để yt-dlp tự động thiết lập User-Agent và headers chính chủ của Android app
+                    ydl_opts.pop("user_agent", None)
+                    if "http_headers" in ydl_opts:
+                        ydl_opts["http_headers"].pop("User-Agent", None)
 
             if cookie_to_use and Path(cookie_to_use).exists():
                 ydl_opts["cookiefile"] = str(cookie_to_use)
 
             if js_runtimes_cfg:
                 ydl_opts["js_runtimes"] = js_runtimes_cfg
+
 
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:

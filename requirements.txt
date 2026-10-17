@@ -13,7 +13,7 @@ scipy>=1.13.0
 numpy>=1.26.0
 matplotlib>=3.9.0
 imageio-ffmpeg>=0.5.1
-yt-dlp[default]>=2025.2.0
+yt-dlp[default]>=2025.6.0
 
 # Data Manipulation & Reports
 pandas>=2.2.0

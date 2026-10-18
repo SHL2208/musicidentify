@@ -68,6 +68,10 @@ class DetectionResultModel(Base):
     reasons = Column(JSON, default=list)
     detailed_explanation = Column(Text, nullable=True)
     model_used = Column(String(50), nullable=True)
+    ai_model_is_ai = Column(Boolean, nullable=True)
+    ai_model_verdict = Column(String(50), nullable=True)
+    consensus_is_ai = Column(Boolean, nullable=True)
+    consensus_verdict = Column(String(50), nullable=True)
     processed_at = Column(DateTime(timezone=True), default=get_utc_now)
 
     track = relationship("TrackModel", back_populates="detection_result")

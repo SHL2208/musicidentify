@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,9 @@ _DEFAULT_HUMAN_WHITELIST = [
     "loops",
 ]
 
-_DEFAULT_PURE_AI_DISTRIBUTORS = [
-    "incom",
-    "tte fast considerate",
-]
+# Loại bỏ logic gán nhãn AI cứng theo nhà phân phối để tránh False Positives và False Negatives.
+# Nhà phân phối sẽ chỉ được đưa vào prompt làm ngữ cảnh mềm cho mô hình thẩm định.
+_DEFAULT_PURE_AI_DISTRIBUTORS: list[str] = []
 
 _DEFAULT_AI_ARTIST_REGEXES = [
     (r"\blofi quê hương\b", "Lofi Quê Hương"),
@@ -73,6 +73,14 @@ _VERIFIED_HUMAN_ARTISTS = {
     "phan duy anh",
     "rayo",
     "jaykii",
+    "sara lưu",
+    "giang hồng ngọc",
+    "tuấn phi",
+    "âu hoàng",
+    "arson",
+    "khánh hòa",
+    "như ý",
+    "toharmony",
     "vicky nhung",
     "chu thúy quỳnh",
     "the masked singer",
@@ -113,10 +121,26 @@ _VERIFIED_HUMAN_ARTISTS = {
 }
 
 
+def remove_vietnamese_accents(text: str) -> str:
+    """Loại bỏ dấu tiếng Việt để đối sánh mềm tên nghệ sĩ."""
+    if not text:
+        return ""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
+
+_VERIFIED_HUMAN_ARTISTS_UNACCENTED = {
+    remove_vietnamese_accents(name) for name in _VERIFIED_HUMAN_ARTISTS
+}
+
+
 def is_verified_human_artist(artist_str: str, title_str: str = "") -> bool:
     """Xác thực xem nghệ sĩ hoặc tiêu đề có thuộc danh sách nghệ sĩ người thật đã được xác thực không."""
     a_low = (artist_str or "").lower().strip()
     t_low = (title_str or "").lower().strip()
+    a_unacc = remove_vietnamese_accents(a_low)
+    t_unacc = remove_vietnamese_accents(t_low)
 
     # 1. Tuyệt đối không xác thực nếu thuộc danh sách các dự án nghệ sĩ ảo AI đã biết
     for pat, _ in _DEFAULT_AI_ARTIST_REGEXES:
@@ -126,19 +150,31 @@ def is_verified_human_artist(artist_str: str, title_str: str = "") -> bool:
     # 2. Tách các nghệ sĩ theo dấu phân cách hợp tác (tránh nhầm lẫn 'Anh Vũ' với 'Vũ')
     tokens = [
         tok.strip().rstrip(".")
-        for tok in re.split(r"[,/&;]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)", a_low)
+        for tok in re.split(r"[,/&;+]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)", a_low)
         if tok.strip()
     ]
 
     for tok in tokens:
         clean_tok = re.sub(r"^prod\.?\s*", "", tok).strip()
-        if clean_tok in _VERIFIED_HUMAN_ARTISTS or tok in _VERIFIED_HUMAN_ARTISTS:
+        clean_tok_unacc = remove_vietnamese_accents(clean_tok)
+        if (
+            clean_tok in _VERIFIED_HUMAN_ARTISTS
+            or clean_tok_unacc in _VERIFIED_HUMAN_ARTISTS_UNACCENTED
+            or tok in _VERIFIED_HUMAN_ARTISTS
+            or remove_vietnamese_accents(tok) in _VERIFIED_HUMAN_ARTISTS_UNACCENTED
+        ):
             return True
 
     # 3. Khớp các cụm từ nghệ sĩ / chương trình dài (VD: 'anh trai vượt ngàn chông gai', 'the masked singer')
     for kn in _VERIFIED_HUMAN_ARTISTS:
-        if len(kn.split()) > 1 and (kn in a_low or kn in t_low):
-            return True
+        kn_unacc = remove_vietnamese_accents(kn)
+        if len(kn.split()) > 1:
+            if kn in a_low or kn in t_low or kn_unacc in a_unacc or kn_unacc in t_unacc:
+                return True
+        else:
+            # Nghệ sĩ đơn từ (VD: 'toharmony', 'arson')
+            if kn == a_low or kn_unacc == a_unacc:
+                return True
 
     return False
 
@@ -379,9 +415,6 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 "reason": f"Phát hiện định dạng phát hành hàng loạt đặc trưng của dự án nhạc AI: '{match_batch.group()}'.",
             }
 
-        # 2d. Kiểm tra nhà phân phối chuyên phát hành nhạc AI thương mại (Catalog / Distributor Intelligence)
-        distributor = str(metadata.get("distributor") or "").strip()
-        distributor_lower = distributor.lower()
         artist_lower = str(
             metadata.get("target_artist")
             or metadata.get("artist")
@@ -389,10 +422,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             or ""
         ).lower()
 
-        human_distributor_whitelist, pure_ai_distributors, ai_artist_regexes = get_dynamic_catalog()
-        is_whitelisted_distributor = any(
-            w in distributor_lower for w in human_distributor_whitelist
-        )
+        _, _, ai_artist_regexes = get_dynamic_catalog()
 
         # 1. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được xác thực 100% qua catalog
         for pat, proj_name in ai_artist_regexes:
@@ -405,36 +435,14 @@ class SignalAnalyzerService(ISignalAnalyzer):
                     "reason": f"Dự án âm nhạc '{proj_name}' là sản phẩm phát hành hàng loạt từ mô hình sinh nhạc AI.",
                 }
 
-        # 2. Kiểm tra nhà phân phối chuyên phát hành nhạc AI thương mại (Catalog / Distributor Intelligence)
-        if not is_whitelisted_distributor:
-            for ai_dist in pure_ai_distributors:
-                if ai_dist in distributor_lower:
-                    # NGOẠI LỆ: Nếu là INCOM nhưng có tên nghệ sĩ cá nhân xác thực
-                    # (không phải tên chung chung/ẩn danh và không thuộc danh mục dự án AI sinh hàng loạt),
-                    # thì chuyển giao cho audio forensics phân tích âm học, tránh vu oan cho ca sĩ độc lập (VD: Hồi Tưởng - Dytins Nguyễn).
-                    is_generic_artist = (
-                        not artist_lower
-                        or artist_lower in _GENERIC_ANONYMOUS_ARTISTS
-                        or any(
-                            g in artist_lower
-                            for g in ["ẩn danh", "anonymous", "unknown", "ai channel"]
-                        )
-                    )
-                    if (
-                        ai_dist == "incom"
-                        and not is_generic_artist
-                        and not any(re.search(pat, artist_lower) for pat, _ in ai_artist_regexes)
-                    ):
-                        continue
-                    return {
-                        "is_ai": True,
-                        "verdict_type": VerdictType.AI_GENERATED,
-                        "confidence": 0.98,
-                        "engine": "AI Studio/Catalog",
-                        "reason": f"Nhà phân phối '{distributor}' nằm trong danh mục đơn vị phát hành nhạc AI chuyên biệt.",
-                    }
+        # 2. Nhà phân phối: Không gán nhãn AI cứng tại Tầng Heuristics.
+        # Nhà phân phối được đưa vào Metadata làm ngữ cảnh mềm cho mô hình thẩm định chuyên sâu.
 
         return None
+
+    def is_verified_human_artist(self, artist_str: str, title_str: str = "") -> bool:
+        """Xác thực nghệ sĩ người thật (ủy quyền cho hàm is_verified_human_artist)."""
+        return is_verified_human_artist(artist_str, title_str)
 
     def _compute_pitch_jitter(self, mono_harm: np.ndarray, sr: int = 44100) -> dict[str, Any]:
         """

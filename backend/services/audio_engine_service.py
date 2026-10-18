@@ -416,7 +416,7 @@ class AudioEngineService(IAudioEngine):
 
             # 1. NẾU CÓ COOKIE TÀI KHOẢN (cookies.txt, cookies_master.txt...): ƯU TIÊN SỐ 1!
             # Tải ngay bằng cookie tài khoản để bypass bot guard; tự động fallback qua từng file nếu có
-            for idx, c_path in enumerate(full_cookie_paths):
+            for c_path in full_cookie_paths:
                 suffix = f"_{c_path.stem}" if len(full_cookie_paths) > 1 else ""
                 strategies.extend([
                     {

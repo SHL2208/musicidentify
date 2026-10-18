@@ -175,6 +175,10 @@ class DatabaseTrackRepository(ITrackRepository):
                     existing_res.reasons = result.reasons or []
                     existing_res.detailed_explanation = result.detailed_explanation
                     existing_res.model_used = result.model_used
+                    existing_res.ai_model_is_ai = result.ai_model_is_ai
+                    existing_res.ai_model_verdict = result.ai_model_verdict
+                    existing_res.consensus_is_ai = result.consensus_is_ai
+                    existing_res.consensus_verdict = result.consensus_verdict
                 else:
                     existing_res = DetectionResultModel(
                         id=res_id,
@@ -187,6 +191,10 @@ class DatabaseTrackRepository(ITrackRepository):
                         reasons=result.reasons or [],
                         detailed_explanation=result.detailed_explanation,
                         model_used=result.model_used,
+                        ai_model_is_ai=result.ai_model_is_ai,
+                        ai_model_verdict=result.ai_model_verdict,
+                        consensus_is_ai=result.consensus_is_ai,
+                        consensus_verdict=result.consensus_verdict,
                     )
                     session.add(existing_res)
                     session.flush()
@@ -648,4 +656,8 @@ class DatabaseTrackRepository(ITrackRepository):
             processed_at=rm.processed_at.isoformat() if rm.processed_at else "",
             model_used=rm.model_used,
             is_human_corrected=is_corrected,
+            ai_model_is_ai=rm.ai_model_is_ai,
+            ai_model_verdict=rm.ai_model_verdict,
+            consensus_is_ai=rm.consensus_is_ai,
+            consensus_verdict=rm.consensus_verdict,
         )

@@ -119,11 +119,14 @@ def render_batch_view(client: BackendClient):
         for r in report.results:
             origin_tag = "⚡ CSDL (Cached)" if getattr(r, "is_cached", False) else "🔄 Quét mới"
             corr_tag = "🧑‍🎤 Đã đính chính" if getattr(r, "is_human_corrected", False) else "-"
+            ai_model_col = r.ai_model_verdict or ("AI" if r.ai_model_is_ai else "HUMAN")
+            consensus_col = r.consensus_verdict or r.verdict_label
             table_rows.append(
                 {
                     "Tên bài hát": r.track_title,
                     "Nguồn link": r.source_url or "N/A",
-                    "Kết luận": r.verdict_label,
+                    "Đánh giá Model AI": ai_model_col,
+                    "Kết luận Tổng hợp": consensus_col,
                     "Nguồn gốc": origin_tag,
                     "Đính chính": corr_tag,
                     "Độ tin cậy": f"{r.confidence_score * 100:.0f}%",

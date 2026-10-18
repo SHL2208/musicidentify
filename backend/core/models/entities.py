@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class InputType(str, Enum):
@@ -169,6 +171,31 @@ class DetectionResult(BaseModel):
         default=False,
         description="True nếu kết quả đã được chuyên gia/con người đính chính thủ công",
     )
+    ai_model_is_ai: bool | None = Field(
+        default=None,
+        description="Kết quả do mô hình AI trực tiếp đánh giá (True=AI, False=Human, None=Không dùng AI)",
+    )
+    ai_model_verdict: str | None = Field(
+        default=None,
+        description="Nhãn phân loại nguyên bản từ mô hình AI (VD: AI_GENERATED, PROCESSED_HUMAN, N/A)",
+    )
+    consensus_is_ai: bool | None = Field(
+        default=None,
+        description="Kết luận tổng hợp từ tiêu chí cứng ở code và mô hình AI (True=AI, False=Human)",
+    )
+    consensus_verdict: str | None = Field(
+        default=None,
+        description="Nhãn phân loại tổng hợp cuối cùng sau trọng tài & tiêu chí cứng",
+    )
+
+    @model_validator(mode="after")
+    def sync_consensus_fields(self) -> DetectionResult:
+        if self.consensus_is_ai is None:
+            self.consensus_is_ai = self.is_ai
+        if self.consensus_verdict is None:
+            vt = self.verdict_type
+            self.consensus_verdict = vt.value if hasattr(vt, "value") else str(vt)
+        return self
 
 
 class BatchReport(BaseModel):

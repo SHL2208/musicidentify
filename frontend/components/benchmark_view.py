@@ -24,14 +24,22 @@ def render_benchmark_view():
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        default_file = str(BASE_DIR / "testcase.xlsx")
-        file_options = [
-            "Sử dụng file có sẵn trong project (testcase.xlsx)",
-            "Tải lên file Excel khác",
-        ]
-        file_source = st.radio("Nguồn file test sample:", file_options, horizontal=True)
+        available_files = []
+        for cand in [
+            "data/testcase.xlsx",
+            "data/testcase2.xlsx",
+            "data/testcase3.xlsx",
+            "testcase.xlsx",
+        ]:
+            cand_path = BASE_DIR / cand
+            if cand_path.exists():
+                available_files.append((cand, str(cand_path)))
 
-        selected_file_path = default_file
+        options_map = {f"Dùng {name}": path for name, path in available_files}
+        options_map["Tải lên file Excel khác"] = "upload"
+
+        file_source = st.radio("Nguồn file test sample:", list(options_map.keys()), horizontal=True)
+
         if file_source == "Tải lên file Excel khác":
             uploaded = st.file_uploader("Chọn file Excel testcase (.xlsx):", type=["xlsx", "xls"])
             if uploaded:
@@ -41,6 +49,8 @@ def render_benchmark_view():
                 selected_file_path = str(save_path)
             else:
                 selected_file_path = None
+        else:
+            selected_file_path = options_map[file_source]
 
     with col2:
         sheet_name = st.text_input("Tên Sheet chứa Ground Truth:", value="Media_W38")
@@ -138,6 +148,10 @@ def render_benchmark_view():
                         m_type = "FN (Bỏ sót AI)"
                         fn += 1
 
+                    ai_model_val = res.ai_model_verdict or (
+                        "AI" if res.ai_model_is_ai else "HUMAN"
+                    )
+                    consensus_val = res.consensus_verdict or pred_label
                     results.append(
                         {
                             "Mã bài": item["media_id"],
@@ -147,6 +161,8 @@ def render_benchmark_view():
                             or getattr(track, "resolved_url", "N/A")
                             or "N/A",
                             "Thực tế": item["gt_label"],
+                            "Đánh giá Model AI": ai_model_val,
+                            "Kết luận Tổng hợp": consensus_val,
                             "Dự đoán": pred_label,
                             "Kết quả": "✅ ĐÚNG" if is_correct else "❌ SAI",
                             "Phân loại": m_type,
@@ -165,6 +181,8 @@ def render_benchmark_view():
                             "Ca sĩ": item["artist"],
                             "Nguồn link": getattr(track, "resolved_url", "N/A") if track else "N/A",
                             "Thực tế": item["gt_label"],
+                            "Đánh giá Model AI": "ERROR",
+                            "Kết luận Tổng hợp": "ERROR",
                             "Dự đoán": "ERROR",
                             "Kết quả": "❌ LỖI",
                             "Phân loại": "ERROR",

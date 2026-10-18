@@ -277,6 +277,7 @@ class DetectionService(IDetectionService):
                         exc,
                     )
 
+            v_type_str = v_type.value if hasattr(v_type, "value") else str(v_type)
             result = DetectionResult(
                 track_id=track.id,
                 track_title=track.track_title or track.raw_query,
@@ -292,6 +293,10 @@ class DetectionService(IDetectionService):
                 detailed_explanation=f"Xác thực qua siêu dữ liệu nguồn: {heuristics_result['reason']}",
                 acoustic_metrics=metrics,
                 spectrogram_image_path=str(spec_image_path) if spec_image_path else None,
+                ai_model_is_ai=None,
+                ai_model_verdict="N/A (Heuristics)",
+                consensus_is_ai=is_ai,
+                consensus_verdict=v_type_str,
             )
             self.track_repo.save_result(result)
             return result
@@ -313,6 +318,16 @@ class DetectionService(IDetectionService):
             raw_query=track.raw_query,
         )
 
+        # Ghi nhận kết quả nguyên bản do Model AI đánh giá độc lập trước khi qua các tầng Trọng tài / Tiêu chí cứng
+        raw_ai_is_ai = result.is_ai
+        raw_ai_verdict = (
+            result.verdict_type.value
+            if hasattr(result.verdict_type, "value")
+            else str(result.verdict_type)
+        )
+        result.ai_model_is_ai = raw_ai_is_ai
+        result.ai_model_verdict = raw_ai_verdict
+
         if getattr(result, "input_type", None) is None:
             result.input_type = track.input_type
         if getattr(result, "raw_query", None) is None:
@@ -322,6 +337,14 @@ class DetectionService(IDetectionService):
 
         # 5. Bộ lọc Trọng tài Kiểm chéo hai chiều (Cross-Validation Safeguard)
         result = self._apply_cross_validation_safeguard(result, track, metadata, metrics)
+
+        # Đồng bộ kết luận tổng hợp cuối cùng
+        result.consensus_is_ai = result.is_ai
+        result.consensus_verdict = (
+            result.verdict_type.value
+            if hasattr(result.verdict_type, "value")
+            else str(result.verdict_type)
+        )
 
         self.track_repo.save_result(result)
         return result
@@ -363,7 +386,6 @@ class DetectionService(IDetectionService):
         ).strip()
 
         from .signal_analyzer_service import (
-            _GENERIC_ANONYMOUS_ARTISTS,
             get_dynamic_catalog,
             is_verified_human_artist,
         )
@@ -374,9 +396,7 @@ class DetectionService(IDetectionService):
         )
 
         _, ai_dist_list, ai_artist_regexes = get_dynamic_catalog()
-        is_ai_dist = any(ad in distributor_str for ad in ai_dist_list) or (
-            "incom" in distributor_str and not is_human_artist
-        )
+        is_ai_dist = any(ad in distributor_str for ad in ai_dist_list)
         if not is_ai_dist:
             for pat, _ in ai_artist_regexes:
                 if re.search(pat, artist_str.lower()) or re.search(pat, title_str.lower()):
@@ -387,25 +407,7 @@ class DetectionService(IDetectionService):
         if result.is_ai:
             first_reason = (result.reasons[0] if result.reasons else "").lower()
 
-            # 1a. Ca sĩ INCOM xác thực
-            if "nhà phân phối 'incom'" in first_reason:
-                artist_clean = artist_str.lower()
-                if artist_clean and artist_clean not in _GENERIC_ANONYMOUS_ARTISTS:
-                    logger.info(
-                        "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Nghệ sĩ '%s' phát hành qua INCOM là nghệ sĩ cá nhân thật, hạ cấp về PROCESSED_HUMAN.",
-                        track.track_title,
-                    )
-                    result.is_ai = False
-                    result.verdict_type = VerdictType.PROCESSED_HUMAN
-                    result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
-                    result.reasons = [
-                        f"[BẢO VỆ NHẠC NGƯỜI]: Nghệ sĩ '{track.artist}' phát hành qua INCOM là nghệ sĩ độc lập thực tế, không thuộc dự án AI sinh hàng loạt."
-                    ]
-                    result.confidence_score = max(0.90, result.confidence_score)
-                    result.suspected_engine = "None"
-                    return result
-
-            # 1b. Bảo vệ ca sĩ người thật đã xác thực hoặc hãng đĩa lớn độc quyền
+            # 1a. Bảo vệ ca sĩ người thật đã xác thực hoặc hãng đĩa lớn độc quyền
             if is_human_artist or is_major_exclusive_label:
                 stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
                 if not (metrics.fakeprint_score >= 0.85 and stem_bleed_val >= 0.50):
@@ -423,13 +425,11 @@ class DetectionService(IDetectionService):
                     result.reasons = [safeguard_reason] + (result.reasons or [])
                     result.confidence_score = max(0.92, result.confidence_score)
                     result.suspected_engine = "None"
+                    result.consensus_is_ai = False
+                    result.consensus_verdict = "PROCESSED_HUMAN"
                     return result
 
-            # 1c. Bản thu độc lập có chỉ số vật lý sạch
-            # TUYỆT ĐỐI KHÔNG HẠ CẤP nếu:
-            # - Thuộc danh mục nhà phân phối AI hoặc dự án nghệ sĩ ảo AI (is_ai_dist)
-            # - Có chỉ thị phát hiện hàng loạt / dự án AI từ metadata / heuristics
-            # - Mang đặc trưng phổ AI (Ultrasonic cutoff đi kèm Pitch rigidity cao của Suno v3.5/v4)
+            # 1b. Bản thu phái sinh/remix có vocal người thật và chỉ số vật lý sạch
             is_catalog_or_batch_flag = any(
                 kw in first_reason
                 for kw in [
@@ -456,9 +456,7 @@ class DetectionService(IDetectionService):
                 and not metrics.fakeprint_detected
                 and stem_bleed_val < 0.25
             )
-            if (
-                is_derivative or is_vocal_human_suspect_beat or is_clean_physical
-            ) and is_clean_physical:
+            if (is_derivative or is_vocal_human_suspect_beat) and is_clean_physical:
                 logger.info(
                     "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Bản thu '%s' có chỉ số vật lý sạch, hạ cấp về PROCESSED_HUMAN.",
                     track.track_title,
@@ -474,6 +472,8 @@ class DetectionService(IDetectionService):
                 result.reasons = [safeguard_reason] + (result.reasons or [])
                 result.confidence_score = max(0.90, result.confidence_score)
                 result.suspected_engine = "None"
+                result.consensus_is_ai = False
+                result.consensus_verdict = "PROCESSED_HUMAN"
                 return result
 
         # 2. Safeguard Anti-FN (Bắt AI lẩn khuất - Đồng thuận đa tiêu chí)
@@ -482,70 +482,83 @@ class DetectionService(IDetectionService):
             rigidity = getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0
             has_cutoff = getattr(metrics, "ultrasonic_cutoff_detected", False)
             rolloff = metrics.spectral_rolloff_95_hz
-            harm_ratio = metrics.harmonic_ratio
 
-            # Tiêu chí 1: AI thuần nhạc cụ / ambient
-            is_instrumental_ai = rolloff < 6500.0 and rigidity >= 0.72
-
-            # Tiêu chí 2: AI truyền thống có dấu vân răng lược Fourier rõ rệt hoặc phát hành từ nguồn AI đã xác thực
-            classic_ai_consensus = (
-                is_ai_dist
-                or (metrics.fakeprint_score >= 0.65 and stem_bleed >= 0.30)
-                or (has_cutoff and metrics.fakeprint_score >= 0.60)
+            # Kiểm tra xem AI Model có phát hiện bằng chứng sinh học thanh quản tự nhiên không
+            all_reasons_text = " ".join(
+                (result.reasons or []) + [result.detailed_explanation or ""]
+            ).lower()
+            has_human_bio_evidence = any(
+                kw in all_reasons_text
+                for kw in [
+                    "thanh quản sinh học",
+                    "sinh học tự nhiên",
+                    "vocal tract",
+                    "biological",
+                    "auto-tune phòng thu",
+                    "auto-tuned (natural vocal tract)",
+                    "natural vocal",
+                    "giọng người thật",
+                    "cấu trúc thanh quản",
+                    "thanh quản",
+                ]
             )
 
-            # Tiêu chí 3: AI Vocals đời mới (Suno v3.5/v4, AI Vocal Clones)
-            # Chỉ kích hoạt khi KHÔNG PHẢI là nghệ sĩ người thật đã xác thực
-            modern_ai_trigger = (
-                not is_human_artist
-                and not is_major_exclusive_label
-                and (
-                    (
+            # Tuyệt đối KHÔNG nâng cấp lên AI nếu:
+            # - AI Model xác nhận giọng hát có cấu trúc thanh quản sinh học tự nhiên
+            # - Thuộc danh sách ca sĩ người thật đã xác thực
+            # - Phát hành bởi hãng đĩa lớn
+            if not has_human_bio_evidence and not is_human_artist and not is_major_exclusive_label:
+                # Tiêu chí 1: AI thuần nhạc cụ / ambient
+                is_instrumental_ai = rolloff < 6500.0 and rigidity >= 0.75
+
+                # Tiêu chí 2: AI truyền thống có dấu vân răng lược Fourier rõ rệt
+                classic_ai_consensus = (
+                    is_ai_dist
+                    or (metrics.fakeprint_score >= 0.65 and stem_bleed >= 0.30)
+                    or (has_cutoff and metrics.fakeprint_score >= 0.60)
+                )
+
+                harm_ratio = getattr(metrics, "harmonic_ratio", 0.0) or 0.0
+
+                # Tiêu chí 3: Bằng chứng kép tiêu chuẩn cao (Dual-evidence high bar)
+                # Đòi hỏi đồng thuận 2 chỉ số vật lý AI (Fakeprint + Stem bleed)
+                dual_evidence_ai = (
+                    (metrics.fakeprint_score >= 0.50 and stem_bleed >= 0.35)
+                    or (
                         rigidity >= 0.47
                         and harm_ratio >= 0.80
-                        and (metrics.fakeprint_score >= 0.35 or stem_bleed >= 0.32)
-                    )
-                    or (has_cutoff and rigidity >= 0.55 and harm_ratio >= 0.80)
-                    or (
-                        rolloff < 10000.0
-                        and rigidity >= 0.50
-                        and harm_ratio >= 0.88
-                        and metrics.fakeprint_score >= 0.30
+                        and (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.32)
                     )
                 )
-            )
 
-            has_multi_metric_ai_consensus = (
-                is_instrumental_ai or classic_ai_consensus or modern_ai_trigger
-            )
-
-            if has_multi_metric_ai_consensus:
-                logger.info(
-                    "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI vượt trội, nâng cấp lên AI.",
-                    track.track_title,
+                has_multi_metric_ai_consensus = (
+                    is_instrumental_ai or classic_ai_consensus or dual_evidence_ai
                 )
-                result.is_ai = True
-                result.verdict_type = VerdictType.HYBRID_AI
-                result.verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
-                if modern_ai_trigger:
-                    safeguard_reason = (
-                        "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Dấu vết nơ-ron tổng hợp giọng hát AI đời mới "
-                        f"(Rolloff 95%: {rolloff:.0f} Hz, Độ cứng cao độ: {rigidity * 100:.1f}%, "
-                        f"Harmonic Ratio: {harm_ratio:.2f}). Trần tần số sụt giảm kết hợp lưới cao độ phẳng nhân tạo áp đảo phán quyết ban đầu."
+
+                if has_multi_metric_ai_consensus:
+                    logger.info(
+                        "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI vượt trội, nâng cấp lên AI.",
+                        track.track_title,
                     )
-                else:
+                    result.is_ai = True
+                    result.verdict_type = VerdictType.HYBRID_AI
+                    result.verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
                     safeguard_reason = (
                         "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI "
                         f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
                         "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
                     )
-                result.reasons = [safeguard_reason] + (result.reasons or [])
-                if not result.suspected_engine or result.suspected_engine == "None":
-                    result.suspected_engine = "Suno/Udio"
-                result.confidence_score = max(0.90, result.confidence_score)
-                return result
+                    result.reasons = [safeguard_reason] + (result.reasons or [])
+                    if not result.suspected_engine or result.suspected_engine == "None":
+                        result.suspected_engine = "Suno/Udio"
+                    result.confidence_score = max(0.90, result.confidence_score)
 
-        # Giữ nguyên phán quyết nguyên bản từ mô hình phân loại AI
+        result.consensus_is_ai = result.is_ai
+        result.consensus_verdict = (
+            result.verdict_type.value
+            if hasattr(result.verdict_type, "value")
+            else str(result.verdict_type)
+        )
         return result
 
     def detect_query(

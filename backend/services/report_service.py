@@ -115,11 +115,20 @@ class ReportService(IReportService):
                 "Có (Đã đính chính)" if getattr(r, "is_human_corrected", False) else "Không"
             )
 
+            ai_eval = getattr(r, "ai_model_verdict", None)
+            if not ai_eval:
+                ai_bool = getattr(r, "ai_model_is_ai", None)
+                ai_eval = "AI_GENERATED" if ai_bool is True else ("PROCESSED_HUMAN" if ai_bool is False else "N/A")
+
+            cons_verdict = getattr(r, "consensus_verdict", None) or r.verdict_label
+
             if r.verdict_type == VerdictType.ERROR:
                 records.append(
                     {
                         "STT": idx + 1,
                         "Tên bài hát": display_title,
+                        "Đánh giá Model AI": ai_eval,
+                        "Kết luận Tổng hợp": cons_verdict,
                         "Kết luận thẩm định": r.verdict_label,
                         "Phân loại kỹ thuật": "ERROR",
                         "Độ tin cậy (%)": "0.0%",
@@ -154,6 +163,8 @@ class ReportService(IReportService):
                     {
                         "STT": idx + 1,
                         "Tên bài hát": display_title,
+                        "Đánh giá Model AI": ai_eval,
+                        "Kết luận Tổng hợp": cons_verdict,
                         "Kết luận thẩm định": r.verdict_label,
                         "Phân loại kỹ thuật": r.verdict_type.value
                         if hasattr(r.verdict_type, "value")

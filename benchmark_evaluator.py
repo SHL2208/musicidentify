@@ -54,7 +54,11 @@ def load_testcase_dataset(
 ) -> list[dict[str, Any]]:
     """Đọc dữ liệu từ file Excel testcase và trích xuất danh sách bài hát kèm nhãn Ground Truth."""
     if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Không tìm thấy file: {file_path}")
+        data_candidate = os.path.join(root_dir, "data", file_path)
+        if os.path.exists(data_candidate):
+            file_path = data_candidate
+        else:
+            raise FileNotFoundError(f"Không tìm thấy file: {file_path}")
 
     wb = openpyxl.load_workbook(file_path, data_only=True)
     if sheet_name not in wb.sheetnames:
@@ -272,7 +276,11 @@ def run_benchmark(
 
             icon = "✅" if is_correct else "❌"
             match_status_text = "ĐÃ XÁC THỰC" if is_verified else "SAI LỆCH (UNVERIFIED)"
-            print(f"       -> Dự đoán: {pred_label} ({res.verdict_label}) | {icon} {metric_type}")
+            ai_verdict_str = res.ai_model_verdict or ("AI" if res.ai_model_is_ai else "HUMAN")
+            consensus_str = res.consensus_verdict or ("AI" if res.consensus_is_ai else "HUMAN")
+            print(
+                f"       -> Model AI: {ai_verdict_str} | Tổng hợp: {consensus_str} ({res.verdict_label}) | {icon} {metric_type}"
+            )
             print(
                 f"       -> Nguồn audio: {match_status_text} | Độ tin cậy: {res.confidence_score * 100:.1f}%"
             )
@@ -285,6 +293,8 @@ def run_benchmark(
                     "artist": item["artist"],
                     "query": query,
                     "ground_truth": gt,
+                    "ai_model_verdict": ai_verdict_str,
+                    "consensus_verdict": consensus_str,
                     "prediction": pred_label,
                     "is_correct": "ĐÚNG" if is_correct else "SAI",
                     "classification_type": metric_type,
@@ -350,6 +360,8 @@ def run_benchmark(
                         "artist": item["artist"],
                         "query": query,
                         "ground_truth": gt,
+                        "ai_model_verdict": "ERROR",
+                        "consensus_verdict": "ERROR",
                         "prediction": "ERROR",
                         "is_correct": "LỖI",
                         "classification_type": "ERROR",
@@ -484,7 +496,7 @@ def print_summary_report(metrics: dict[str, Any], results: list[dict[str, Any]])
             src_note = " [⚠️ SAI LỆCH NGUỒN]" if not w.get("is_verified_source") else ""
             print(f"  {idx}. '{w['song_title']}' - {w['artist']}{src_note}")
             print(
-                f"     Thực tế: {w['ground_truth']} | Model đoán: {w['prediction']} ({w['classification_type']})"
+                f"     Thực tế: {w['ground_truth']} | Model AI: {w.get('ai_model_verdict', 'N/A')} | Tổng hợp: {w['prediction']} ({w['classification_type']})"
             )
             print(f"     Lý do model đưa ra: {w['reasons']}")
     else:

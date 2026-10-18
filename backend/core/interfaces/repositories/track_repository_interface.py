@@ -32,6 +32,25 @@ class ITrackRepository(ABC):
         pass
 
     @abstractmethod
+    def find_result_by_query_or_url(
+        self, query: str, resolved_url: str | None = None
+    ) -> DetectionResult | None:
+        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn hoặc URL nguồn."""
+        pass
+
+    @abstractmethod
+    def correct_verdict(
+        self,
+        track_id: str,
+        is_ai: bool,
+        verdict_type: str,
+        verdict_label: str,
+        note: str | None = None,
+    ) -> DetectionResult | None:
+        """Đính chính phán quyết của bài hát theo can thiệp của con người."""
+        pass
+
+    @abstractmethod
     def clear(self) -> None:
         """Xóa trắng dữ liệu phiên làm việc."""
         pass

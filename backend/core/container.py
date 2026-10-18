@@ -105,7 +105,9 @@ class AppContainer:
 
         # 3. LAYER 1: CONTROLLERS
         self.track_controller: TrackController = TrackController(
-            detection_service=self.detection_service, resolver=self.resolver
+            detection_service=self.detection_service,
+            resolver=self.resolver,
+            track_repo=self.track_repository,
         )
         self.batch_controller: BatchController = BatchController(
             batch_service=self.batch_service, resolver=self.resolver

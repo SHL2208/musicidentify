@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import ssl
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -61,6 +63,57 @@ def _normalize_text(text: str) -> str:
     without_diacritics = without_diacritics.replace("đ", "d").replace("Đ", "d")
     cleaned = re.sub(r"[^\w\s]", " ", without_diacritics.lower())
     return " ".join(cleaned.split())
+
+
+def generate_deterministic_track_id(
+    query: str, input_type: InputType, resolved_url: str | None = None
+) -> str:
+    """Tạo ID định danh cố định (Deterministic Track ID) cho bài hát để chống trùng lặp."""
+    target = (resolved_url or query or "").strip()
+
+    # 1. YouTube: trích xuất video ID chuẩn (11 ký tự)
+    if "youtube.com" in target or "youtu.be" in target:
+        yt_match = re.search(r"(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})", target)
+        if yt_match:
+            return f"yt_{yt_match.group(1)}"
+
+    # 2. Zing MP3: trích xuất song ID (ví dụ ZW... hoặc tương tự)
+    if "zingmp3.vn" in target:
+        zing_match = re.search(r"(?:bai-hat\/[^\/]+\/|song\/)([A-Z0-9]{8,12})", target)
+        if zing_match:
+            return f"zing_{zing_match.group(1)}"
+
+    # 3. SoundCloud: lấy slug hoặc hash URL
+    if "soundcloud.com" in target:
+        slug = target.split("soundcloud.com/")[-1].split("?")[0].strip("/").replace("/", "_")
+        if slug:
+            clean_slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug)[:24]
+            return f"sc_{clean_slug}"
+
+    # 4. Local file: Tính MD5 của file nếu file tồn tại
+    if input_type == InputType.LOCAL_FILE or (
+        not target.startswith("http") and Path(target).exists()
+    ):
+        p = Path(target)
+        if p.exists() and p.is_file():
+            try:
+                hasher = hashlib.md5()
+                with open(p, "rb") as f:
+                    chunk = f.read(524288)
+                    hasher.update(chunk)
+                    if p.stat().st_size > 524288:
+                        f.seek(-min(524288, p.stat().st_size), os.SEEK_END)
+                        hasher.update(f.read(524288))
+                return f"file_{hasher.hexdigest()[:12]}"
+            except Exception:
+                pass
+        clean_stem = re.sub(r"[^a-zA-Z0-9_-]", "_", p.stem)[:20]
+        return f"file_{clean_stem}"
+
+    # 5. Query văn bản hoặc URL khác: Chuẩn hóa và băm MD5
+    norm_text = re.sub(r"\s+", " ", target.lower().strip())
+    h = hashlib.md5(norm_text.encode("utf-8")).hexdigest()[:12]
+    return f"trk_{h}"
 
 
 class InputResolverService(IInputResolver):
@@ -258,11 +311,22 @@ class InputResolverService(IInputResolver):
         if match_slug:
             search_kw = match_slug.group(1).replace("-", " ")
 
+        ssl_ctx = None
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        except Exception:
+            ssl_ctx = None
+
         for proto in ["https", "http"]:
             api_url = f"{proto}://ac.mp3.zing.vn/complete?type=artist,song,key,album&query={urllib.parse.quote(search_kw)}"
             req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
             try:
-                with urllib.request.urlopen(req, timeout=4) as resp:
+                open_kwargs: dict[str, Any] = {"timeout": 4}
+                if ssl_ctx and proto == "https":
+                    open_kwargs["context"] = ssl_ctx
+                with urllib.request.urlopen(req, **open_kwargs) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     songs: list[dict[str, Any]] = []
                     for item in data.get("data", []):
@@ -365,14 +429,14 @@ class InputResolverService(IInputResolver):
 
         return {}
 
-    def resolve_track(self, query: str, artist: str = "") -> TrackItem:
+    def resolve_track(self, query: str, artist: str = "", force_rescan: bool = False) -> TrackItem:
         """Chuyển đổi một chuỗi truy vấn (YouTube, Zing, Spotify, Local, Text) thành TrackItem hoàn chỉnh."""
         query = query.strip()
         if not query:
             raise InvalidInputException("Chuỗi tìm kiếm không được để trống.")
 
         cache_key = f"{query.lower()}||{artist.strip().lower()}"
-        if cache_key in self._cache:
+        if not force_rescan and cache_key in self._cache:
             c = self._cache[cache_key]
             return TrackItem(
                 id=str(uuid.uuid4())[:8],
@@ -394,8 +458,8 @@ class InputResolverService(IInputResolver):
 
     def _do_resolve_track(self, query: str, artist: str = "") -> TrackItem:
         """Thực hiện giải quyết bài hát chi tiết khi không có cache."""
-        track_id = str(uuid.uuid4())[:8]
         input_type = self.detect_input_type(query)
+        track_id = generate_deterministic_track_id(query, input_type)
 
         if input_type == InputType.LOCAL_FILE:
             file_name = Path(query).stem
@@ -417,20 +481,22 @@ class InputResolverService(IInputResolver):
                 artist = meta.get("artist") or ""
                 duration = meta.get("duration") or None
 
+                is_vip = meta.get("is_vip", False)
                 # Thử lấy URL stream trực tiếp qua yt-dlp nếu không phải VIP
-                url_meta_title, url_meta_dur = self._get_url_metadata(query)
-                if url_meta_title:
-                    return TrackItem(
-                        id=track_id,
-                        raw_query=query,
-                        input_type=input_type,
-                        resolved_url=query,
-                        track_title=title,
-                        artist=artist,
-                        duration_sec=duration or url_meta_dur,
-                        platform="zingmp3",
-                        is_verified_match=True,
-                    )
+                if not is_vip:
+                    url_meta_title, url_meta_dur = self._get_url_metadata(query)
+                    if url_meta_title:
+                        return TrackItem(
+                            id=track_id,
+                            raw_query=query,
+                            input_type=input_type,
+                            resolved_url=query,
+                            track_title=title,
+                            artist=artist,
+                            duration_sec=duration or url_meta_dur,
+                            platform="zingmp3",
+                            is_verified_match=True,
+                        )
 
                 # Fallback: Nếu bài VIP hoặc yt-dlp không tải được Zing, dùng Smart Bridge sang YouTube
                 search_term = f"{title} {artist}".strip()
@@ -438,7 +504,9 @@ class InputResolverService(IInputResolver):
                     search_term, target_artist=artist, target_duration=duration
                 )
                 return TrackItem(
-                    id=track_id,
+                    id=generate_deterministic_track_id(
+                        query, input_type, resolved_url=res_url or query
+                    ),
                     raw_query=query,
                     input_type=input_type,
                     resolved_url=res_url or query,
@@ -463,7 +531,9 @@ class InputResolverService(IInputResolver):
                     search_term, target_artist=artist, target_duration=duration
                 )
                 return TrackItem(
-                    id=track_id,
+                    id=generate_deterministic_track_id(
+                        query, input_type, resolved_url=res_url or query
+                    ),
                     raw_query=query,
                     input_type=input_type,
                     resolved_url=res_url or query,
@@ -479,7 +549,7 @@ class InputResolverService(IInputResolver):
             # 3. Nhánh YouTube hoặc URL thông thường
             track_title, duration = self._get_url_metadata(query)
             return TrackItem(
-                id=track_id,
+                id=generate_deterministic_track_id(query, input_type, resolved_url=query),
                 raw_query=query,
                 input_type=input_type,
                 resolved_url=query,
@@ -518,11 +588,12 @@ class InputResolverService(IInputResolver):
         # TẦNG 1: Ưu tiên tìm kiếm trên Zing MP3 (kho dữ liệu gốc cho bài hát V-Pop & dự án AI độc lập)
         zing_meta = self.search_zingmp3(target_title, target_artist=target_artist)
         if zing_meta and zing_meta.get("stream_url") and not zing_meta.get("is_vip", False):
+            z_stream = zing_meta["stream_url"]
             return TrackItem(
-                id=track_id,
+                id=generate_deterministic_track_id(query, input_type, resolved_url=z_stream),
                 raw_query=query,
                 input_type=input_type,
-                resolved_url=zing_meta["stream_url"],
+                resolved_url=z_stream,
                 track_title=zing_meta.get("title") or query,
                 artist=zing_meta.get("artist", "") or target_artist or None,
                 duration_sec=zing_meta.get("duration"),
@@ -537,7 +608,7 @@ class InputResolverService(IInputResolver):
         )
         if yt_verified and yt_url:
             return TrackItem(
-                id=track_id,
+                id=generate_deterministic_track_id(query, input_type, resolved_url=yt_url),
                 raw_query=query,
                 input_type=input_type,
                 resolved_url=yt_url,
@@ -554,7 +625,7 @@ class InputResolverService(IInputResolver):
         if spotify_meta and (spotify_meta.get("preview_url") or spotify_meta.get("track_url")):
             stream_url = spotify_meta.get("preview_url") or spotify_meta.get("track_url")
             return TrackItem(
-                id=track_id,
+                id=generate_deterministic_track_id(query, input_type, resolved_url=stream_url),
                 raw_query=query,
                 input_type=input_type,
                 resolved_url=stream_url,
@@ -720,7 +791,7 @@ class InputResolverService(IInputResolver):
 
     def get_url_metadata(self, url: str) -> tuple[str | None, float | None]:
         """Trích xuất tiêu đề và thời lượng của một URL qua yt-dlp với OEmbed fallback."""
-        cookie_file = get_cookie_file_path(mode="guest")
+        cookie_file = get_cookie_file_path(mode="full") or get_cookie_file_path(mode="guest")
         js_runtimes_cfg = get_js_runtimes_config()
 
         ydl_opts: dict[str, Any] = {
@@ -780,17 +851,16 @@ class InputResolverService(IInputResolver):
                 queries = [line.strip() for line in f if line.strip() and not line.startswith("#")]
             tracks: list[TrackItem] = []
             for q in queries:
-                item_id = str(uuid.uuid4())[:8]
                 input_type = self.detect_input_type(q)
+                resolved_u = q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None
+                item_id = generate_deterministic_track_id(q, input_type, resolved_url=resolved_u)
                 tracks.append(
                     TrackItem(
                         id=item_id,
                         raw_query=q,
                         input_type=input_type,
                         track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
-                        resolved_url=q
-                        if input_type in (InputType.URL, InputType.LOCAL_FILE)
-                        else None,
+                        resolved_url=resolved_u,
                     )
                 )
             return tracks
@@ -844,17 +914,16 @@ class InputResolverService(IInputResolver):
             queries = self._extract_queries_from_df(df)
             tracks: list[TrackItem] = []
             for q in queries:
-                item_id = str(uuid.uuid4())[:8]
                 input_type = self.detect_input_type(q)
+                resolved_u = q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None
+                item_id = generate_deterministic_track_id(q, input_type, resolved_url=resolved_u)
                 tracks.append(
                     TrackItem(
                         id=item_id,
                         raw_query=q,
                         input_type=input_type,
                         track_title=Path(q).stem if input_type == InputType.LOCAL_FILE else q,
-                        resolved_url=q
-                        if input_type in (InputType.URL, InputType.LOCAL_FILE)
-                        else None,
+                        resolved_url=resolved_u,
                     )
                 )
             return tracks
@@ -892,16 +961,19 @@ class InputResolverService(IInputResolver):
             effective_title = raw_t or (Path(raw_u).stem if raw_u else "")
             q = raw_u if resolved_u else (f"{raw_t} {raw_a}".strip() if raw_a else raw_t)
             input_type = self.detect_input_type(q)
+            final_resolved_u = resolved_u or (
+                q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None
+            )
+            item_id = generate_deterministic_track_id(q, input_type, resolved_url=final_resolved_u)
 
             tracks.append(
                 TrackItem(
-                    id=str(uuid.uuid4())[:8],
+                    id=item_id,
                     raw_query=q,
                     input_type=input_type,
                     track_title=effective_title,
                     artist=raw_a or None,
-                    resolved_url=resolved_u
-                    or (q if input_type in (InputType.URL, InputType.LOCAL_FILE) else None),
+                    resolved_url=final_resolved_u,
                 )
             )
         return tracks

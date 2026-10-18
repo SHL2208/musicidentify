@@ -45,6 +45,7 @@ import pandas as pd
 from backend.core.container import get_container
 from backend.core.models.entities import (
     DetectionResult,
+    TrackItem,
 )
 
 
@@ -188,6 +189,7 @@ def run_benchmark(
     samples: list[dict[str, Any]],
     dataset: list[dict[str, Any]] | None = None,
     model_override: str | None = None,
+    force_rescan: bool = False,
 ) -> dict[str, Any]:
     """
     Thực hiện thẩm định toàn bộ mẫu và tính toán các chỉ số độ chính xác.
@@ -224,8 +226,15 @@ def run_benchmark(
         query = item["query"]
         print(f"\n[{i}/{len(evaluation_queue)}] Thẩm định: '{query}' | Ground Truth: {gt}")
 
+        track: TrackItem | None = None
         try:
-            track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
+            try:
+                track = resolver.resolve_track(
+                    item["title"], artist=item.get("artist", ""), force_rescan=force_rescan
+                )
+            except TypeError:
+                track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
+
             track.song_type = item.get("song_type") or ""
             track.release_date = str(item.get("release_date") or "")
             track.distributor = str(item.get("distributor") or "")
@@ -236,9 +245,12 @@ def run_benchmark(
                     f"       -> ⚠️ CẢNH BÁO NGUỒN: YouTube không tìm thấy video khớp! (Score: {track.match_score})"
                 )
 
-            res: DetectionResult = detection_service.detect_single(
-                track, model_override=model_override
-            )
+            try:
+                res: DetectionResult = detection_service.detect_single(
+                    track, force_rescan=force_rescan, model_override=model_override
+                )
+            except TypeError:
+                res = detection_service.detect_single(track, model_override=model_override)
 
             pred_is_ai = res.is_ai
             pred_label = "AI" if pred_is_ai else "HUMAN"
@@ -348,9 +360,11 @@ def run_benchmark(
                         "verdict_label": "LỖI HỆ THỐNG",
                         "confidence_score": "0%",
                         "suspected_engine": "N/A",
-                        "source_url": getattr(track, "resolved_url", "")
-                        if "track" in locals() and track and track.resolved_url
-                        else "",
+                        "source_url": (
+                            getattr(track, "resolved_url", "")
+                            if track and getattr(track, "resolved_url", None)
+                            else ""
+                        ),
                         "reasons": str(e),
                         "error": str(e),
                     }
@@ -550,6 +564,12 @@ def main():
     parser.add_argument(
         "--model", type=str, default=None, help="Mô hình Gemini override (tùy chọn)"
     )
+    parser.add_argument(
+        "--force-rescan",
+        action="store_true",
+        default=False,
+        help="Bắt buộc quét mới, không dùng cache cũ",
+    )
 
     args = parser.parse_args()
 
@@ -571,7 +591,9 @@ def main():
             f"🎯 Lấy mẫu thẩm định: {len(samples)} bài (AI: {sample_ai} bài | Con người: {sample_human} bài)"
         )
 
-    benchmark_data = run_benchmark(samples, dataset=dataset, model_override=args.model)
+    benchmark_data = run_benchmark(
+        samples, dataset=dataset, model_override=args.model, force_rescan=args.force_rescan
+    )
     metrics = benchmark_data["metrics"]
     results = benchmark_data["results"]
 

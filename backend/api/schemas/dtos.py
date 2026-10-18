@@ -17,11 +17,28 @@ class TrackDetectRequest(BaseModel):
     model_override: str | None = Field(
         default=None, description="Mô hình Gemini chỉ định (nếu muốn ghi đè)"
     )
+    force_rescan: bool = Field(
+        default=False, description="Bỏ qua cache và buộc phân tích lại từ đầu"
+    )
 
 
 class BatchDetectRequest(BaseModel):
     queries: list[str] = Field(description="Danh sách link URL hoặc tên bài hát cần quét")
     model_override: str | None = Field(default=None, description="Mô hình Gemini chỉ định")
+    scan_mode: str = Field(
+        default="smart",
+        description="Chế độ quét: 'smart' (bỏ qua bài có sẵn), 'force_all' (quét lại toàn bộ), 'retry_errors' (chỉ quét lỗi)",
+    )
+
+
+class TrackCorrectionRequest(BaseModel):
+    track_id: str = Field(description="ID bài hát cần đính chính")
+    is_ai: bool = Field(description="True nếu là AI, False nếu là Người thật")
+    verdict_type: str = Field(
+        description="Nhãn VerdictType (CONFIRMED_HUMAN, AI_GENERATED, HYBRID_AI)"
+    )
+    verdict_label: str = Field(description="Nhãn hiển thị trực quan")
+    note: str | None = Field(default=None, description="Lý do hoặc ghi chú đính chính")
 
 
 class ExportReportRequest(BaseModel):

@@ -1,6 +1,7 @@
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from ..core.config import BATCH_SLEEP_INTERVAL
 from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
@@ -35,6 +36,7 @@ class BatchService(IBatchService):
         self,
         tracks: list[TrackItem],
         model_override: str | None = None,
+        scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
     ) -> BatchReport:
@@ -49,8 +51,19 @@ class BatchService(IBatchService):
         for i, track in enumerate(tracks):
             track.status = "PROCESSING"
             self.track_repo.save_track(track)
+            was_cached = False
             try:
-                result = self.detection_service.detect_single(track, model_override=model_override)
+                force_rescan = scan_mode == "force_all"
+                if scan_mode == "retry_errors":
+                    existing = self.track_repo.find_result_by_query_or_url(
+                        track.raw_query, track.resolved_url
+                    )
+                    force_rescan = existing is None or existing.verdict_type == VerdictType.ERROR
+
+                result = self.detection_service.detect_single(
+                    track, model_override=model_override, force_rescan=force_rescan
+                )
+                was_cached = bool(getattr(result, "is_cached", False))
                 results.append(result)
                 track.status = "COMPLETED"
                 self.track_repo.save_track(track)
@@ -111,7 +124,17 @@ class BatchService(IBatchService):
                 if on_progress:
                     on_progress(i + 1, total, track, error_result, error_msg)
 
-            if i < total - 1:
+            finally:
+                # Tự động dọn dẹp file âm thanh tạm của bài vừa xong để giữ đĩa luôn trống (chống tràn đĩa khi chạy 900 bài)
+                if track.input_type != InputType.LOCAL_FILE and getattr(track, "audio_path", None):
+                    try:
+                        p = Path(str(track.audio_path))
+                        if p.exists() and p.is_file():
+                            p.unlink()
+                    except Exception:
+                        pass
+
+            if i < total - 1 and not was_cached:
                 time.sleep(self.sleep_interval)
 
         # Xuất báo cáo qua IReportService

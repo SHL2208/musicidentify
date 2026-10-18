@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import re
 import shutil
@@ -132,6 +133,9 @@ BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "3.0"))
 CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = os.getenv(
     "CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD", "true"
 ).strip().lower() in ("true", "1", "yes")
+UPLOAD_AUDIO_SAMPLES_TO_CLOUD = os.getenv(
+    "UPLOAD_AUDIO_SAMPLES_TO_CLOUD", "false"
+).strip().lower() in ("true", "1", "yes")
 
 # Server / API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
@@ -248,8 +252,8 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
         content = content.replace("\\t", "\t")
 
     lines = content.splitlines()
-    full_cookies: list[str] = []
-    guest_cookies: list[str] = []
+    full_cookies_dict: dict[tuple[str, str, str], str] = {}
+    guest_cookies_dict: dict[tuple[str, str, str], str] = {}
 
     # Danh sách cookie khách an toàn không mang định danh tài khoản cá nhân
     guest_safe_names = {
@@ -317,16 +321,20 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
                 val = ""
 
         if domain and name:
+            cookie_key = (domain.lower(), path, name)
             cookie_line = f"{domain}\t{sub}\t{path}\t{sec}\t{exp}\t{name}\t{val}"
-            full_cookies.append(cookie_line)
+            # Ghi đè theo cookie_key để tự động loại bỏ trùng lặp nếu người dùng paste nhiều lần
+            full_cookies_dict[cookie_key] = cookie_line
 
             # Lọc cookie khách: chỉ giữ token khách an toàn, bỏ token session cá nhân
             if name in guest_safe_names or (
                 name not in account_session_names and not name.startswith(("__Secure-", "SID"))
             ):
-                guest_cookies.append(cookie_line)
+                guest_cookies_dict[cookie_key] = cookie_line
 
     header = "# Netscape HTTP Cookie File\n# This file is generated for yt-dlp.\n\n"
+    full_cookies = list(full_cookies_dict.values())
+    guest_cookies = list(guest_cookies_dict.values())
     full_content = (header + "\n".join(full_cookies) + "\n") if full_cookies else ""
     guest_content = (header + "\n".join(guest_cookies) + "\n") if guest_cookies else ""
 
@@ -389,53 +397,66 @@ def find_cookie_content_from_secrets_or_env() -> str:
     return ""
 
 
-def get_cookie_file_path(mode: str = "guest") -> Path | None:
+def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
     """
-    Trả về đường dẫn file cookies.txt hợp lệ nếu có.
-    mode='guest': Cookie visitor/khách (VISITOR_INFO1_LIVE, PREF...) tuyệt đối không dính lỗi
-                  'The page needs to be reloaded' khi chạy trên Cloud Datacenter (AWS/Streamlit Cloud).
-    mode='full':  Toàn bộ cookies đầy đủ kể cả session tài khoản (nếu chạy local hoặc bypass được IP challenge).
+    Trả về danh sách tất cả các đường dẫn file cookie hợp lệ theo thứ tự ưu tiên (cookies.txt, cookies_master.txt...).
+    Hỗ trợ hệ thống tự động fallback nếu một file cookie bị chặn hoặc hết hạn.
     """
+    results: list[Path] = []
+    seen_hashes: set[str] = set()
+
+    # 1. Từ Secrets hoặc biến môi trường nếu có
     raw_content = find_cookie_content_from_secrets_or_env()
     if raw_content:
         full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(raw_content)
-        if mode == "guest" and guest_c and guest_cnt > 0:
-            cookie_path = TEMP_DIR / "cookie_guest_runtime.txt"
+        target_c = guest_c if mode == "guest" else full_c
+        target_cnt = guest_cnt if mode == "guest" else full_cnt
+        if target_c and target_cnt > 0:
+            c_hash = hashlib.md5(target_c.encode("utf-8")).hexdigest()
+            cookie_path = TEMP_DIR / f"cookie_env_{mode}.txt"
             try:
-                cookie_path.write_text(guest_c, encoding="utf-8")
-                return cookie_path
-            except Exception:
-                pass
-        elif mode == "full" and full_c and full_cnt > 0:
-            cookie_path = TEMP_DIR / "cookie_full_runtime.txt"
-            try:
-                cookie_path.write_text(full_c, encoding="utf-8")
-                return cookie_path
+                cookie_path.write_text(target_c, encoding="utf-8")
+                results.append(cookie_path)
+                seen_hashes.add(c_hash)
             except Exception:
                 pass
 
-    for candidate in [
+    # 2. Từ các file vật lý (ưu tiên cookies.txt rồi đến cookies_master.txt)
+    candidates = [
         BASE_DIR / "cookies.txt",
         BASE_DIR / "cookies_master.txt",
         TEMP_DIR / "cookies.txt",
         TEMP_DIR / "cookies_master.txt",
-    ]:
-        if candidate.exists() and candidate.stat().st_size > 0:
+    ]
+    for cand in candidates:
+        if cand.exists() and cand.stat().st_size > 0:
             try:
-                content = candidate.read_text(encoding="utf-8", errors="replace")
+                content = cand.read_text(encoding="utf-8", errors="replace")
                 full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(content)
-                if mode == "guest" and guest_c and guest_cnt > 0:
-                    cookie_path = TEMP_DIR / "cookie_guest_runtime.txt"
-                    cookie_path.write_text(guest_c, encoding="utf-8")
-                    return cookie_path
-                elif mode == "full" and full_c and full_cnt > 0:
-                    cookie_path = TEMP_DIR / "cookie_full_runtime.txt"
-                    cookie_path.write_text(full_c, encoding="utf-8")
-                    return cookie_path
+                target_c = guest_c if mode == "guest" else full_c
+                target_cnt = guest_cnt if mode == "guest" else full_cnt
+                if target_c and target_cnt > 0:
+                    c_hash = hashlib.md5(target_c.encode("utf-8")).hexdigest()
+                    if c_hash not in seen_hashes:
+                        seen_hashes.add(c_hash)
+                        stem = cand.stem
+                        out_path = TEMP_DIR / f"cookie_{stem}_{mode}_runtime.txt"
+                        out_path.write_text(target_c, encoding="utf-8")
+                        results.append(out_path)
             except Exception:
                 pass
 
-    return None
+    return results
+
+
+def get_cookie_file_path(mode: str = "guest") -> Path | None:
+    """
+    Trả về đường dẫn file cookies.txt hợp lệ nhất nếu có.
+    mode='guest': Cookie visitor/khách (VISITOR_INFO1_LIVE, PREF...).
+    mode='full':  Toàn bộ cookies đầy đủ kể cả session tài khoản.
+    """
+    all_paths = get_all_cookie_file_paths(mode=mode)
+    return all_paths[0] if all_paths else None
 
 
 def get_cookie_status() -> tuple[bool, int, str]:

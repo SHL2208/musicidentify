@@ -3,9 +3,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
-from ..core.config import CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD, TEMP_DIR
+from ..core.config import (
+    CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD,
+    TEMP_DIR,
+    UPLOAD_AUDIO_SAMPLES_TO_CLOUD,
+)
 from ..core.database import get_db_session
 from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
 from ..core.models.db_models import (
@@ -268,25 +272,28 @@ class DatabaseTrackRepository(ITrackRepository):
                 audio_sample_path = TEMP_DIR / f"{result.track_id}_multisegment.wav"
                 if audio_sample_path.exists():
                     file_sz = audio_sample_path.stat().st_size
-                    uploaded_audio_url = self._storage_service.upload_file(
-                        audio_sample_path, bucket="audio-samples"
-                    )
-                    audio_asset_id = f"asset_audio_{result.track_id}"
-                    existing_audio_asset = session.get(MediaAssetModel, audio_asset_id)
-                    if existing_audio_asset:
-                        existing_audio_asset.public_url = uploaded_audio_url
-                    else:
-                        new_audio_asset = MediaAssetModel(
-                            id=audio_asset_id,
-                            track_id=result.track_id,
-                            asset_type="AUDIO_SAMPLE",
-                            file_path=str(audio_sample_path),
-                            public_url=uploaded_audio_url,
-                            file_size=file_sz,
-                        )
-                        session.add(new_audio_asset)
+                    uploaded_audio_url = str(audio_sample_path)
 
-                    if cleanup_local and uploaded_audio_url.startswith("http"):
+                    if UPLOAD_AUDIO_SAMPLES_TO_CLOUD:
+                        uploaded_audio_url = self._storage_service.upload_file(
+                            audio_sample_path, bucket="audio-samples"
+                        )
+                        audio_asset_id = f"asset_audio_{result.track_id}"
+                        existing_audio_asset = session.get(MediaAssetModel, audio_asset_id)
+                        if existing_audio_asset:
+                            existing_audio_asset.public_url = uploaded_audio_url
+                        else:
+                            new_audio_asset = MediaAssetModel(
+                                id=audio_asset_id,
+                                track_id=result.track_id,
+                                asset_type="AUDIO_SAMPLE",
+                                file_path=str(audio_sample_path),
+                                public_url=uploaded_audio_url,
+                                file_size=file_sz,
+                            )
+                            session.add(new_audio_asset)
+
+                    if cleanup_local:
                         audio_sample_path.unlink(missing_ok=True)
 
         except Exception as e:
@@ -326,6 +333,116 @@ class DatabaseTrackRepository(ITrackRepository):
             logger.warning(f"Lỗi khi lấy danh sách kết quả từ CSDL: {e}")
 
         return list(self._in_memory_cache_results.values())
+
+    def find_result_by_query_or_url(
+        self, query: str, resolved_url: str | None = None
+    ) -> DetectionResult | None:
+        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn hoặc URL nguồn."""
+        clean_q = (query or "").strip()
+        clean_u = (resolved_url or "").strip()
+        if not clean_q and not clean_u:
+            return None
+
+        # 1. Kiểm tra cache bộ nhớ phiên làm việc trước
+        for track_id, track in self._in_memory_cache_tracks.items():
+            t_query = (track.raw_query or "").strip().lower()
+            t_url = (track.resolved_url or "").strip().lower()
+            q_lower = clean_q.lower()
+            u_lower = clean_u.lower()
+            if (u_lower and (u_lower == t_url or u_lower == t_query)) or (
+                q_lower and (q_lower == t_query or q_lower == t_url)
+            ):
+                cached = self._in_memory_cache_results.get(track_id)
+                if cached:
+                    cached.is_cached = True
+                    return cached
+
+        # 2. Truy vấn từ CSDL Supabase / PostgreSQL
+        try:
+            with get_db_session() as session:
+                conditions = []
+                if clean_u:
+                    conditions.append(TrackModel.resolved_url == clean_u)
+                    conditions.append(TrackModel.raw_query == clean_u)
+                if clean_q:
+                    conditions.append(TrackModel.raw_query == clean_q)
+                    conditions.append(TrackModel.resolved_url == clean_q)
+                    conditions.append(TrackModel.id == clean_q)
+
+                stmt = (
+                    select(TrackModel)
+                    .where(or_(*conditions))
+                    .order_by(TrackModel.updated_at.desc())
+                    .limit(1)
+                )
+                tm = session.scalars(stmt).first()
+                if tm:
+                    rm = session.get(DetectionResultModel, f"res_{tm.id}")
+                    if rm:
+                        res = self._map_model_to_detection_result(session, rm)
+                        res.is_cached = True
+                        inp_type = InputType.URL
+                        if tm.input_type:
+                            try:
+                                inp_type = InputType(tm.input_type)
+                            except ValueError:
+                                pass
+                        self._in_memory_cache_tracks[tm.id] = TrackItem(
+                            id=tm.id,
+                            raw_query=tm.raw_query,
+                            input_type=inp_type,
+                            resolved_url=tm.resolved_url,
+                            track_title=tm.track_title,
+                            artist=tm.artist,
+                            duration_sec=tm.duration_sec,
+                            platform=tm.platform,
+                            is_verified_match=tm.is_verified_match,
+                            match_score=tm.match_score,
+                            status=tm.status,
+                        )
+                        self._in_memory_cache_results[tm.id] = res
+                        return res
+        except Exception as e:
+            logger.warning(f"Lỗi khi tra cứu bài hát từ CSDL: {e}")
+
+        return None
+
+    def correct_verdict(
+        self,
+        track_id: str,
+        is_ai: bool,
+        verdict_type: str,
+        verdict_label: str,
+        note: str | None = None,
+    ) -> DetectionResult | None:
+        """Cập nhật đính chính phán quyết của bài hát trực tiếp vào CSDL."""
+        try:
+            with get_db_session() as session:
+                res_id = f"res_{track_id}"
+                rm = session.get(DetectionResultModel, res_id)
+                if not rm:
+                    return None
+
+                rm.is_ai = is_ai
+                rm.verdict_type = verdict_type
+                rm.verdict_label = verdict_label
+                reasons_list = list(rm.reasons or [])
+                correction_reason = (
+                    f"Chuyên gia đính chính: {note}"
+                    if note
+                    else "Đã được đính chính thủ công bởi chuyên gia/người dùng"
+                )
+                reasons_list.insert(0, correction_reason)
+                rm.reasons = reasons_list
+                session.commit()
+
+                res = self._map_model_to_detection_result(session, rm)
+                res.is_human_corrected = True
+                self._in_memory_cache_results[track_id] = res
+                return res
+        except Exception as e:
+            logger.error(f"Lỗi khi đính chính phán quyết bài {track_id}: {e}")
+            return None
 
     def clear(self) -> None:
         """Xóa cache bộ nhớ phiên làm việc."""
@@ -465,23 +582,29 @@ class DatabaseTrackRepository(ITrackRepository):
         metrics_obj = None
         if rm.acoustic_metrics:
             am = rm.acoustic_metrics
+            r95 = am.spectral_rolloff_95_hz or 0.0
+            rig = am.pitch_rigidity_ratio or 0.0
+            harm = am.harmonic_ratio or 0.0
+            cut = am.ultrasonic_cutoff_detected or False
+            is_suspect = (r95 < 11800.0 and rig >= 0.45 and harm >= 0.80) or (cut and rig >= 0.50)
             metrics_obj = AcousticMetrics(
                 sample_rate=am.sample_rate or 44100,
                 duration_sec=am.duration_sec or 30.0,
                 fakeprint_score=am.fakeprint_score or 0.0,
                 fakeprint_detected=am.fakeprint_detected or False,
-                spectral_rolloff_95_hz=am.spectral_rolloff_95_hz or 0.0,
+                spectral_rolloff_95_hz=r95,
                 spectral_rolloff_85_hz=am.spectral_rolloff_85_hz or 0.0,
-                harmonic_ratio=am.harmonic_ratio or 0.0,
+                harmonic_ratio=harm,
                 pitch_jitter=am.pitch_jitter or 0.0,
-                pitch_rigidity_ratio=am.pitch_rigidity_ratio or 0.0,
+                pitch_rigidity_ratio=rig,
                 pitch_anomaly_detected=am.pitch_anomaly_detected or False,
                 pitch_stability_label=am.pitch_stability_label or "Natural Biological",
                 is_studio_autotune=am.is_studio_autotune or False,
                 stem_bleed_score=am.stem_bleed_score,
                 stem_bleed_detected=am.stem_bleed_detected or False,
-                ultrasonic_cutoff_detected=am.ultrasonic_cutoff_detected or False,
+                ultrasonic_cutoff_detected=cut,
                 compression_source=am.compression_source or "Studio Master / Uncompressed",
+                modern_ai_vocal_suspect=is_suspect,
             )
 
         v_type = VerdictType.CONFIRMED_HUMAN
@@ -497,6 +620,16 @@ class DatabaseTrackRepository(ITrackRepository):
             except ValueError:
                 pass
 
+        spec_url = None
+        if tm and getattr(tm, "media_assets", None):
+            for asset in tm.media_assets:
+                if getattr(asset, "asset_type", None) == "SPECTROGRAM_FORENSIC":
+                    spec_url = asset.public_url or asset.file_path
+                    break
+
+        reasons_list = rm.reasons or []
+        is_corrected = any("đính chính" in str(r).lower() for r in reasons_list)
+
         return DetectionResult(
             track_id=rm.track_id,
             track_title=tm.track_title if tm else "N/A",
@@ -508,10 +641,11 @@ class DatabaseTrackRepository(ITrackRepository):
             verdict_label=rm.verdict_label,
             confidence_score=rm.confidence_score,
             suspected_engine=rm.suspected_engine or "None",
-            reasons=rm.reasons or [],
+            reasons=reasons_list,
             detailed_explanation=rm.detailed_explanation or "",
             acoustic_metrics=metrics_obj,
-            spectrogram_image_path=None,
+            spectrogram_image_path=spec_url,
             processed_at=rm.processed_at.isoformat() if rm.processed_at else "",
             model_used=rm.model_used,
+            is_human_corrected=is_corrected,
         )

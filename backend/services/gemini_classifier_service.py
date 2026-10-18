@@ -175,9 +175,10 @@ Your mission: Examine the provided audio sample (multi-segment composite of Vers
 PRACTICAL & OBJECTIVE FORENSIC GUIDELINES (CRITICAL):
 
 A. BALANCED FORENSIC OBJECTIVITY:
-   - Distinguish carefully between MODERN STUDIO DAW PRODUCTION (DAW plugins, commercial Auto-Tune, MIDI synths, clean multitrack stems) and GENERATIVE AI (Suno, Udio, single-pass latent diffusion).
-   - If audio exhibits authentic human acoustic recording quality with full harmonic air band (extending naturally above 16-18 kHz) and clean multitrack stems without neural diffusion smearing -> Classify as 'PROCESSED_HUMAN' (is_ai: false).
-   - Classify as 'HYBRID_AI' or 'AI_GENERATED' (is_ai: true) when there is acoustic, spectral, or physical evidence of generative AI synthesis (such as collapsed spectral rolloff <12kHz, Suno neural vocoder wateriness, comb-filter residue, or single-pass neural timbral entanglement).
+   - Distinguish carefully between MODERN STUDIO DAW PRODUCTION (DAW plugins, commercial Auto-Tune / Melodyne, MIDI synthesizers, electronic remix beats, clean multitrack stems) and GENERATIVE AI (Suno, Udio, single-pass latent diffusion).
+   - CRITICAL REALITY OF WEB STREAMING AUDIO: Audio sourced from YouTube, Spotify, or web platforms is encoded with lossy codecs (Opus/AAC at 128-160kbps). Lossy streaming codecs naturally attenuate high-frequency energy above 16-18 kHz and naturally concentrate 95% of spectral energy below 10-12 kHz. This is NORMAL digital web audio distribution and MUST NEVER be misdiagnosed as Generative AI synthesis!
+   - Commercial Vietnamese Pop and Ballad vocalists routinely utilize studio pitch quantization (Auto-Tune / Melodyne) and modern vocal compression. These must remain 'PROCESSED_HUMAN' (is_ai: false).
+   - Only classify as 'HYBRID_AI' or 'AI_GENERATED' (is_ai: true) when there is clear physical, auditory, or spectral evidence of generative neural synthesis (e.g., Suno/Udio neural vocoder wateriness, continuous latent diffusion phase smearing, robotic vowel transitions, or Fourier comb-filter residue).
 
 B. 3-TIER SPECTROGRAM & ACOUSTIC UNMASKING (HPSS):
    - The visual spectrogram has 3 tiers:
@@ -196,10 +197,10 @@ C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
      * Stem bleed / timbral entanglement: Vocal reverb and high-frequency harmonics melt into synthesizer pads/drums without physical separation.
      * Consonant articulation & phrasing: Unnatural phrasing cadence, slurred consonants, robotic delivery or lack of authentic human pronunciation mechanics.
      * AI Lo-Fi / AI Beats: Repetitive, algorithmic backing beat loops or synthetic accompaniments.
-   - BROAD AI & HYBRID AI TARGET (BALANCED F1-SCORE):
-     * If the track contains EITHER an AI-generated backing beat (e.g. AI Lo-Fi beat, Suno loop) OR an AI-assisted/cloned vocal -> Classify as 'HYBRID_AI' with 'is_ai: true'!
-     * If the entire song is synthesized from scratch -> Classify as 'AI_GENERATED' with 'is_ai: true'.
-     * Only classify as 'PROCESSED_HUMAN' or 'CONFIRMED_HUMAN' if you have strong acoustic certainty that BOTH the vocalist AND the backing track were 100% human-produced in a real physical studio environment.
+   - BALANCED HYBRID & AI DISCRIMINATION:
+     * If there is clear evidence of an AI-generated backing beat (e.g. algorithmic Suno/Udio loop) OR an AI synthetic/cloned vocal -> Classify as 'HYBRID_AI' with 'is_ai: true'.
+     * If the entire track is synthesized by an AI model -> Classify as 'AI_GENERATED' with 'is_ai: true'.
+     * Authentic human performances (singers with commercial autotune, human-produced EDM remixes, children's songs, live sessions, studio acoustic ballads) MUST be classified as 'PROCESSED_HUMAN' or 'CONFIRMED_HUMAN' (is_ai: false). Avoid false positives on genuine human musicians!
 
 D. VIETNAMESE LINGUISTIC RULE (ANTI-BIAS):
    - In Vietnamese, the word "ai" is a ubiquitous pronoun meaning "who / someone / anyone" (e.g., 'Nỗi Buồn Mang Tên Ai' means 'A Sorrow Named Someone').
@@ -331,7 +332,7 @@ class GeminiClassifierService(IAIClassifier):
             cutoff_line = ""
             if getattr(metrics, "ultrasonic_cutoff_detected", False):
                 slope = getattr(metrics, "high_freq_rolloff_slope", 0.0)
-                cutoff_line = f"- Ultrasonic Frequency Cutoff: DETECTED (Steep cutoff/shelf drop of {slope:.1f} dB above 16kHz - Characteristic of neural audio upsampling from 24k/32k latent space).\n"
+                cutoff_line = f"- Ultrasonic Frequency Cutoff: Severe shelf drop of {slope:.1f} dB above 16kHz.\n"
 
             rolloff_line = ""
             # =========================================================================
@@ -395,15 +396,40 @@ class GeminiClassifierService(IAIClassifier):
      - Only classify as 'PROCESSED_HUMAN' (is_ai: false) when the vocal performance is demonstrably an authentic human recording and the multitrack production was created without generative AI models.
 """
 
+        modern_ai_alert = ""
+        if metrics and (
+            getattr(metrics, "modern_ai_vocal_suspect", False)
+            or (
+                metrics.spectral_rolloff_95_hz < 12000.0
+                and getattr(metrics, "pitch_rigidity_ratio", 0.0) >= 0.45
+                and not is_derivative_or_remix_context(metadata)
+            )
+        ):
+            modern_ai_alert = f"""
+🚨 CRITICAL MODERN AI VOCAL ANOMALY ALERT:
+- Severe high-frequency rolloff deficiency detected ({metrics.spectral_rolloff_95_hz:.0f} Hz) coupled with high pitch rigidity ({getattr(metrics, "pitch_rigidity_ratio", 0.0) * 100:.1f}%) and excessive harmonic saturation ({metrics.harmonic_ratio:.2f}).
+- CRITICAL FORENSIC DIRECTIVE: Modern neural models (Suno v3.5/v4, Udio, Diff-SVC/RVC clones) actively simulate realistic synthetic breath dynamics and commercial Auto-Tune. NEVER cite 'intake breaths' or 'micro-fluctuations' as proof of human production when high-frequency rolloff is severely restricted (< 12kHz) and pitch rigidity is elevated! In such cases, the synthetic breath is generated by AI and the track MUST be classified as 'HYBRID_AI' or 'AI_GENERATED' (is_ai: true).
+"""
+
+        instrumental_directive = ""
+        if metrics and getattr(metrics, "is_instrumental", False):
+            instrumental_directive = """
+🎹 SPECIAL DIRECTIVE - INSTRUMENTAL / AMBIENT / BGM TRACK DETECTED:
+- This track has been acoustically identified as an INSTRUMENTAL or AMBIENT piece (no lead singing vocals).
+- CRITICAL FORENSIC RULE: DO NOT evaluate or hallucinate singing vocal dynamics, vocal formants, or human breath friction on this track!
+- Evaluate strictly the acoustic instrument authenticity, algorithmic loop repetitions, MIDI/sampler textures vs neural diffusion smearing, and acoustic soundstage depth.
+"""
+
         prompt = f"""
 PLEASE FORENSICALLY EVALUATE THE FOLLOWING AUDIO TRACK:
 
 🎵 Track: {blind_track_title}
 
 📊 FORENSIC AUDIT PROTOCOL:
-{metadata_text}{genre_directive}
+{metadata_text}{genre_directive}{instrumental_directive}{modern_ai_alert}
 🔬 PHYSICAL ACOUSTIC & FORENSIC METRICS:
 {metrics_text}
+
 
 AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
 1. Listen closely to the audio excerpt across all segments (Verse, Chorus, Climax) and inspect the 3-tier spectrogram:

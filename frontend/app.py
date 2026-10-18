@@ -167,8 +167,82 @@ def main():
             if res.source_url:
                 st.caption(f"🔗 Nguồn: [{res.source_url}]({res.source_url})")
 
+            # Thông báo nguồn gốc kết quả (Cache / Đính chính)
+            if getattr(res, "is_human_corrected", False):
+                st.success(
+                    "🧑‍🎤 **Đã qua thẩm định & đính chính bởi con người:** Kết quả này đã được người dùng/chuyên gia kiểm tra và ghi đè nhãn chuẩn."
+                )
+            elif getattr(res, "is_cached", False):
+                st.info(
+                    "⚡ **Kết quả được tải tức thì từ CSDL (Cached):** Bài hát này đã từng được thẩm định trước đó. Nếu bạn muốn phân tích lại từ đầu bằng AI, bấm nút '🔄 Quét lại bài này' bên dưới."
+                )
+
             # Thẻ phán quyết
             render_verdict_card(res)
+
+            # Khu vực tương tác: Quét lại hoặc Đính chính
+            st.markdown("##### 🛠️ Thao Tác & Đính Chính Kết Quả")
+            col_act1, col_act2, col_act3 = st.columns([1, 1, 1])
+
+            with col_act1:
+                if st.button(
+                    "🔄 Quét lại bài này",
+                    key=f"rescan_{res.track_id}",
+                    use_container_width=True,
+                ):
+                    with st.spinner("Đang tải lại âm thanh và chạy lại toàn bộ mô hình AI..."):
+                        try:
+                            rescan_query = res.raw_query or res.track_title or res.source_url
+                            fresh_res = client.detect_single_track(
+                                query=rescan_query,
+                                model_override=st.session_state.model_name,
+                                force_rescan=True,
+                            )
+                            st.session_state.single_result = fresh_res
+                            st.toast("🎉 Đã quét lại thành công và cập nhật CSDL!", icon="✅")
+                            st.rerun()
+                        except Exception as re_err:
+                            st.error(f"Lỗi khi quét lại: {re_err}")
+
+            with col_act2:
+                if st.button(
+                    "🧑‍🎤 Đính chính: Là Người",
+                    key=f"corr_human_{res.track_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        updated = client.correct_verdict(
+                            track_id=res.track_id,
+                            is_ai=False,
+                            verdict_type="CONFIRMED_HUMAN",
+                            verdict_label="CONFIRMED HUMAN (Người làm)",
+                            note="Xác nhận bởi người dùng: Tác phẩm của người thật",
+                        )
+                        st.session_state.single_result = updated
+                        st.toast("✅ Đã đính chính: Tác phẩm của Người thật!", icon="🧑‍🎤")
+                        st.rerun()
+                    except Exception as corr_err:
+                        st.error(f"Lỗi khi đính chính: {corr_err}")
+
+            with col_act3:
+                if st.button(
+                    "🤖 Đính chính: Là Nhạc AI",
+                    key=f"corr_ai_{res.track_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        updated = client.correct_verdict(
+                            track_id=res.track_id,
+                            is_ai=True,
+                            verdict_type="AI_GENERATED",
+                            verdict_label="AI-GENERATED (Nhạc AI tạo)",
+                            note="Xác nhận bởi người dùng: Sản phẩm sinh từ AI",
+                        )
+                        st.session_state.single_result = updated
+                        st.toast("🤖 Đã đính chính: Tác phẩm do AI tạo!", icon="🤖")
+                        st.rerun()
+                    except Exception as corr_err:
+                        st.error(f"Lỗi khi đính chính: {corr_err}")
 
             # Thông số âm học
             if res.acoustic_metrics:

@@ -45,7 +45,120 @@ _DEFAULT_AI_ARTIST_REGEXES = [
     (r"\bf47\b", "F47"),
     (r"\bhoàng k\b", "Hoàng K"),
     (r"\bhlc\b", "HLC"),
+    (r"\blý nguyên tiêu\b", "Lý Nguyên Tiêu"),
+    (r"\bhuyền tranng\b", "Huyền Tranng"),
+    (r"\btrịnh nguyên bình\b", "Trịnh Nguyên Bình"),
+    (r"\banh vũ\b", "Anh Vũ"),
+    (r"\bfantasy medieval journey\b", "Fantasy Medieval Journey"),
+    (r"\bather soaking\b", "Ather Soaking"),
+    (r"\bather word\b", "Ather Word"),
+    (r"\b36 kingdom\b", "36 KINGDOM"),
+    (r"\bgomaxr\b", "GomaxR"),
+    (r"\bnova skye\b", "Nova Skye"),
+    (r"\b5seconddecider\b", "5SecondDecider"),
+    (r"\bqtd music\b", "QTD Music"),
 ]
+
+_VERIFIED_HUMAN_ARTISTS = {
+    "đinh tùng huy",
+    "minh sang",
+    "tlong",
+    "phương dung socola",
+    "chấn hào",
+    "dytins nguyễn",
+    "phạm quỳnh anh",
+    "minh tuyết",
+    "nguyên hà",
+    "dj mie",
+    "phan duy anh",
+    "rayo",
+    "jaykii",
+    "vicky nhung",
+    "chu thúy quỳnh",
+    "the masked singer",
+    "trung quân",
+    "tùng dương",
+    "thanh duy",
+    "anh trai vượt ngàn chông gai",
+    "buitruonglinh",
+    "hurrykng",
+    "jsol",
+    "congb",
+    "đỗ lê hồng nhung",
+    "nguyễn ngọc hải",
+    "nguyễn kiều oanh",
+    "trương khải minh",
+    "hieubi",
+    "hoàng khang",
+    "prod. tachi",
+    "đức phúc",
+    "erik",
+    "hòa minzy",
+    "sơn tùng m-tp",
+    "vũ",
+    "hoàng dũng",
+    "soobin",
+    "mono",
+    "quân a.p",
+    "jack",
+    "k-icm",
+    "bảo anh",
+    "hương tràm",
+    "lệ quyên",
+    "đàm vĩnh hưng",
+    "mỹ tâm",
+    "hà anh tuấn",
+    "noo phước thịnh",
+    "đông nhi",
+}
+
+
+def is_verified_human_artist(artist_str: str, title_str: str = "") -> bool:
+    """Xác thực xem nghệ sĩ hoặc tiêu đề có thuộc danh sách nghệ sĩ người thật đã được xác thực không."""
+    a_low = (artist_str or "").lower().strip()
+    t_low = (title_str or "").lower().strip()
+
+    # 1. Tuyệt đối không xác thực nếu thuộc danh sách các dự án nghệ sĩ ảo AI đã biết
+    for pat, _ in _DEFAULT_AI_ARTIST_REGEXES:
+        if re.search(pat, a_low) or re.search(pat, t_low):
+            return False
+
+    # 2. Tách các nghệ sĩ theo dấu phân cách hợp tác (tránh nhầm lẫn 'Anh Vũ' với 'Vũ')
+    tokens = [
+        tok.strip().rstrip(".")
+        for tok in re.split(r"[,/&;]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)", a_low)
+        if tok.strip()
+    ]
+
+    for tok in tokens:
+        clean_tok = re.sub(r"^prod\.?\s*", "", tok).strip()
+        if clean_tok in _VERIFIED_HUMAN_ARTISTS or tok in _VERIFIED_HUMAN_ARTISTS:
+            return True
+
+    # 3. Khớp các cụm từ nghệ sĩ / chương trình dài (VD: 'anh trai vượt ngàn chông gai', 'the masked singer')
+    for kn in _VERIFIED_HUMAN_ARTISTS:
+        if len(kn.split()) > 1 and (kn in a_low or kn in t_low):
+            return True
+
+    return False
+
+
+_GENERIC_ANONYMOUS_ARTISTS = {
+    "",
+    "unknown",
+    "various artists",
+    "nghệ sĩ ẩn danh",
+    "ca sĩ ẩn danh",
+    "ẩn danh",
+    "anonymous",
+    "nhiều nghệ sĩ",
+    "nhiều ca sĩ",
+    "ai channel",
+    "ai music",
+    "va",
+    "none",
+    "null",
+}
 
 _catalog_cache: dict[str, Any] = {
     "timestamp": 0.0,
@@ -296,6 +409,23 @@ class SignalAnalyzerService(ISignalAnalyzer):
         if not is_whitelisted_distributor:
             for ai_dist in pure_ai_distributors:
                 if ai_dist in distributor_lower:
+                    # NGOẠI LỆ: Nếu là INCOM nhưng có tên nghệ sĩ cá nhân xác thực
+                    # (không phải tên chung chung/ẩn danh và không thuộc danh mục dự án AI sinh hàng loạt),
+                    # thì chuyển giao cho audio forensics phân tích âm học, tránh vu oan cho ca sĩ độc lập (VD: Hồi Tưởng - Dytins Nguyễn).
+                    is_generic_artist = (
+                        not artist_lower
+                        or artist_lower in _GENERIC_ANONYMOUS_ARTISTS
+                        or any(
+                            g in artist_lower
+                            for g in ["ẩn danh", "anonymous", "unknown", "ai channel"]
+                        )
+                    )
+                    if (
+                        ai_dist == "incom"
+                        and not is_generic_artist
+                        and not any(re.search(pat, artist_lower) for pat, _ in ai_artist_regexes)
+                    ):
+                        continue
                     return {
                         "is_ai": True,
                         "verdict_type": VerdictType.AI_GENERATED,
@@ -491,7 +621,11 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 float(np.mean(stft[mask_ultra, :] ** 2)) if np.any(mask_ultra) else 0.0
             ) + 1e-12
             shelf_drop_db = float(10 * np.log10(power_mid_high / power_ultra))
-            ultrasonic_cutoff = shelf_drop_db >= 25.0 and rolloff_95 < 18000.0
+            # Vết ngắt tần siêu âm thực sự do mô hình AI nơ-ron (24kHz/32kHz sampling rate nội suy)
+            # Tránh nhầm lẫn với nén Opus/AAC trên YouTube làm suy giảm tự nhiên > 16kHz
+            ultrasonic_cutoff = (
+                shelf_drop_db >= 35.0 and rolloff_95 < 13500.0 and high_freq_ratio < 0.0002
+            )
             high_freq_slope = round(float(shelf_drop_db), 2)
 
             # 4. Phân tích thành phần sóng hài toàn bài (HPSS Harmonic-Percussive Sound Separation)
@@ -512,6 +646,32 @@ class SignalAnalyzerService(ISignalAnalyzer):
             fakeprint_res = self.fakeprint_detector.analyze_waveform(mono_y, sr=sr)
             fakeprint_score = fakeprint_res["fakeprint_score"]
             fakeprint_detected = fakeprint_res["fakeprint_detected"]
+
+            # 5b. Nhận diện Nhạc không lời (Instrumental / Ambient / BGM)
+            vocal_band_mask = (freqs >= 300) & (freqs <= 3400)
+            vocal_band_harm_power = (
+                float(np.sum(np.abs(H[vocal_band_mask, :]) ** 2))
+                if np.any(vocal_band_mask)
+                else 0.0
+            )
+            vocal_energy_ratio = round(float(vocal_band_harm_power / harm_power), 4)
+
+            pitch_label = str(pitch_res.get("pitch_stability_label", "")).lower()
+            is_instrumental = (
+                vocal_energy_ratio < 0.20
+                or "instrumental" in pitch_label
+                or pitch_res.get("pitch_rigidity_ratio", 0.0) == 0.0
+            )
+
+            # 5c. Cờ nhận diện AI Vocals đời mới (Modern AI Vocal Suspect)
+            rigidity = float(pitch_res.get("pitch_rigidity_ratio", 0.0) or 0.0)
+            stem_bleed = float(stem_bleed_res.get("stem_bleed_score", 0.0) or 0.0)
+            modern_ai_vocal_suspect = (
+                rolloff_95 < 11800.0
+                and rigidity >= 0.47
+                and harmonic_ratio >= 0.80
+                and (fakeprint_score >= 0.35 or stem_bleed >= 0.32)
+            ) or (ultrasonic_cutoff and rigidity >= 0.55)
 
             # 6. Đánh giá nén truyền tải và vết ngắt tần
             has_cutoff = rolloff_95 < 17500.0
@@ -544,6 +704,9 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 stem_bleed_detected=stem_bleed_res["stem_bleed_detected"],
                 ultrasonic_cutoff_detected=ultrasonic_cutoff,
                 high_freq_rolloff_slope=high_freq_slope,
+                is_instrumental=is_instrumental,
+                vocal_energy_ratio=vocal_energy_ratio,
+                modern_ai_vocal_suspect=modern_ai_vocal_suspect,
             )
 
             # 7. Vẽ biểu đồ Forensic 3 tầng (Full Mix + Harmonic Vocal HPSS + Fourier Fakeprint)

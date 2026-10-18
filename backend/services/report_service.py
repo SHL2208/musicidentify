@@ -106,6 +106,15 @@ class ReportService(IReportService):
             if not r.source_url and url_str != "N/A":
                 r.source_url = url_str
 
+            source_origin = (
+                "CSDL đã lưu (Cached)"
+                if getattr(r, "is_cached", False)
+                else "Vừa quét mới (Fresh Scan)"
+            )
+            corrected_str = (
+                "Có (Đã đính chính)" if getattr(r, "is_human_corrected", False) else "Không"
+            )
+
             if r.verdict_type == VerdictType.ERROR:
                 records.append(
                     {
@@ -114,10 +123,13 @@ class ReportService(IReportService):
                         "Kết luận thẩm định": r.verdict_label,
                         "Phân loại kỹ thuật": "ERROR",
                         "Độ tin cậy (%)": "0.0%",
+                        "Nguồn kết quả": source_origin,
+                        "Đã đính chính": corrected_str,
                         "Điểm Fakeprint Fourier (ISMIR 2025)": "N/A",
                         "Độ mở dải tần (Rolloff 95%)": "N/A",
                         "Đánh giá nén truyền tải": "N/A",
                         "Nền tảng nghi vấn": "N/A",
+                        "Mô hình AI": r.model_used or "N/A",
                         "Luận cứ chính / Chi tiết lỗi": r.reasons[0]
                         if r.reasons
                         else "Lỗi không xác định",
@@ -147,10 +159,13 @@ class ReportService(IReportService):
                         if hasattr(r.verdict_type, "value")
                         else str(r.verdict_type),
                         "Độ tin cậy (%)": f"{r.confidence_score * 100:.1f}%",
+                        "Nguồn kết quả": source_origin,
+                        "Đã đính chính": corrected_str,
                         "Điểm Fakeprint Fourier (ISMIR 2025)": fakeprint_str,
                         "Độ mở dải tần (Rolloff 95%)": rolloff_str,
                         "Đánh giá nén truyền tải": comp_source,
                         "Nền tảng nghi vấn": r.suspected_engine,
+                        "Mô hình AI": r.model_used or "Heuristics",
                         "Luận cứ chính / Chi tiết lỗi": " | ".join(r.reasons),
                         "Giải thích chi tiết": r.detailed_explanation,
                         "Nguồn link": url_str,

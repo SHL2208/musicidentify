@@ -116,6 +116,18 @@ class AcousticMetrics(BaseModel):
         default=0.0,
         description="Độ dốc suy giảm dải cao (dB/octave giữa 14k-16k và 16k-20k)",
     )
+    is_instrumental: bool = Field(
+        default=False,
+        description="True nếu bản thu là nhạc không lời / độc tấu / ambient / BGM (không có vocal)",
+    )
+    vocal_energy_ratio: float = Field(
+        default=0.0,
+        description="Tỷ lệ năng lượng dải tần thanh âm (300Hz - 3.4kHz) so với toàn phổ",
+    )
+    modern_ai_vocal_suspect: bool = Field(
+        default=False,
+        description="True nếu xuất hiện tổ hợp dấu hiệu của AI Vocal đời mới (Rolloff < 11.8kHz, Rigidity >= 45%, Harmonic >= 80%)",
+    )
 
 
 class DetectionResult(BaseModel):
@@ -148,6 +160,14 @@ class DetectionResult(BaseModel):
     model_used: str | None = Field(
         default=None,
         description="Mô hình Gemini thực tế đã được sử dụng thành công (VD: gemini-3.8-flash)",
+    )
+    is_cached: bool = Field(
+        default=False,
+        description="True nếu kết quả được lấy từ bộ nhớ đệm / CSDL đã phân tích trước đó",
+    )
+    is_human_corrected: bool = Field(
+        default=False,
+        description="True nếu kết quả đã được chuyên gia/con người đính chính thủ công",
     )
 
 

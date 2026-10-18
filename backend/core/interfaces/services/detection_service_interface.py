@@ -7,11 +7,21 @@ class IDetectionService(ABC):
     """Interface định nghĩa nghiệp vụ điều phối quy trình phân tích nhận diện đơn bài."""
 
     @abstractmethod
-    def detect_single(self, track: TrackItem, model_override: str | None = None) -> DetectionResult:
+    def detect_single(
+        self,
+        track: TrackItem,
+        model_override: str | None = None,
+        force_rescan: bool = False,
+    ) -> DetectionResult:
         """Thực hiện toàn bộ quy trình nhận diện bài hát từ TrackItem đã chuẩn hóa."""
         pass
 
     @abstractmethod
-    def detect_query(self, query: str, model_override: str | None = None) -> DetectionResult:
+    def detect_query(
+        self,
+        query: str,
+        model_override: str | None = None,
+        force_rescan: bool = False,
+    ) -> DetectionResult:
         """Phân giải chuỗi query tự do và thực hiện nhận diện bài hát."""
         pass

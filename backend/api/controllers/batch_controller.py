@@ -1,4 +1,3 @@
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,20 +32,30 @@ class BatchController:
                 if not clean_q:
                     continue
                 input_type = self.resolver.detect_input_type(clean_q)
+                resolved_u = clean_q if input_type.value == "URL" else None
+                from backend.services.resolver_service import generate_deterministic_track_id
+
+                item_id = generate_deterministic_track_id(
+                    clean_q, input_type, resolved_url=resolved_u
+                )
                 tracks.append(
                     TrackItem(
-                        id=str(uuid.uuid4())[:8],
+                        id=item_id,
                         raw_query=clean_q,
                         input_type=input_type,
                         track_title=Path(clean_q).stem
                         if input_type.value == "LOCAL_FILE"
                         else clean_q,
-                        resolved_url=clean_q if input_type.value == "URL" else None,
+                        resolved_url=resolved_u,
                     )
                 )
 
+            scan_m = getattr(request, "scan_mode", "smart")
             report = self.batch_service.process_batch(
-                tracks=tracks, model_override=request.model_override, on_progress=on_progress
+                tracks=tracks,
+                model_override=request.model_override,
+                scan_mode=scan_m,
+                on_progress=on_progress,
             )
             return StandardResponse[BatchReport](
                 success=True, message=f"Đã xử lý xong lô {report.total_tracks} bài hát", data=report
@@ -60,6 +69,7 @@ class BatchController:
         self,
         file_path: Path,
         model_override: str | None = None,
+        scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
     ) -> StandardResponse[BatchReport]:
@@ -67,7 +77,10 @@ class BatchController:
         try:
             tracks = self.resolver.parse_batch_file(file_path)
             report = self.batch_service.process_batch(
-                tracks=tracks, model_override=model_override, on_progress=on_progress
+                tracks=tracks,
+                model_override=model_override,
+                scan_mode=scan_mode,
+                on_progress=on_progress,
             )
             return StandardResponse[BatchReport](
                 success=True,

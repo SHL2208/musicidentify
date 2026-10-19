@@ -22,7 +22,6 @@ from ..core.models.entities import AcousticMetrics, VerdictType
 
 _DEFAULT_HUMAN_WHITELIST = [
     "sony",
-    "warner music vietnam",
     "bmz",
     "vieent",
     "believe",
@@ -34,6 +33,24 @@ _DEFAULT_HUMAN_WHITELIST = [
 _DEFAULT_PURE_AI_DISTRIBUTORS: list[str] = []
 
 _DEFAULT_AI_ARTIST_REGEXES = [
+    (r"\bd&c\b", "D&C"),
+    (r"\bathena\b", "Athena"),
+    (r"\bkha mộc lan\b", "Kha Mộc Lan"),
+    (r"\bkhói xanh\b", "Khói Xanh"),
+    (r"\btrầm ca\b", "Trầm Ca"),
+    (r"\bhương my bông\b", "Hương My Bông"),
+    (r"\bmercy worship\b", "Mercy Worship"),
+    (r"\bastrís\b", "Astrís"),
+    (r"\bwbm christmas\b", "WBM Christmas"),
+    (r"\btienyinmen\b", "TienYinMen"),
+    (r"\byi xian sun\b", "Yi Xian Sun"),
+    (r"\bshadow phonk\b", "Shadow Phonk"),
+    (r"\bfirelight records\b", "Firelight Records"),
+    (r"\beira romi\b", "Eira Romi"),
+    (r"\bwish records\b", "Wish Records"),
+    (r"\bcowboy bebop\b", "Cowboy Bebop"),
+    (r"\bbt2k relax\b", "BT2K Relax"),
+    (r"\bivory rain\b", "Ivory Rain"),
     (r"\blofi quê hương\b", "Lofi Quê Hương"),
     (r"\bhanzen\b", "HanZen"),
     (r"\ban deep\b", "An Deep"),

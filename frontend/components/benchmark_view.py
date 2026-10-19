@@ -126,7 +126,7 @@ def render_benchmark_view():
 
                 track = None
                 try:
-                    track = resolver.resolve_track(item["query"])
+                    track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
                     res = detection_service.detect_single(
                         track, model_override=st.session_state.get("model_name")
                     )
@@ -148,9 +148,9 @@ def render_benchmark_view():
                         m_type = "FN (Bỏ sót AI)"
                         fn += 1
 
-                    ai_model_val = res.ai_model_verdict or (
-                        "AI" if res.ai_model_is_ai else "HUMAN"
-                    )
+                    ai_model_is_ai = getattr(res, "ai_model_is_ai", res.is_ai)
+                    ai_model_pred = "AI" if ai_model_is_ai else "HUMAN"
+                    ai_model_val = res.ai_model_verdict or ai_model_pred
                     consensus_val = res.consensus_verdict or pred_label
                     results.append(
                         {
@@ -161,6 +161,7 @@ def render_benchmark_view():
                             or getattr(track, "resolved_url", "N/A")
                             or "N/A",
                             "Thực tế": item["gt_label"],
+                            "Model AI Dự đoán": ai_model_pred,
                             "Đánh giá Model AI": ai_model_val,
                             "Kết luận Tổng hợp": consensus_val,
                             "Dự đoán": pred_label,

@@ -503,55 +503,71 @@ class DetectionService(IDetectionService):
                 ]
             )
 
-            # Tuyệt đối KHÔNG nâng cấp lên AI nếu:
-            # - AI Model xác nhận giọng hát có cấu trúc thanh quản sinh học tự nhiên
-            # - Thuộc danh sách ca sĩ người thật đã xác thực
-            # - Phát hành bởi hãng đĩa lớn
-            if not has_human_bio_evidence and not is_human_artist and not is_major_exclusive_label:
-                # Tiêu chí 1: AI thuần nhạc cụ / ambient
-                is_instrumental_ai = rolloff < 6500.0 and rigidity >= 0.75
+            # 2a. Tiêu chí 1: AI thuần nhạc cụ / ambient
+            is_instrumental_ai = rolloff < 6500.0 and rigidity >= 0.75
 
-                # Tiêu chí 2: AI truyền thống có dấu vân răng lược Fourier rõ rệt
-                classic_ai_consensus = (
-                    is_ai_dist
-                    or (metrics.fakeprint_score >= 0.65 and stem_bleed >= 0.30)
-                    or (has_cutoff and metrics.fakeprint_score >= 0.60)
-                )
+            # 2b. Tiêu chí 2: AI có dấu vân răng lược hoặc stem bleed cao áp đảo
+            strong_physical_ai = (
+                (metrics.fakeprint_score >= 0.50 and stem_bleed >= 0.35)
+                or (has_cutoff and metrics.fakeprint_score >= 0.60)
+                or (metrics.fakeprint_score >= 0.65 and stem_bleed >= 0.30)
+            )
 
-                harm_ratio = getattr(metrics, "harmonic_ratio", 0.0) or 0.0
+            # 2c. Tiêu chí 3: Đồng thuận đa chỉ số mức trung bình (Borderline)
+            harm_ratio = getattr(metrics, "harmonic_ratio", 0.0) or 0.0
+            borderline_ai = (
+                rigidity >= 0.47
+                and harm_ratio >= 0.80
+                and (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.32)
+            )
 
-                # Tiêu chí 3: Bằng chứng kép tiêu chuẩn cao (Dual-evidence high bar)
-                # Đòi hỏi đồng thuận 2 chỉ số vật lý AI (Fakeprint + Stem bleed)
-                dual_evidence_ai = (
-                    (metrics.fakeprint_score >= 0.50 and stem_bleed >= 0.35)
-                    or (
-                        rigidity >= 0.47
-                        and harm_ratio >= 0.80
-                        and (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.32)
+            # Trọng tài Anti-FN can thiệp:
+            # - Tuyệt đối không can thiệp nếu là nghệ sĩ người thật đã xác thực (trừ khi fakeprint cực đoan >= 0.85)
+            # - Nếu có bằng chứng AI danh mục (is_ai_dist), AI nhạc cụ (is_instrumental_ai), hoặc AI vật lý mạnh (strong_physical_ai):
+            #   Bằng chứng vật lý/danh mục có quyền phủ quyết (override) phán quyết sinh học của LLM.
+            # - Nếu chỉ là bằng chứng mức trung bình (borderline_ai): Cần đảm bảo không có bằng chứng sinh học và không thuộc nhãn đĩa lớn.
+            should_override_to_ai = False
+            override_reason = ""
+
+            if not is_human_artist:
+                if is_ai_dist:
+                    should_override_to_ai = True
+                    override_reason = (
+                        "[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành thuộc danh mục dự án AI / nhà phân phối ảo. "
+                        f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
                     )
-                )
-
-                has_multi_metric_ai_consensus = (
-                    is_instrumental_ai or classic_ai_consensus or dual_evidence_ai
-                )
-
-                if has_multi_metric_ai_consensus:
-                    logger.info(
-                        "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI vượt trội, nâng cấp lên AI.",
-                        track.track_title,
+                elif is_instrumental_ai:
+                    should_override_to_ai = True
+                    override_reason = (
+                        "[CẢNH BÁO ÂM HỌC NHẠC CỤ AI]: Tần số suy giảm đột ngột và độ cứng cao bất thường "
+                        f"(Rolloff: {rolloff:.0f} Hz, Rigidity: {rigidity:.2f}), đặc trưng của mô hình tạo sinh nhạc cụ/ambient."
                     )
-                    result.is_ai = True
-                    result.verdict_type = VerdictType.HYBRID_AI
-                    result.verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
-                    safeguard_reason = (
-                        "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI "
+                elif strong_physical_ai:
+                    should_override_to_ai = True
+                    override_reason = (
+                        "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI vượt trội "
                         f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
                         "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
                     )
-                    result.reasons = [safeguard_reason] + (result.reasons or [])
-                    if not result.suspected_engine or result.suspected_engine == "None":
-                        result.suspected_engine = "Suno/Udio"
-                    result.confidence_score = max(0.90, result.confidence_score)
+                elif borderline_ai and not has_human_bio_evidence and not is_major_exclusive_label:
+                    should_override_to_ai = True
+                    override_reason = (
+                        "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
+                        f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
+                    )
+
+            if should_override_to_ai:
+                logger.info(
+                    "Kích hoạt Trọng tài Hậu kiểm (Anti-FN): Bản thu '%s' có bằng chứng vật lý AI / danh mục vượt trội, nâng cấp lên AI.",
+                    track.track_title,
+                )
+                result.is_ai = True
+                result.verdict_type = VerdictType.HYBRID_AI
+                result.verdict_label = "HYBRID / AI-ASSISTED (Bán nhân tạo)"
+                result.reasons = [override_reason] + (result.reasons or [])
+                if not result.suspected_engine or result.suspected_engine == "None":
+                    result.suspected_engine = "Suno/Udio"
+                result.confidence_score = max(0.90, result.confidence_score)
 
         result.consensus_is_ai = result.is_ai
         result.consensus_verdict = (

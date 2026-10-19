@@ -418,64 +418,68 @@ class AudioEngineService(IAudioEngine):
             # Tải ngay bằng cookie tài khoản để bypass bot guard; tự động fallback qua từng file nếu có
             for c_path in full_cookie_paths:
                 suffix = f"_{c_path.stem}" if len(full_cookie_paths) > 1 else ""
-                strategies.extend([
-                    {
-                        "name": f"web_full_cookies{suffix}",
-                        "client": ["web_embedded", "web"],
-                        "cookie_file": str(c_path),
-                    },
-                    {
-                        "name": f"default_full_cookies{suffix}",
-                        "client": None,
-                        "cookie_file": str(c_path),
-                    },
-                ])
+                strategies.extend(
+                    [
+                        {
+                            "name": f"web_full_cookies{suffix}",
+                            "client": ["web_embedded", "web"],
+                            "cookie_file": str(c_path),
+                        },
+                        {
+                            "name": f"default_full_cookies{suffix}",
+                            "client": None,
+                            "cookie_file": str(c_path),
+                        },
+                    ]
+                )
 
             # 2. Các chiến lược không cookie / mobile app (chạy khi không có cookie hoặc fallback)
-            strategies.extend([
-                # 1. Android client KHÔNG cookie: Vượt qua rào cản PO token / SABR
-                {
-                    "name": "android_no_cookies",
-                    "client": ["android"],
-                    "cookie_file": None,
-                },
-                # 2. VisionOS client KHÔNG cookie: Lấy stream Opus 251 chất lượng cao
-                {
-                    "name": "visionos_no_cookies",
-                    "client": ["visionos"],
-                    "cookie_file": None,
-                },
-                # 3. Android + iOS kết hợp
-                {
-                    "name": "android_ios_hybrid",
-                    "client": ["android", "ios"],
-                    "cookie_file": None,
-                },
-                # 4. iOS client KHÔNG cookie (dự phòng)
-                {
-                    "name": "ios_no_cookies",
-                    "client": ["ios"],
-                    "cookie_file": None,
-                },
-                # 5. mweb client (YouTube Mobile Web)
-                {
-                    "name": "mweb_no_cookies",
-                    "client": ["mweb"],
-                    "cookie_file": None,
-                },
-                # 6. Client mặc định yt-dlp KHÔNG cookie
-                {
-                    "name": "default_no_cookies",
-                    "client": None,
-                    "cookie_file": None,
-                },
-                # 7. Client mặc định CÓ Guest Cookies (Visitor Info) nếu có cấu hình
-                {
-                    "name": "default_guest_cookies",
-                    "client": None,
-                    "cookie_file": guest_cookie_file,
-                },
-            ])
+            strategies.extend(
+                [
+                    # 1. Android client KHÔNG cookie: Vượt qua rào cản PO token / SABR
+                    {
+                        "name": "android_no_cookies",
+                        "client": ["android"],
+                        "cookie_file": None,
+                    },
+                    # 2. VisionOS client KHÔNG cookie: Lấy stream Opus 251 chất lượng cao
+                    {
+                        "name": "visionos_no_cookies",
+                        "client": ["visionos"],
+                        "cookie_file": None,
+                    },
+                    # 3. Android + iOS kết hợp
+                    {
+                        "name": "android_ios_hybrid",
+                        "client": ["android", "ios"],
+                        "cookie_file": None,
+                    },
+                    # 4. iOS client KHÔNG cookie (dự phòng)
+                    {
+                        "name": "ios_no_cookies",
+                        "client": ["ios"],
+                        "cookie_file": None,
+                    },
+                    # 5. mweb client (YouTube Mobile Web)
+                    {
+                        "name": "mweb_no_cookies",
+                        "client": ["mweb"],
+                        "cookie_file": None,
+                    },
+                    # 6. Client mặc định yt-dlp KHÔNG cookie
+                    {
+                        "name": "default_no_cookies",
+                        "client": None,
+                        "cookie_file": None,
+                    },
+                    # 7. Client mặc định CÓ Guest Cookies (Visitor Info) nếu có cấu hình
+                    {
+                        "name": "default_guest_cookies",
+                        "client": None,
+                        "cookie_file": guest_cookie_file,
+                    },
+                ]
+            )
 
             # Loại bỏ các chiến lược có cookie nếu không có file cookie tương ứng
             strategies = [

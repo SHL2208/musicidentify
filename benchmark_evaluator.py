@@ -242,19 +242,20 @@ def run_benchmark(
             track.song_type = item.get("song_type") or ""
             track.release_date = str(item.get("release_date") or "")
             track.distributor = str(item.get("distributor") or "")
-            is_verified = track.is_verified_match is not False
-            if not is_verified:
-                unverified_matches += 1
-                print(
-                    f"       -> ⚠️ CẢNH BÁO NGUỒN: YouTube không tìm thấy video khớp! (Score: {track.match_score})"
-                )
-
             try:
                 res: DetectionResult = detection_service.detect_single(
                     track, force_rescan=force_rescan, model_override=model_override
                 )
             except TypeError:
                 res = detection_service.detect_single(track, model_override=model_override)
+
+            # Đọc lại trạng thái xác thực nguồn sau khi audio_engine đã chạy và xử lý fallback
+            is_verified = track.is_verified_match is not False
+            if not is_verified:
+                unverified_matches += 1
+                print(
+                    f"       -> ⚠️ CẢNH BÁO NGUỒN: YouTube không tìm thấy video khớp! (Score: {track.match_score})"
+                )
 
             pred_is_ai = res.is_ai
             pred_label = "AI" if pred_is_ai else "HUMAN"
@@ -276,8 +277,15 @@ def run_benchmark(
 
             icon = "✅" if is_correct else "❌"
             match_status_text = "ĐÃ XÁC THỰC" if is_verified else "SAI LỆCH (UNVERIFIED)"
-            ai_verdict_str = res.ai_model_verdict or ("AI" if res.ai_model_is_ai else "HUMAN")
-            consensus_str = res.consensus_verdict or ("AI" if res.consensus_is_ai else "HUMAN")
+            ai_model_is_ai = getattr(res, "ai_model_is_ai", res.is_ai)
+            ai_pred_label = "AI" if ai_model_is_ai else "HUMAN"
+            ai_verdict_str = res.ai_model_verdict or ai_pred_label
+            ai_is_correct = "ĐÚNG" if ai_model_is_ai == item["gt_is_ai"] else "SAI"
+
+            consensus_str = res.consensus_verdict or (
+                "AI" if getattr(res, "consensus_is_ai", res.is_ai) else "HUMAN"
+            )
+
             print(
                 f"       -> Model AI: {ai_verdict_str} | Tổng hợp: {consensus_str} ({res.verdict_label}) | {icon} {metric_type}"
             )
@@ -293,23 +301,30 @@ def run_benchmark(
                     "artist": item["artist"],
                     "query": query,
                     "ground_truth": gt,
+                    "ai_model_prediction": ai_pred_label,
                     "ai_model_verdict": ai_verdict_str,
+                    "ai_model_is_correct": ai_is_correct,
+                    "consensus_prediction": pred_label,
                     "consensus_verdict": consensus_str,
                     "prediction": pred_label,
                     "is_correct": "ĐÚNG" if is_correct else "SAI",
                     "classification_type": metric_type,
                     "is_verified_source": is_verified,
                     "source_verification": match_status_text,
-                    "match_score": f"{track.match_score * 100:.1f}%"
-                    if track.match_score is not None
-                    else "N/A",
-                    "verdict_type": res.verdict_type.value
-                    if hasattr(res.verdict_type, "value")
-                    else str(res.verdict_type),
+                    "match_score": (
+                        f"{track.match_score * 100:.1f}%"
+                        if track.match_score is not None
+                        else "N/A"
+                    ),
+                    "verdict_type": (
+                        res.verdict_type.value
+                        if hasattr(res.verdict_type, "value")
+                        else str(res.verdict_type)
+                    ),
                     "verdict_label": res.verdict_label,
                     "confidence_score": f"{res.confidence_score * 100:.1f}%",
                     "suspected_engine": res.suspected_engine,
-                    "source_url": res.source_url or getattr(track, "resolved_url", "") or "",
+                    "source_url": (res.source_url or getattr(track, "resolved_url", "") or ""),
                     "reasons": " | ".join(res.reasons or []),
                     "error": "",
                 }
@@ -360,7 +375,10 @@ def run_benchmark(
                         "artist": item["artist"],
                         "query": query,
                         "ground_truth": gt,
+                        "ai_model_prediction": "ERROR",
                         "ai_model_verdict": "ERROR",
+                        "ai_model_is_correct": "LỖI",
+                        "consensus_prediction": "ERROR",
                         "consensus_verdict": "ERROR",
                         "prediction": "ERROR",
                         "is_correct": "LỖI",
@@ -516,6 +534,13 @@ def export_audit_excel(metrics: dict[str, Any], results: list[dict[str, Any]]) -
         df_details = pd.DataFrame(results)
         df_details.to_excel(writer, sheet_name="Audit Details", index=False)
 
+        # Tính toán độ chính xác riêng của mô hình AI thuần túy
+        ai_model_correct = sum(1 for r in results if r.get("ai_model_is_correct") == "ĐÚNG")
+        ai_model_total = sum(1 for r in results if r.get("ai_model_is_correct") in ("ĐÚNG", "SAI"))
+        ai_model_acc_str = (
+            f"{(ai_model_correct / ai_model_total * 100):.2f}%" if ai_model_total > 0 else "N/A"
+        )
+
         # Sheet 2: Tóm tắt
         summary_rows = [
             {"Chỉ số": "Tổng số bài mẫu thành công", "Giá trị": metrics["total_samples"]},
@@ -527,6 +552,14 @@ def export_audit_excel(metrics: dict[str, Any], results: list[dict[str, Any]]) -
             {
                 "Chỉ số": "Số bài sai lệch nguồn âm thanh (Unverified)",
                 "Giá trị": metrics.get("unverified_matches", 0),
+            },
+            {
+                "Chỉ số": "Độ chính xác Thuần AI Model (Raw Gemini)",
+                "Giá trị": ai_model_acc_str,
+            },
+            {
+                "Chỉ số": "Độ chính xác Tổng hợp (Consensus Final)",
+                "Giá trị": f"{metrics['accuracy'] * 100:.2f}%",
             },
             {"Chỉ số": "True Positive (Đoán đúng AI)", "Giá trị": metrics["TP"]},
             {"Chỉ số": "True Negative (Đoán đúng Người)", "Giá trị": metrics["TN"]},

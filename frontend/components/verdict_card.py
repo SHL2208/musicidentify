@@ -47,9 +47,8 @@ def render_verdict_card(result: DetectionResult):
 
     # 2. Cấu hình giao diện cho Cột 1 (Đánh giá Model AI)
     ai_raw_is_ai = getattr(result, "ai_model_is_ai", result.is_ai)
-    ai_raw_verdict = (
-        getattr(result, "ai_model_verdict", None)
-        or ("AI_GENERATED" if ai_raw_is_ai else "CONFIRMED_HUMAN")
+    ai_raw_verdict = getattr(result, "ai_model_verdict", None) or (
+        "AI_GENERATED" if ai_raw_is_ai else "CONFIRMED_HUMAN"
     )
     if ai_raw_is_ai:
         ai_box_class = "verdict-box-ai"
@@ -79,7 +78,7 @@ def render_verdict_card(result: DetectionResult):
                 {ai_icon} {ai_title}
             </div>
             <div style="font-size: 1.05rem; font-weight: 600; margin-top: 0.4rem;">
-                Phân loại thô: <span style="color: {ai_color};">{'Có yếu tố AI' if ai_raw_is_ai else 'Con người'}</span>
+                Phân loại thô: <span style="color: {ai_color};">{"Có yếu tố AI" if ai_raw_is_ai else "Con người"}</span>
             </div>
             <div style="margin-top: 0.6rem; font-size: 0.9rem; color: #CBD5E1;">{ai_desc}</div>
         </div>
@@ -114,4 +113,3 @@ def render_verdict_card(result: DetectionResult):
             f"ℹ️ **Điều chỉnh qua Tiêu chí cứng:** Model AI nhận định là `{ai_raw_verdict}`, "
             f"nhưng Kết luận Tổng hợp được xác lập là `{result.verdict_label}` nhờ bộ lọc kiểm định nguồn âm/nghệ sĩ/vật lý âm học."
         )
-

@@ -191,7 +191,10 @@ C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
    - Modern neural audio models (Suno v3.5, Suno v4, Udio) and vocal clone engines (RVC, Diff-SVC) frequently simulate studio pitch-correction (Auto-Tune), realistic breath friction, and vibrato!
    - FATAL FORENSIC TRAP: NEVER classify a track as 'PROCESSED_HUMAN' purely based on hearing breath intakes or vibrato! Suno v3.5/v4 specifically synthesizes biological breath dynamics.
    - You MUST cross-correlate with high-frequency acoustic extension: inspect the 3-tier spectrogram for physical air-band extension (16kHz - 20kHz) and genuine multitrack stem separation versus single-pass neural diffusion smearing.
-   - Key forensic signatures of modern AI synthesis:
+   - Key forensic signatures across specific AI sub-genres:
+     * Vietnamese Bolero / Dân Ca (Folk) / Trữ Tình AI: Neural models simulate traditional vibrato and vocal ornamentation (luyến láy) with extreme ease. However, AI Bolero vocals display a flat, uniform formant sheen and lack authentic room resonance, bleeding directly into synthesized guitars/strings (stem bleed). Do NOT let traditional melisma or sweet emotional tone fool you into concluding 'human'!
+     * Choral / Gospel / Multi-voice Harmony AI (e.g. Christian choral tracks): When multiple voices harmonize, generative AI renders them from a single latent representation; all choir voices share identical diffusion smearing and harmonic bleed without spatial separation.
+     * Traditional / Historical / Chinese-style Orchestral AI (Guqin, Guzheng, Erhu, cinematic sweeps): Instruments exhibit synthetic sustain envelopes, lack genuine acoustic bow/finger friction, and merge into monolithic background audio.
      * Modern neural audio models (Suno v3.5/v4, Udio, and Diff-SVC/RVC clones) easily synthesize convincing chest resonance, intake breaths, and natural micro-vibrato. NEVER cite "chest resonance", "natural breath dynamics", or "micro-vibrato" as proof that a track transcends AI capabilities!
      * Synthetic vocal sheen: Vocals sound artificially polished, slightly metallic, or have flat formant dynamics.
      * Stem bleed / timbral entanglement: Vocal reverb and high-frequency harmonics melt into synthesizer pads/drums without physical separation.
@@ -445,9 +448,12 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
      * Check Tier 2 of the attached image: Percussion and heavy drums (e.g. lion dance / múa lân drums) have been stripped away using HPSS. Look closely at Tier 2 to inspect pure vocal harmonics for artificial smearing or synthetic sheen that was masked by drums.
    - MANDATORY REASON FORMAT FOR HYBRID_AI: If you classify as 'HYBRID_AI', the FIRST reason in reasons MUST start with:
      "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
-   - SUNO V3.5/V4 BALLAD DECEPTION COUNTERMEASURES:
-     * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads specifically GENERATE realistic human-like intake breaths, chest voice formants, and Auto-Tune-like vibrato.
-     * The presence of natural-sounding breath intakes, sweet ballad vocal phrasing, or organic chest resonance MUST NOT be treated as definitive proof of a human singer!
+   - SUNO V3.5/V4 & GENRE DECEPTION COUNTERMEASURES:
+     * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads, Bolero, Dân Ca (Folk), and Choral music specifically GENERATE realistic human-like intake breaths, chest voice formants, Auto-Tune-like vibrato, and melisma (luyến láy).
+     * The presence of natural-sounding breath intakes, sweet ballad/bolero vocal phrasing, or organic chest resonance MUST NOT be treated as definitive proof of a human singer!
+     * Vietnamese Bolero / Dân Ca (Folk): AI models simulate traditional emotional vibrato and ornamental pitch glides. Look for flat formant sheen, absence of dynamic room acoustic decay, and vocal bleeding into synthesized acoustic guitars/strings.
+     * Choral / Gospel: AI choirs feature monolithic phase smearing where all voices share identical timbre and diffusion artifacts instead of distinct human vocal tracks.
+     * Traditional / Chinese-style Orchestral: Algorithmic instrument rendering (Guzheng/Erhu/Flute) lacks mechanical bow/finger friction and exhibits synthetic sustain decay.
      * CRITICAL INSTRUCTION: Never conclude a song is human simply because "it exhibits chest resonance and micro-vibrato that go beyond AI limitations" — modern neural models routinely generate both. Look holistically at vocal timbre and arrangement.
      * Inspect Tier 2 Harmonic Vocal carefully: look for faint digital fuzz beneath sustained vowels and check if the backing accompaniment has true acoustic multitrack depth or monolithic latent space entanglement.
 2. Correlate with the provided acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and the 3-tier spectrogram image.

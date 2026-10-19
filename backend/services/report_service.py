@@ -118,7 +118,11 @@ class ReportService(IReportService):
             ai_eval = getattr(r, "ai_model_verdict", None)
             if not ai_eval:
                 ai_bool = getattr(r, "ai_model_is_ai", None)
-                ai_eval = "AI_GENERATED" if ai_bool is True else ("PROCESSED_HUMAN" if ai_bool is False else "N/A")
+                ai_eval = (
+                    "AI_GENERATED"
+                    if ai_bool is True
+                    else ("PROCESSED_HUMAN" if ai_bool is False else "N/A")
+                )
 
             cons_verdict = getattr(r, "consensus_verdict", None) or r.verdict_label
 

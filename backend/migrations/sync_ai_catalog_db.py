@@ -54,14 +54,23 @@ def sync_catalog() -> None:
             # 2. Đồng bộ các dự án AI Artists mới
             inserted_count = 0
             existing_count = 0
+            seen_in_batch: dict[str, AIArtistProjectModel] = {}
 
             for pattern, name in _DEFAULT_AI_ARTIST_REGEXES:
+                name_key = name.strip().lower()
+                if name_key in seen_in_batch:
+                    prev_item = seen_in_batch[name_key]
+                    if pattern not in prev_item.regex_pattern:
+                        prev_item.regex_pattern = f"{prev_item.regex_pattern}|{pattern}"
+                    continue
+
                 stmt_artist = select(AIArtistProjectModel).where(
                     AIArtistProjectModel.project_name.ilike(name)
                 )
                 existing = session.scalars(stmt_artist).first()
                 if existing:
                     existing_count += 1
+                    seen_in_batch[name_key] = existing
                     if not existing.is_active or existing.regex_pattern != pattern:
                         existing.is_active = True
                         existing.regex_pattern = pattern
@@ -75,6 +84,7 @@ def sync_catalog() -> None:
                         is_active=True,
                     )
                     session.add(new_item)
+                    seen_in_batch[name_key] = new_item
                     inserted_count += 1
                     logger.info("Đã thêm mới nghệ sĩ AI vào CSDL: %s (%s)", name, pattern)
 

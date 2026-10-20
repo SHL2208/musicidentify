@@ -23,6 +23,13 @@ class VerdictType(str, Enum):
     ERROR = "ERROR"  # Lỗi xảy ra trong quá trình xử lý / phân tích
 
 
+class WorkType(str, Enum):
+    ORIGINAL = "ORIGINAL"  # Tác phẩm do chính chủ / ca sĩ gốc thể hiện
+    COVER = "COVER"  # Người khác hoặc AI voice clone thể hiện lại tác phẩm của người khác
+    REMIX = "REMIX"  # Biến thể phối khí (EDM, Vinahouse, Lo-fi) nhưng giữ nguyên vocal chính chủ
+    UNCERTAIN = "UNCERTAIN"  # Chưa đủ dữ liệu / đối chứng để xác định
+
+
 class TrackItem(BaseModel):
     id: str
     raw_query: str
@@ -187,6 +194,34 @@ class DetectionResult(BaseModel):
         default=None,
         description="Nhãn phân loại tổng hợp cuối cùng sau trọng tài & tiêu chí cứng",
     )
+    work_type: WorkType = Field(
+        default=WorkType.UNCERTAIN,
+        description="Phân loại tác phẩm: ORIGINAL, COVER, REMIX, UNCERTAIN",
+    )
+    work_label: str = Field(
+        default="Chưa rõ tác phẩm",
+        description="Nhãn hiển thị trực quan (VD: 'ORIGINAL (Tác phẩm chính chủ)', 'COVER (Bản hát lại)')",
+    )
+    is_cover: bool = Field(
+        default=False,
+        description="True nếu là bản cover/hát lại của ca sĩ khác hoặc AI voice clone",
+    )
+    original_artist: str | None = Field(
+        default=None,
+        description="Nghệ sĩ phát hành tác phẩm gốc",
+    )
+    original_song_title: str | None = Field(
+        default=None,
+        description="Tên bài hát gốc nếu là bản cover",
+    )
+    cover_performer: str | None = Field(
+        default=None,
+        description="Người/nghệ sĩ thể hiện bản thu này",
+    )
+    work_evidence: str | None = Field(
+        default=None,
+        description="Căn cứ xác định bản quyền / tác phẩm",
+    )
 
     @model_validator(mode="after")
     def sync_consensus_fields(self) -> DetectionResult:
@@ -195,6 +230,13 @@ class DetectionResult(BaseModel):
         if self.consensus_verdict is None:
             vt = self.verdict_type
             self.consensus_verdict = vt.value if hasattr(vt, "value") else str(vt)
+        if self.work_label == "Chưa rõ tác phẩm" and self.work_type != WorkType.UNCERTAIN:
+            if self.work_type == WorkType.ORIGINAL:
+                self.work_label = "ORIGINAL (Tác phẩm chính chủ)"
+            elif self.work_type == WorkType.COVER:
+                self.work_label = "COVER (Bản hát lại)"
+            elif self.work_type == WorkType.REMIX:
+                self.work_label = "REMIX (Bản phối lại)"
         return self
 
 

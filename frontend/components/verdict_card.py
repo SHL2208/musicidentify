@@ -1,6 +1,6 @@
 import streamlit as st
 
-from backend.core.models.entities import DetectionResult, VerdictType
+from backend.core.models.entities import DetectionResult, VerdictType, WorkType
 
 
 def render_verdict_card(result: DetectionResult):
@@ -113,3 +113,60 @@ def render_verdict_card(result: DetectionResult):
             f"ℹ️ **Điều chỉnh qua Tiêu chí cứng:** Model AI nhận định là `{ai_raw_verdict}`, "
             f"nhưng Kết luận Tổng hợp được xác lập là `{result.verdict_label}` nhờ bộ lọc kiểm định nguồn âm/nghệ sĩ/vật lý âm học."
         )
+
+    # 3. Thẻ thẩm định Tác phẩm (Original vs Cover vs Remix)
+    w_type = getattr(result, "work_type", WorkType.UNCERTAIN)
+    orig_artist = getattr(result, "original_artist", None)
+    orig_title = getattr(result, "original_song_title", None)
+    cov_performer = getattr(result, "cover_performer", None)
+
+    if w_type == WorkType.ORIGINAL:
+        work_color = "#10B981"
+        work_bg = "rgba(16, 185, 129, 0.12)"
+        work_border = "rgba(16, 185, 129, 0.35)"
+        work_icon = "💿"
+        work_title = "ORIGINAL SONG (Tác phẩm chính chủ)"
+        work_desc = (
+            "Tác phẩm nguyên tác do chính tác giả / ca sĩ gốc thể hiện và phát hành chính thức."
+        )
+    elif w_type == WorkType.COVER:
+        work_color = "#A855F7"
+        work_bg = "rgba(168, 85, 247, 0.12)"
+        work_border = "rgba(168, 85, 247, 0.35)"
+        work_icon = "🎙️"
+        suffix_artist = f" - Nghệ sĩ gốc: {orig_artist}" if orig_artist else ""
+        work_title = f"COVER VERSION (Bản hát lại{suffix_artist})"
+        perf_info = f" do {cov_performer} thể hiện" if cov_performer else ""
+        song_info = f" ca khúc '{orig_title}'" if orig_title else " ca khúc"
+        work_desc = f"Bản thể hiện lại{song_info}{perf_info}."
+    elif w_type == WorkType.REMIX:
+        work_color = "#06B6D4"
+        work_bg = "rgba(6, 182, 212, 0.12)"
+        work_border = "rgba(6, 182, 212, 0.35)"
+        work_icon = "🎛️"
+        work_title = "REMIX / PHÁI SINH (Phối khí mới - Giữ vocal gốc)"
+        work_desc = "Bản phối lại (EDM, Vinahouse, Lo-Fi) sử dụng lại bản thu giọng hát của ca sĩ chính chủ."
+    else:
+        work_color = "#94A3B8"
+        work_bg = "rgba(148, 163, 184, 0.12)"
+        work_border = "rgba(148, 163, 184, 0.35)"
+        work_icon = "❔"
+        work_title = "UNCERTAIN (Chưa đủ thông tin đối chứng tác phẩm)"
+        work_desc = "Chưa có đủ siêu dữ liệu hoặc bản thu đối chứng để khẳng định là nguyên tác hay bản cover."
+
+    st.markdown(
+        f"""
+        <div style="margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; background: {work_bg}; border: 1px solid {work_border};">
+            <div style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; color: #94A3B8; letter-spacing: 0.05em; margin-bottom: 0.2rem;">
+                Thẩm Định Bản Quyền & Tác Phẩm (Original vs Cover)
+            </div>
+            <div style="font-size: 1.2rem; font-weight: 700; color: {work_color}; margin-top: 0.2rem;">
+                {work_icon} {work_title}
+            </div>
+            <div style="font-size: 0.95rem; color: #E2E8F0; margin-top: 0.4rem;">
+                {work_desc}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

@@ -65,6 +65,44 @@ def _normalize_text(text: str) -> str:
     return " ".join(cleaned.split())
 
 
+def extract_content_id_metadata(description: str, tags: list[str] | None = None) -> dict[str, str]:
+    """
+    Trích xuất siêu dữ liệu bản quyền tự động từ YouTube Content ID trong description hoặc tags.
+    Hỗ trợ nhận diện các mẫu Song / Artist / Album / Licensed to bằng cả tiếng Anh và tiếng Việt.
+    """
+    meta: dict[str, str] = {}
+    if not description:
+        return meta
+
+    # 1. Trích xuất Tên bài hát (Song / Track / Bài hát)
+    song_match = re.search(r"(?:Song|Bài hát|Track):\s*([^\n\r]+)", description, re.IGNORECASE)
+    if song_match:
+        meta["content_id_song"] = song_match.group(1).strip()
+
+    # 2. Trích xuất Nghệ sĩ (Artist / Nghệ sĩ / Trình bày)
+    artist_match = re.search(
+        r"(?:Artist|Nghệ sĩ|Trình bày):\s*([^\n\r]+)", description, re.IGNORECASE
+    )
+    if artist_match:
+        meta["content_id_artist"] = artist_match.group(1).strip()
+
+    # 3. Trích xuất Album
+    album_match = re.search(r"(?:Album):\s*([^\n\r]+)", description, re.IGNORECASE)
+    if album_match:
+        meta["content_id_album"] = album_match.group(1).strip()
+
+    # 4. Trích xuất Đơn vị cấp phép (Licensed to YouTube by / Cấp phép cho YouTube bởi)
+    licensed_match = re.search(
+        r"(?:Licensed to YouTube by|Cấp phép cho YouTube bởi):\s*([^\n\r]+)",
+        description,
+        re.IGNORECASE,
+    )
+    if licensed_match:
+        meta["content_id_licensed_by"] = licensed_match.group(1).strip()
+
+    return meta
+
+
 def generate_deterministic_track_id(
     query: str, input_type: InputType, resolved_url: str | None = None
 ) -> str:

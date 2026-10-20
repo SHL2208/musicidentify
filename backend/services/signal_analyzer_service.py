@@ -74,6 +74,11 @@ _DEFAULT_AI_ARTIST_REGEXES = [
     (r"\bnova skye\b", "Nova Skye"),
     (r"\b5seconddecider\b", "5SecondDecider"),
     (r"\bqtd music\b", "QTD Music"),
+    (r"\bkvltx\b", "KVLTX"),
+    (r"\bmano\b", "Mano"),
+    (r"\bfrozen horizon\b", "Frozen Horizon"),
+    (r"\bmontagem\b", "Montagem Phonk"),
+    (r"\b(?:trạm nhạc mới|tram nhac moi)\b", "Trạm Nhạc Mới"),
 ]
 
 _VERIFIED_HUMAN_ARTISTS = {
@@ -135,6 +140,12 @@ _VERIFIED_HUMAN_ARTISTS = {
     "hà anh tuấn",
     "noo phước thịnh",
     "đông nhi",
+    "nsnd thúy hường",
+    "thúy hường",
+    "hùng thanh",
+    "thùy chi",
+    "dc tâm",
+    "hoàng ly",
 }
 
 
@@ -163,6 +174,15 @@ def is_verified_human_artist(artist_str: str, title_str: str = "") -> bool:
     for pat, _ in _DEFAULT_AI_ARTIST_REGEXES:
         if re.search(pat, a_low) or re.search(pat, t_low):
             return False
+
+    # 1b. Danh hiệu nghệ sĩ Quốc gia (NSND, NSƯT / NSUT) -> Nghệ sĩ người thật
+    if (
+        re.search(r"\b(nsnd|nsưt|nsut)\b", a_low)
+        or re.search(r"\b(nsnd|nsưt|nsut)\b", a_unacc)
+        or re.search(r"\b(nsnd|nsưt|nsut)\b", t_low)
+        or re.search(r"\b(nsnd|nsưt|nsut)\b", t_unacc)
+    ):
+        return True
 
     # 2. Tách các nghệ sĩ theo dấu phân cách hợp tác (tránh nhầm lẫn 'Anh Vũ' với 'Vũ')
     tokens = [

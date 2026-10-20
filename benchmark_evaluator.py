@@ -39,6 +39,11 @@ if sys.platform == "win32":
     except Exception:  # noqa: BLE001, S110
         pass
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import openpyxl
 import pandas as pd
 
@@ -47,6 +52,189 @@ from backend.core.models.entities import (
     DetectionResult,
     TrackItem,
 )
+from backend.services.work_type_resolver import resolve_work_type_from_metadata
+
+
+def map_song_type_to_work_type(song_type_val: str | None) -> str:
+    """Ánh xạ nhãn 'Song Type' từ testcase sang chuẩn WorkType enum value."""
+    st_clean = (str(song_type_val) if song_type_val is not None else "").strip().lower()
+    if not st_clean or st_clean in ("none", "nan", "null"):
+        return "UNCERTAIN"
+    if "cover" in st_clean:
+        return "COVER"
+    if any(k in st_clean for k in ["remix", "remake"]):
+        return "REMIX"
+    if any(k in st_clean for k in ["original", "live"]):
+        return "ORIGINAL"
+    return "UNCERTAIN"
+
+
+def calculate_work_type_confusion_matrix(
+    y_true: list[str],
+    y_pred: list[str],
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Tính toán ma trận nhầm lẫn đa lớp và chỉ số hiệu năng cho Work Type."""
+    if labels is None:
+        labels = ["ORIGINAL", "COVER", "REMIX"]
+
+    all_pred_cols = list(labels)
+    if "UNCERTAIN" not in all_pred_cols:
+        all_pred_cols.append("UNCERTAIN")
+
+    matrix: dict[str, dict[str, int]] = {gt: {pred: 0 for pred in all_pred_cols} for gt in labels}
+
+    total = 0
+    correct = 0
+
+    for yt, yp in zip(y_true, y_pred, strict=False):
+        yt_norm = str(yt or "").upper().strip()
+        yp_norm = str(yp or "").upper().strip()
+        if yt_norm in matrix:
+            if yp_norm not in matrix[yt_norm]:
+                yp_norm = "UNCERTAIN"
+            matrix[yt_norm][yp_norm] += 1
+            total += 1
+            if yt_norm == yp_norm:
+                correct += 1
+
+    accuracy = (correct / total) if total > 0 else 0.0
+
+    per_class: dict[str, dict[str, Any]] = {}
+    for label in labels:
+        tp = matrix.get(label, {}).get(label, 0)
+        fn = sum(matrix.get(label, {}).get(p, 0) for p in all_pred_cols if p != label)
+        fp = sum(matrix.get(other, {}).get(label, 0) for other in labels if other != label)
+
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+
+        per_class[label] = {
+            "total": tp + fn,
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": prec,
+            "recall": rec,
+            "f1_score": f1,
+        }
+
+    return {
+        "matrix": matrix,
+        "labels": labels,
+        "total_evaluated": total,
+        "correct": correct,
+        "accuracy": accuracy,
+        "per_class": per_class,
+    }
+
+
+def plot_work_type_confusion_matrix(
+    metrics: dict[str, Any],
+    output_path: str | Path | None = None,
+    title: str = "Ma Trận Nhầm Lẫn Tác Phẩm (Original vs Cover vs Remix)",
+) -> Path:
+    """Vẽ ma trận nhầm lẫn đa lớp cho Work Type và lưu file ảnh PNG (300 DPI)."""
+    if output_path is None:
+        out_dir = root_dir / "data" / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_file = out_dir / f"work_type_cm_{ts}.png"
+    else:
+        target_file = Path(output_path)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+
+    labels = metrics.get("labels", ["ORIGINAL", "COVER", "REMIX"])
+    matrix_dict = metrics.get("matrix", {})
+
+    matrix_data = []
+    for gt in labels:
+        row = [matrix_dict.get(gt, {}).get(pred, 0) for pred in labels]
+        matrix_data.append(row)
+    matrix_arr = np.array(matrix_data)
+
+    fig, (ax_cm, ax_stats) = plt.subplots(
+        nrows=1,
+        ncols=2,
+        figsize=(15, 6.8),
+        dpi=300,
+        gridspec_kw={"width_ratios": [1.2, 1.0]},
+    )
+    fig.patch.set_facecolor("#FAFAFC")
+
+    # 1. Heatmap bên trái
+    cmap = plt.cm.Purples
+    im = ax_cm.imshow(matrix_arr, interpolation="nearest", cmap=cmap)
+    plt.colorbar(im, ax=ax_cm, fraction=0.046, pad=0.04, label="Số lượng bài hát")
+
+    tick_marks = np.arange(len(labels))
+    ax_cm.set_xticks(tick_marks)
+    ax_cm.set_xticklabels([f"Đoán: {lbl}" for lbl in labels], fontsize=10, fontweight="bold")
+    ax_cm.set_yticks(tick_marks)
+    ax_cm.set_yticklabels([f"Thực tế: {lbl}" for lbl in labels], fontsize=10, fontweight="bold")
+    ax_cm.set_xlabel("DỰ ĐOÁN CỦA HỆ THỐNG (PREDICTED)", fontsize=11, labelpad=10)
+    ax_cm.set_ylabel("NHÃN THỰC TẾ (GROUND TRUTH)", fontsize=11, labelpad=10)
+    ax_cm.set_title(title, fontsize=12, fontweight="bold", pad=12)
+
+    row_sums = matrix_arr.sum(axis=1)
+    max_val = matrix_arr.max() if matrix_arr.size > 0 else 1
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            val = matrix_arr[i, j]
+            total_row = row_sums[i]
+            pct = (val / total_row * 100) if total_row > 0 else 0.0
+            color = "white" if val > (max_val / 2) else "black"
+            ax_cm.text(
+                j,
+                i,
+                f"{val}\n({pct:.1f}%)",
+                ha="center",
+                va="center",
+                color=color,
+                fontsize=11,
+                fontweight="bold",
+            )
+
+    # 2. Bảng thống kê bên phải
+    ax_stats.axis("off")
+    acc = metrics.get("accuracy", 0.0)
+    tot = metrics.get("total_evaluated", 0)
+    cor = metrics.get("correct", 0)
+
+    header_text = (
+        f"[THỐNG KÊ HIỆU NĂNG PHÂN BIỆT TÁC PHẨM]\n"
+        f"• Tổng số bài đánh giá : {tot} bài\n"
+        f"• Số bài đoán đúng    : {cor} bài\n"
+        f"• Độ chính xác chung   : {acc * 100:.2f}%\n"
+        f"────────────────────────────────────────────────"
+    )
+    ax_stats.text(
+        0.05, 0.95, header_text, fontsize=11, family="sans-serif", va="top", fontweight="bold"
+    )
+
+    y_pos = 0.65
+    per_class = metrics.get("per_class", {})
+    for lbl in labels:
+        c_met = per_class.get(lbl, {})
+        c_tot = c_met.get("total", 0)
+        c_prec = c_met.get("precision", 0.0) * 100
+        c_rec = c_met.get("recall", 0.0) * 100
+        c_f1 = c_met.get("f1_score", 0.0) * 100
+
+        class_text = (
+            f"[NHÃN]: {lbl} (Mẫu thực tế: {c_tot} bài)\n"
+            f"   - Precision (Độ chuẩn xác) : {c_prec:.1f}%\n"
+            f"   - Recall (Độ bao phủ)      : {c_rec:.1f}%\n"
+            f"   - F1-Score (Cân bằng)      : {c_f1:.1f}%\n"
+        )
+        ax_stats.text(0.05, y_pos, class_text, fontsize=10, family="sans-serif", va="top")
+        y_pos -= 0.18
+
+    plt.tight_layout()
+    fig.savefig(target_file, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return target_file
 
 
 def load_testcase_dataset(
@@ -142,6 +330,7 @@ def load_testcase_dataset(
         )
         # Nhãn thực tế (Ground Truth)
         is_ai_ground_truth = "yes" in ai_val or ai_val == "y"
+        gt_work_type = map_song_type_to_work_type(song_type)
 
         query = f"{title} {artist}".strip()
         dataset.append(
@@ -152,6 +341,7 @@ def load_testcase_dataset(
                 "query": query,
                 "gt_is_ai": is_ai_ground_truth,
                 "gt_label": "AI" if is_ai_ground_truth else "HUMAN",
+                "gt_work_type": gt_work_type,
                 "note": note,
                 "song_type": song_type,
                 "release_date": release_date,
@@ -207,6 +397,8 @@ def run_benchmark(
 
     results: list[dict[str, Any]] = []
     error_records: list[dict[str, Any]] = []
+    y_true_work: list[str] = []
+    y_pred_work: list[str] = []
 
     tp = 0  # Thực tế AI, Đoán AI (True Positive)
     tn = 0  # Thực tế Người, Đoán Người (True Negative)
@@ -261,6 +453,37 @@ def run_benchmark(
             pred_label = "AI" if pred_is_ai else "HUMAN"
             is_correct = pred_is_ai == item["gt_is_ai"]
 
+            # Đánh giá Work Type (Original vs Cover vs Remix)
+            gt_work = item.get("gt_work_type", "UNCERTAIN")
+            raw_w_type = getattr(res, "work_type", None)
+            pred_work = (
+                raw_w_type.value
+                if hasattr(raw_w_type, "value")
+                else (str(raw_w_type) if raw_w_type else "UNCERTAIN")
+            )
+            # Tự động giải mã tác phẩm nếu kết quả từ model hoặc cache DB cũ vẫn là UNCERTAIN
+            if pred_work in ("UNCERTAIN", "ERROR", "", "NAN"):
+                resolved_w, resolved_label, is_cov, orig_a, orig_t = (
+                    resolve_work_type_from_metadata(
+                        title=item.get("title") or track.track_title or track.raw_query,
+                        artist=item.get("artist") or track.artist or "",
+                        metadata=item,
+                    )
+                )
+                pred_work = resolved_w.value
+                res.work_type = resolved_w
+                res.work_label = resolved_label
+                res.is_cover = is_cov
+                if orig_a and not getattr(res, "original_artist", None):
+                    res.original_artist = orig_a
+                if orig_t and not getattr(res, "original_song_title", None):
+                    res.original_song_title = orig_t
+
+            work_is_correct = (pred_work == gt_work) if gt_work != "UNCERTAIN" else None
+            if gt_work != "UNCERTAIN":
+                y_true_work.append(gt_work)
+                y_pred_work.append(pred_work)
+
             # Phân loại Confusion Matrix
             if item["gt_is_ai"] and pred_is_ai:
                 metric_type = "TP (Đúng: Phát hiện AI)"
@@ -286,8 +509,12 @@ def run_benchmark(
                 "AI" if getattr(res, "consensus_is_ai", res.is_ai) else "HUMAN"
             )
 
+            work_icon = "💿" if pred_work == "ORIGINAL" else ("🎙️" if pred_work == "COVER" else "🎛️")
             print(
                 f"       -> Model AI: {ai_verdict_str} | Tổng hợp: {consensus_str} ({res.verdict_label}) | {icon} {metric_type}"
+            )
+            print(
+                f"       -> Tác phẩm: {work_icon} {getattr(res, 'work_label', pred_work)} (Thực tế: {gt_work})"
             )
             print(
                 f"       -> Nguồn audio: {match_status_text} | Độ tin cậy: {res.confidence_score * 100:.1f}%"
@@ -301,6 +528,15 @@ def run_benchmark(
                     "artist": item["artist"],
                     "query": query,
                     "ground_truth": gt,
+                    "gt_work_type": gt_work,
+                    "pred_work_type": pred_work,
+                    "work_is_correct": "ĐÚNG"
+                    if work_is_correct is True
+                    else ("SAI" if work_is_correct is False else "N/A"),
+                    "work_label": getattr(res, "work_label", "Chưa rõ tác phẩm"),
+                    "original_artist": getattr(res, "original_artist", "") or "N/A",
+                    "original_song_title": getattr(res, "original_song_title", "") or "N/A",
+                    "is_cover": getattr(res, "is_cover", False),
                     "ai_model_prediction": ai_pred_label,
                     "ai_model_verdict": ai_verdict_str,
                     "ai_model_is_correct": ai_is_correct,
@@ -411,6 +647,16 @@ def run_benchmark(
     specificity = (tn / (tn + fp)) if (tn + fp) > 0 else 0.0
     f1_score = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
+    # Đánh giá chỉ số phân biệt Tác phẩm (Work Type: Original vs Cover vs Remix)
+    work_type_metrics = calculate_work_type_confusion_matrix(y_true_work, y_pred_work)
+    work_type_cm_img_path: str | None = None
+    if work_type_metrics.get("total_evaluated", 0) > 0:
+        try:
+            img_file = plot_work_type_confusion_matrix(work_type_metrics)
+            work_type_cm_img_path = str(img_file)
+        except Exception as plot_err:  # noqa: BLE001
+            print(f"⚠️ Không thể tạo ảnh ma trận nhầm lẫn tác phẩm: {plot_err}")
+
     # Tính riêng chỉ số cho tập các bài tìm ĐÚNG nguồn âm thanh (Strictly Verified Tracks)
     verified_results = [r for r in results if r.get("is_verified_source")]
     v_tp = sum(1 for r in verified_results if r["ground_truth"] == "AI" and r["prediction"] == "AI")
@@ -445,6 +691,8 @@ def run_benchmark(
         "f1_score": f1_score,
         "error_records": error_records,
         "replaced_errors_count": len(error_records),
+        "work_type_metrics": work_type_metrics,
+        "work_type_cm_image_path": work_type_cm_img_path,
         "verified_metrics": {
             "verified_samples": v_total,
             "TP": v_tp,
@@ -478,19 +726,40 @@ def print_summary_report(metrics: dict[str, Any], results: list[dict[str, Any]])
             f" 🔄 Số bài lỗi đã tự động nạp bù : {metrics['replaced_errors_count']} bài (Chi tiết tại Sheet 'Sự cố & Nạp bù')"
         )
     print("-" * 75)
-    print(" 🔢 MA TRẬN NHẦM LẪN (CONFUSION MATRIX):")
+    print(" 🔢 MA TRẬN NHẦM LẪN AI/HUMAN (CONFUSION MATRIX):")
     print(f"   • True Positive  (TP - Đoán đúng AI)   : {metrics['TP']} bài")
     print(f"   • True Negative  (TN - Đoán đúng Người): {metrics['TN']} bài")
     print(f"   • False Positive (FP - Vu oan Người)   : {metrics['FP']} bài (⚠️ Báo động giả)")
     print(f"   • False Negative (FN - Bỏ sót AI)      : {metrics['FN']} bài (⚠️ Lọt lưới)")
     print("-" * 75)
-    print(" 🎯 CÁC CHỈ SỐ ĐO LƯỜNG:")
+    print(" 🎯 CÁC CHỈ SỐ ĐO LƯỜNG PHÂN BIỆT AI:")
     print(f"   ⭐ Accuracy (Độ chính xác tổng)        : {metrics['accuracy'] * 100:.2f}%")
     print(f"   🎯 Precision (Độ tin cậy khi báo AI)   : {metrics['precision'] * 100:.2f}%")
     print(f"   📡 Recall (Độ nhạy bắt bài AI)         : {metrics['recall'] * 100:.2f}%")
     print(f"   🛡️ Specificity (Độ đặc hiệu nhạc người): {metrics['specificity'] * 100:.2f}%")
     print(f"   ⚖️ F1-Score (Cân bằng Precision/Recall): {metrics['f1_score'] * 100:.2f}%")
     print("=" * 75)
+
+    wt_metrics = metrics.get("work_type_metrics")
+    if wt_metrics and wt_metrics.get("total_evaluated", 0) > 0:
+        print("\n" + "=" * 75)
+        print("      💿 BẢNG ĐỐI SOÁT PHÂN BIỆT TÁC PHẨM (ORIGINAL vs COVER vs REMIX)")
+        print("=" * 75)
+        print(f" Tổng số bài có nhãn tác phẩm : {wt_metrics['total_evaluated']} bài")
+        print(f" Số bài nhận diện đúng tác phẩm: {wt_metrics['correct']} bài")
+        print(f" ⭐ Độ chính xác tác phẩm chung : {wt_metrics['accuracy'] * 100:.2f}%")
+        print("-" * 75)
+        per_class = wt_metrics.get("per_class", {})
+        for lbl, c_met in per_class.items():
+            print(
+                f"   🏷️ {lbl:<8}: Mẫu={c_met['total']:<2} | "
+                f"Precision={c_met['precision'] * 100:.1f}% | "
+                f"Recall={c_met['recall'] * 100:.1f}% | "
+                f"F1-Score={c_met['f1_score'] * 100:.1f}%"
+            )
+        if metrics.get("work_type_cm_image_path"):
+            print(f" 🖼️ Ma trận nhầm lẫn tác phẩm đã lưu: {metrics['work_type_cm_image_path']}")
+        print("=" * 75)
 
     if metrics.get("unverified_matches", 0) > 0:
         print("\n" + "!" * 75)
@@ -565,7 +834,10 @@ def export_audit_excel(metrics: dict[str, Any], results: list[dict[str, Any]]) -
             {"Chỉ số": "True Negative (Đoán đúng Người)", "Giá trị": metrics["TN"]},
             {"Chỉ số": "False Positive (Vu oan Người)", "Giá trị": metrics["FP"]},
             {"Chỉ số": "False Negative (Bỏ sót AI)", "Giá trị": metrics["FN"]},
-            {"Chỉ số": "Accuracy (Độ chính xác)", "Giá trị": f"{metrics['accuracy'] * 100:.2f}%"},
+            {
+                "Chỉ số": "Accuracy (Độ chính xác AI)",
+                "Giá trị": f"{metrics['accuracy'] * 100:.2f}%",
+            },
             {
                 "Chỉ số": "Precision (Độ tin cậy AI)",
                 "Giá trị": f"{metrics['precision'] * 100:.2f}%",
@@ -575,8 +847,47 @@ def export_audit_excel(metrics: dict[str, Any], results: list[dict[str, Any]]) -
                 "Chỉ số": "Specificity (Bảo vệ nhạc người)",
                 "Giá trị": f"{metrics['specificity'] * 100:.2f}%",
             },
-            {"Chỉ số": "F1-Score", "Giá trị": f"{metrics['f1_score'] * 100:.2f}%"},
+            {"Chỉ số": "F1-Score (Phân biệt AI)", "Giá trị": f"{metrics['f1_score'] * 100:.2f}%"},
         ]
+
+        wt = metrics.get("work_type_metrics")
+        if wt and wt.get("total_evaluated", 0) > 0:
+            summary_rows.extend(
+                [
+                    {
+                        "Chỉ số": "──────── PHÂN BIỆT TÁC PHẨM ────────",
+                        "Giá trị": "───────────────────",
+                    },
+                    {
+                        "Chỉ số": "Tổng số bài đánh giá Tác phẩm",
+                        "Giá trị": wt["total_evaluated"],
+                    },
+                    {
+                        "Chỉ số": "Độ chính xác Tác phẩm (Work Type Accuracy)",
+                        "Giá trị": f"{wt['accuracy'] * 100:.2f}%",
+                    },
+                ]
+            )
+            per_class = wt.get("per_class", {})
+            for lbl, c_met in per_class.items():
+                summary_rows.append(
+                    {
+                        "Chỉ số": f"Nhãn {lbl} (Precision / Recall / F1)",
+                        "Giá trị": (
+                            f"{c_met['precision'] * 100:.1f}% / "
+                            f"{c_met['recall'] * 100:.1f}% / "
+                            f"{c_met['f1_score'] * 100:.1f}%"
+                        ),
+                    }
+                )
+            if metrics.get("work_type_cm_image_path"):
+                summary_rows.append(
+                    {
+                        "Chỉ số": "File ảnh Ma Trận Nhầm Lẫn Tác Phẩm",
+                        "Giá trị": metrics["work_type_cm_image_path"],
+                    }
+                )
+
         df_summary = pd.DataFrame(summary_rows)
         df_summary.to_excel(writer, sheet_name="Executive Summary", index=False)
 
@@ -615,8 +926,19 @@ def main():
         default=False,
         help="Bắt buộc quét mới, không dùng cache cũ",
     )
+    parser.add_argument(
+        "--check-work-type",
+        action="store_true",
+        help="Kiểm tra và đối soát độ chính xác phân biệt Original / Cover / Remix với Ground Truth Song Type",
+    )
 
     args = parser.parse_args()
+
+    if args.check_work_type:
+        from check_work_type_accuracy import check_work_type_accuracy
+
+        check_work_type_accuracy(testcase_path=args.file)
+        return
 
     print(f"📖 Đang đọc dữ liệu từ '{args.file}' [Sheet: '{args.sheet}']...")
     dataset = load_testcase_dataset(file_path=args.file, sheet_name=args.sheet)

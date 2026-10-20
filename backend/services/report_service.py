@@ -135,6 +135,10 @@ class ReportService(IReportService):
                         "Kết luận Tổng hợp": cons_verdict,
                         "Kết luận thẩm định": r.verdict_label,
                         "Phân loại kỹ thuật": "ERROR",
+                        "Tác phẩm": getattr(r, "work_label", "ERROR"),
+                        "Là bản Cover": "Không",
+                        "Nghệ sĩ bài gốc": "N/A",
+                        "Tên bài gốc": "N/A",
                         "Độ tin cậy (%)": "0.0%",
                         "Nguồn kết quả": source_origin,
                         "Đã đính chính": corrected_str,
@@ -163,6 +167,7 @@ class ReportService(IReportService):
                     else "N/A"
                 )
                 comp_source = r.acoustic_metrics.compression_source if r.acoustic_metrics else "N/A"
+                is_cov_str = "Có (Cover)" if getattr(r, "is_cover", False) else "Không"
                 records.append(
                     {
                         "STT": idx + 1,
@@ -173,6 +178,10 @@ class ReportService(IReportService):
                         "Phân loại kỹ thuật": r.verdict_type.value
                         if hasattr(r.verdict_type, "value")
                         else str(r.verdict_type),
+                        "Tác phẩm": getattr(r, "work_label", "Chưa rõ tác phẩm"),
+                        "Là bản Cover": is_cov_str,
+                        "Nghệ sĩ bài gốc": getattr(r, "original_artist", "") or "N/A",
+                        "Tên bài gốc": getattr(r, "original_song_title", "") or "N/A",
                         "Độ tin cậy (%)": f"{r.confidence_score * 100:.1f}%",
                         "Nguồn kết quả": source_origin,
                         "Đã đính chính": corrected_str,

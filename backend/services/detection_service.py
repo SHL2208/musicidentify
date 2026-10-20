@@ -14,8 +14,10 @@ from ..core.models.entities import (
     InputType,
     TrackItem,
     VerdictType,
+    WorkType,
 )
 from .gemini_classifier_service import is_derivative_or_remix_context
+from .work_type_resolver import resolve_work_type_from_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,30 @@ class DetectionService(IDetectionService):
                         metadata=meta,
                         metrics=m,
                     )
+                if getattr(existing_result, "work_type", WorkType.UNCERTAIN) == WorkType.UNCERTAIN:
+                    meta_w = {
+                        "distributor": track.distributor
+                        or getattr(existing_result, "distributor", ""),
+                        "title": track.track_title or track.raw_query,
+                        "artist": track.artist or "",
+                        "song_type": getattr(track, "song_type", None),
+                    }
+                    w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                        title=track.track_title or track.raw_query,
+                        artist=track.artist or "",
+                        metadata=meta_w,
+                    )
+                    existing_result.work_type = w_type
+                    existing_result.work_label = w_label
+                    existing_result.is_cover = is_cov
+                    if not getattr(existing_result, "original_artist", None) and orig_a:
+                        existing_result.original_artist = orig_a
+                    if not getattr(existing_result, "original_song_title", None) and orig_t:
+                        existing_result.original_song_title = orig_t
+                    try:
+                        self.track_repo.save_result(existing_result)
+                    except Exception:  # noqa: BLE001, S110
+                        pass
                 logger.info(
                     "⚡ [CACHE HIT] Đã tìm thấy kết quả phân tích cũ cho '%s' (ID: %s)",
                     track.track_title or track.raw_query,
@@ -154,6 +180,41 @@ class DetectionService(IDetectionService):
                                     metadata=meta,
                                     metrics=m,
                                 )
+                            if (
+                                getattr(existing_after_resolve, "work_type", WorkType.UNCERTAIN)
+                                == WorkType.UNCERTAIN
+                            ):
+                                meta_w = {
+                                    "distributor": track.distributor
+                                    or getattr(existing_after_resolve, "distributor", ""),
+                                    "title": track.track_title or track.raw_query,
+                                    "artist": track.artist or "",
+                                    "song_type": getattr(track, "song_type", None),
+                                }
+                                w_type, w_label, is_cov, orig_a, orig_t = (
+                                    resolve_work_type_from_metadata(
+                                        title=track.track_title or track.raw_query,
+                                        artist=track.artist or "",
+                                        metadata=meta_w,
+                                    )
+                                )
+                                existing_after_resolve.work_type = w_type
+                                existing_after_resolve.work_label = w_label
+                                existing_after_resolve.is_cover = is_cov
+                                if (
+                                    not getattr(existing_after_resolve, "original_artist", None)
+                                    and orig_a
+                                ):
+                                    existing_after_resolve.original_artist = orig_a
+                                if (
+                                    not getattr(existing_after_resolve, "original_song_title", None)
+                                    and orig_t
+                                ):
+                                    existing_after_resolve.original_song_title = orig_t
+                                try:
+                                    self.track_repo.save_result(existing_after_resolve)
+                                except Exception:  # noqa: BLE001, S110
+                                    pass
                             logger.info(
                                 "⚡ [CACHE HIT] Đã tìm thấy kết quả phân tích cũ sau khi phân giải URL cho '%s'",
                                 track.resolved_url,
@@ -278,6 +339,11 @@ class DetectionService(IDetectionService):
                     )
 
             v_type_str = v_type.value if hasattr(v_type, "value") else str(v_type)
+            w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                title=track.track_title or track.raw_query,
+                artist=track.artist or "",
+                metadata=metadata,
+            )
             result = DetectionResult(
                 track_id=track.id,
                 track_title=track.track_title or track.raw_query,
@@ -297,6 +363,11 @@ class DetectionService(IDetectionService):
                 ai_model_verdict="N/A (Heuristics)",
                 consensus_is_ai=is_ai,
                 consensus_verdict=v_type_str,
+                work_type=w_type,
+                work_label=w_label,
+                is_cover=is_cov,
+                original_artist=orig_a,
+                original_song_title=orig_t,
             )
             self.track_repo.save_result(result)
             return result
@@ -337,6 +408,22 @@ class DetectionService(IDetectionService):
 
         # 5. Bộ lọc Trọng tài Kiểm chéo hai chiều (Cross-Validation Safeguard)
         result = self._apply_cross_validation_safeguard(result, track, metadata, metrics)
+
+        # 6. Đảm bảo phân loại Tác phẩm (Work Type) luôn được giải mã chuẩn xác nếu mô hình để trống
+        if getattr(result, "work_type", WorkType.UNCERTAIN) == WorkType.UNCERTAIN:
+            w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                title=track.track_title or track.raw_query,
+                artist=track.artist or "",
+                metadata=metadata,
+                raw_gemini_work_type=str(getattr(result, "work_type", "UNCERTAIN")),
+            )
+            result.work_type = w_type
+            result.work_label = w_label
+            result.is_cover = is_cov
+            if not result.original_artist and orig_a:
+                result.original_artist = orig_a
+            if not result.original_song_title and orig_t:
+                result.original_song_title = orig_t
 
         # Đồng bộ kết luận tổng hợp cuối cùng
         result.consensus_is_ai = result.is_ai
@@ -503,8 +590,9 @@ class DetectionService(IDetectionService):
                 ]
             )
 
-            # 2a. Tiêu chí 1: AI thuần nhạc cụ / ambient
-            is_instrumental_ai = rolloff < 6500.0 and rigidity >= 0.75
+            # 2a. Tiêu chí 1: AI thuần nhạc cụ / ambient (Chỉ áp dụng khi bản thu không có vocal)
+            is_instrumental_track = bool(getattr(metrics, "is_instrumental", False))
+            is_instrumental_ai = is_instrumental_track and rolloff < 6500.0 and rigidity >= 0.75
 
             # 2b. Tiêu chí 2: AI có dấu vân răng lược hoặc stem bleed cao áp đảo
             strong_physical_ai = (

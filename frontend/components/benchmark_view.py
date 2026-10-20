@@ -7,8 +7,10 @@ import streamlit as st
 from backend.core.config import BASE_DIR, TEMP_DIR
 from backend.core.container import get_container
 from benchmark_evaluator import (
+    calculate_work_type_confusion_matrix,
     export_audit_excel,
     load_testcase_dataset,
+    plot_work_type_confusion_matrix,
     select_samples,
 )
 from frontend.components.ui_compat import get_width_kwargs
@@ -115,6 +117,8 @@ def render_benchmark_view():
             resolver = container.resolver
 
             results = []
+            y_true_work = []
+            y_pred_work = []
             tp, tn, fp, fn, errors = 0, 0, 0, 0, 0
 
             for i, item in enumerate(samples, 1):
@@ -127,6 +131,9 @@ def render_benchmark_view():
                 track = None
                 try:
                     track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
+                    track.song_type = item.get("song_type") or ""
+                    track.release_date = str(item.get("release_date") or "")
+                    track.distributor = str(item.get("distributor") or "")
                     res = detection_service.detect_single(
                         track, model_override=st.session_state.get("model_name")
                     )
@@ -148,6 +155,19 @@ def render_benchmark_view():
                         m_type = "FN (Bỏ sót AI)"
                         fn += 1
 
+                    # Đối soát Work Type (Original vs Cover vs Remix)
+                    gt_work = item.get("gt_work_type", "UNCERTAIN")
+                    raw_w_type = getattr(res, "work_type", None)
+                    pred_work = (
+                        raw_w_type.value
+                        if hasattr(raw_w_type, "value")
+                        else (str(raw_w_type) if raw_w_type else "UNCERTAIN")
+                    )
+                    work_is_correct = (pred_work == gt_work) if gt_work != "UNCERTAIN" else None
+                    if gt_work != "UNCERTAIN":
+                        y_true_work.append(gt_work)
+                        y_pred_work.append(pred_work)
+
                     ai_model_is_ai = getattr(res, "ai_model_is_ai", res.is_ai)
                     ai_model_pred = "AI" if ai_model_is_ai else "HUMAN"
                     ai_model_val = res.ai_model_verdict or ai_model_pred
@@ -168,6 +188,16 @@ def render_benchmark_view():
                             "Kết quả": "✅ ĐÚNG" if is_correct else "❌ SAI",
                             "Phân loại": m_type,
                             "Nhãn chi tiết": res.verdict_label,
+                            "Thực tế Tác phẩm": gt_work,
+                            "Dự đoán Tác phẩm": pred_work,
+                            "Kết quả Tác phẩm": (
+                                "✅ ĐÚNG"
+                                if work_is_correct is True
+                                else ("❌ SAI" if work_is_correct is False else "N/A")
+                            ),
+                            "Tác phẩm": getattr(res, "work_label", "Chưa rõ tác phẩm"),
+                            "Nghệ sĩ bài gốc": getattr(res, "original_artist", "") or "N/A",
+                            "Tên bài gốc": getattr(res, "original_song_title", "") or "N/A",
                             "Độ tin cậy": f"{res.confidence_score * 100:.1f}%",
                             "Nghi vấn nền tảng": res.suspected_engine,
                             "Luận cứ": " | ".join(res.reasons or [])[:120],
@@ -188,6 +218,12 @@ def render_benchmark_view():
                             "Kết quả": "❌ LỖI",
                             "Phân loại": "ERROR",
                             "Nhãn chi tiết": "Lỗi kỹ thuật",
+                            "Thực tế Tác phẩm": item.get("gt_work_type", "UNCERTAIN"),
+                            "Dự đoán Tác phẩm": "ERROR",
+                            "Kết quả Tác phẩm": "❌ LỖI",
+                            "Tác phẩm": "LỖI HỆ THỐNG",
+                            "Nghệ sĩ bài gốc": "N/A",
+                            "Tên bài gốc": "N/A",
                             "Độ tin cậy": "0%",
                             "Nghi vấn nền tảng": "N/A",
                             "Luận cứ": str(ex),
@@ -205,6 +241,17 @@ def render_benchmark_view():
             spec = (tn / (tn + fp)) if (tn + fp) > 0 else 0.0
             f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
 
+            # Tính toán ma trận nhầm lẫn Work Type
+            work_type_metrics = calculate_work_type_confusion_matrix(y_true_work, y_pred_work)
+            work_type_cm_path: str | None = None
+            if work_type_metrics.get("total_evaluated", 0) > 0:
+                try:
+                    cm_target = TEMP_DIR / f"work_type_cm_{seed_val}.png"
+                    plot_work_type_confusion_matrix(work_type_metrics, output_path=cm_target)
+                    work_type_cm_path = str(cm_target)
+                except Exception as plot_err:  # noqa: BLE001
+                    st.warning(f"Không thể tạo ảnh ma trận nhầm lẫn tác phẩm: {plot_err}")
+
             benchmark_summary = {
                 "total_samples": len(samples),
                 "evaluated_successfully": evaluated_total,
@@ -218,6 +265,8 @@ def render_benchmark_view():
                 "recall": rec,
                 "specificity": spec,
                 "f1_score": f1,
+                "work_type_metrics": work_type_metrics,
+                "work_type_cm_image_path": work_type_cm_path,
             }
 
             st.session_state["benchmark_summary"] = benchmark_summary
@@ -234,10 +283,10 @@ def render_benchmark_view():
                         benchmark_summary, results
                     )
                     st.toast(f"☁️ Đã lưu đợt Benchmark '{run_id}' lên Supabase Cloud!", icon="✅")
-                except Exception as db_save_err:
+                except Exception as db_save_err:  # noqa: BLE001
                     st.warning(f"Không thể lưu đợt benchmark vào Cloud DB: {db_save_err}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             st.error(f"Lỗi trong quá trình thẩm định benchmark: {e}")
 
     # Hiển thị kết quả đánh giá nếu có
@@ -248,22 +297,64 @@ def render_benchmark_view():
         st.divider()
         st.subheader("📊 Kết Quả Chấm Điểm Mô Hình (Evaluation Metrics)")
 
-        # Thẻ chỉ số chính
+        # Thẻ chỉ số chính AI vs Human
+        st.markdown("#### 🤖 1. Hiệu Năng Phân Biệt Nhạc AI vs Nhạc Con Người")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("⭐ Accuracy (Độ chính xác)", f"{bm['accuracy'] * 100:.1f}%")
+        m1.metric("⭐ AI Accuracy", f"{bm['accuracy'] * 100:.1f}%")
         m2.metric("🎯 Precision (Tránh bắt oan)", f"{bm['precision'] * 100:.1f}%")
         m3.metric("📡 Recall (Độ nhạy bắt AI)", f"{bm['recall'] * 100:.1f}%")
         m4.metric("⚖️ F1-Score (Cân bằng)", f"{bm['f1_score'] * 100:.1f}%")
 
-        # Ma trận nhầm lẫn
-        st.markdown("#### 🔢 Ma Trận Nhầm Lẫn (Confusion Matrix)")
+        # Ma trận nhầm lẫn AI/Human
         c_tp, c_tn, c_fp, c_fn = st.columns(4)
         c_tp.success(f"**True Positive (TP)**: {bm['TP']} bài\n*(Thực tế AI ➡️ Đoán đúng AI)*")
         c_tn.info(f"**True Negative (TN)**: {bm['TN']} bài\n*(Thực tế Người ➡️ Đoán đúng Người)*")
         c_fp.error(f"**False Positive (FP)**: {bm['FP']} bài\n*(Báo nhầm nhạc người là AI ⚠️)*")
         c_fn.warning(f"**False Negative (FN)**: {bm['FN']} bài\n*(Bỏ sót / lọt lưới nhạc AI ⚠️)*")
 
+        # Thẻ chỉ số Work Type (Original vs Cover vs Remix)
+        wt = bm.get("work_type_metrics")
+        if wt and wt.get("total_evaluated", 0) > 0:
+            st.divider()
+            st.markdown("#### 💿 2. Hiệu Năng Phân Biệt Tác Phẩm (Original vs Cover vs Remix)")
+            cw1, cw2, cw3, cw4 = st.columns(4)
+            cw1.metric(
+                "⭐ Work Accuracy",
+                f"{wt['accuracy'] * 100:.1f}%",
+                f"{wt['correct']}/{wt['total_evaluated']} bài",
+            )
+            p_class = wt.get("per_class", {})
+            cov_stat = p_class.get("COVER", {})
+            orig_stat = p_class.get("ORIGINAL", {})
+            rem_stat = p_class.get("REMIX", {})
+
+            cw2.metric(
+                "🎙️ Cover Recall",
+                f"{cov_stat.get('recall', 0.0) * 100:.1f}%",
+                f"Prec: {cov_stat.get('precision', 0.0) * 100:.1f}%",
+            )
+            cw3.metric(
+                "💿 Original Recall",
+                f"{orig_stat.get('recall', 0.0) * 100:.1f}%",
+                f"Prec: {orig_stat.get('precision', 0.0) * 100:.1f}%",
+            )
+            cw4.metric(
+                "🎛️ Remix Recall",
+                f"{rem_stat.get('recall', 0.0) * 100:.1f}%",
+                f"Prec: {rem_stat.get('precision', 0.0) * 100:.1f}%",
+            )
+
+            cm_img = bm.get("work_type_cm_image_path")
+            if cm_img and Path(cm_img).exists():
+                st.markdown("##### 🖼️ Ma Trận Nhầm Lẫn Tác Phẩm (Multi-class Confusion Matrix)")
+                st.image(
+                    cm_img,
+                    caption="Ma Trận Nhầm Lẫn Đối Soát Tác Phẩm (Original vs Cover vs Remix) - 300 DPI",
+                    **get_width_kwargs(st.image),
+                )
+
         # Bảng chi tiết
+        st.divider()
         st.markdown("#### 📋 Bảng Đối Soát Chi Tiết Từng Bài Hát")
         df_res = pd.DataFrame(res_list)
         st.dataframe(df_res, **get_width_kwargs(st.dataframe))

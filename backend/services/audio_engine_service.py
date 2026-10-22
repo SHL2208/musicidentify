@@ -33,20 +33,7 @@ def _safe_log(msg: str) -> None:
         except Exception:
             pass
 
-
-def _extract_first_entry(entries: Any) -> dict | None:
-    """Trích xuất phần tử đầu tiên từ entries của yt-dlp (hỗ trợ cả list, PagedList và Iterable)."""
-    if not entries:
-        return None
-    try:
-        entry = entries[0]
-        return dict(entry) if isinstance(entry, dict) else None
-    except Exception:
-        try:
-            entry = next(iter(entries))
-            return dict(entry) if isinstance(entry, dict) else None
-        except Exception:
-            return None
+from ..core.utils import extract_first_entry as _extract_first_entry
 
 
 def clean_music_search_queries(title: str, artist: str = "") -> list[str]:

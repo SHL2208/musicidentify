@@ -1,6 +1,5 @@
 import re
 import time
-import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ from ..core.interfaces.repositories.storage_repository_interface import (
 from ..core.interfaces.services.fakeprint_detector_interface import IFakeprintDetector
 from ..core.interfaces.services.signal_analyzer_interface import ISignalAnalyzer
 from ..core.models.entities import AcousticMetrics, VerdictType
+from ..core.utils import normalize_vietnamese_text
 
 _DEFAULT_HUMAN_WHITELIST = [
     "sony",
@@ -151,11 +151,7 @@ _VERIFIED_HUMAN_ARTISTS = {
 
 def remove_vietnamese_accents(text: str) -> str:
     """Loại bỏ dấu tiếng Việt để đối sánh mềm tên nghệ sĩ."""
-    if not text:
-        return ""
-    text = text.replace("đ", "d").replace("Đ", "D")
-    nfkd = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+    return normalize_vietnamese_text(text).lower()
 
 
 _VERIFIED_HUMAN_ARTISTS_UNACCENTED = {

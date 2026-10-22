@@ -11,18 +11,11 @@ Tuân thủ nghiêm ngặt chuẩn PEP 8 và Ruff.
 from __future__ import annotations
 
 import re
-import unicodedata
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-import numpy as np
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 from ..core.models.entities import WorkType
+from ..core.utils import normalize_vietnamese_text
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -98,11 +91,7 @@ _SPECIALIZED_COVER_CHANNELS = {
 
 def remove_accents(text: str) -> str:
     """Loại bỏ dấu tiếng Việt để đối sánh mềm."""
-    if not text:
-        return ""
-    text = text.replace("đ", "d").replace("Đ", "D")
-    nfkd = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+    return normalize_vietnamese_text(text).lower()
 
 
 def map_song_type_to_work_type(song_type_val: str | None) -> str:
@@ -215,60 +204,12 @@ def calculate_work_type_confusion_matrix(
     y_pred: list[str],
     labels: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Tính toán ma trận nhầm lẫn 3x3 và các chỉ số hiệu năng chuẩn machine learning."""
-    if labels is None:
-        labels = ["ORIGINAL", "COVER", "REMIX"]
+    """Tính toán ma trận nhầm lẫn 3x3 (ủy quyền cho benchmark_evaluator để tránh trùng lặp mã)."""
+    from benchmark_evaluator import (
+        calculate_work_type_confusion_matrix as _calc,
+    )
 
-    all_pred_cols = list(labels)
-    if "UNCERTAIN" not in all_pred_cols:
-        all_pred_cols.append("UNCERTAIN")
-
-    matrix: dict[str, dict[str, int]] = {gt: {pred: 0 for pred in all_pred_cols} for gt in labels}
-
-    total = 0
-    correct = 0
-
-    for yt, yp in zip(y_true, y_pred, strict=False):
-        yt_norm = str(yt or "").upper().strip()
-        yp_norm = str(yp or "").upper().strip()
-        if yt_norm in matrix:
-            if yp_norm not in matrix[yt_norm]:
-                yp_norm = "UNCERTAIN"
-            matrix[yt_norm][yp_norm] += 1
-            total += 1
-            if yt_norm == yp_norm:
-                correct += 1
-
-    accuracy = (correct / total) if total > 0 else 0.0
-
-    per_class: dict[str, dict[str, Any]] = {}
-    for label in labels:
-        tp = matrix.get(label, {}).get(label, 0)
-        fn = sum(matrix.get(label, {}).get(p, 0) for p in all_pred_cols if p != label)
-        fp = sum(matrix.get(other, {}).get(label, 0) for other in labels if other != label)
-
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
-
-        per_class[label] = {
-            "total": tp + fn,
-            "tp": tp,
-            "fp": fp,
-            "fn": fn,
-            "precision": prec,
-            "recall": rec,
-            "f1_score": f1,
-        }
-
-    return {
-        "matrix": matrix,
-        "labels": labels,
-        "total_evaluated": total,
-        "correct": correct,
-        "accuracy": accuracy,
-        "per_class": per_class,
-    }
+    return _calc(y_true, y_pred, labels=labels)
 
 
 def plot_work_type_confusion_matrix(
@@ -276,103 +217,9 @@ def plot_work_type_confusion_matrix(
     output_path: str | Path | None = None,
     title: str = "Ma Trận Nhầm Lẫn Tác Phẩm (Original vs Cover vs Remix)",
 ) -> Path:
-    """Vẽ ma trận nhầm lẫn đa lớp cho Work Type và lưu file ảnh PNG (300 DPI)."""
-    if output_path is None:
-        out_dir = ROOT_DIR / "data" / "outputs"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target_file = out_dir / f"work_type_cm_{ts}.png"
-    else:
-        target_file = Path(output_path)
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-
-    labels = metrics.get("labels", ["ORIGINAL", "COVER", "REMIX"])
-    matrix_dict = metrics.get("matrix", {})
-
-    matrix_data = []
-    for gt in labels:
-        row = [matrix_dict.get(gt, {}).get(pred, 0) for pred in labels]
-        matrix_data.append(row)
-    matrix_arr = np.array(matrix_data)
-
-    fig, (ax_cm, ax_stats) = plt.subplots(
-        nrows=1,
-        ncols=2,
-        figsize=(15, 6.8),
-        dpi=300,
-        gridspec_kw={"width_ratios": [1.2, 1.0]},
-    )
-    fig.patch.set_facecolor("#FAFAFC")
-
-    # 1. Heatmap bên trái
-    cmap = plt.cm.Purples
-    im = ax_cm.imshow(matrix_arr, interpolation="nearest", cmap=cmap)
-    plt.colorbar(im, ax=ax_cm, fraction=0.046, pad=0.04, label="Số lượng bài hát")
-
-    tick_marks = np.arange(len(labels))
-    ax_cm.set_xticks(tick_marks)
-    ax_cm.set_xticklabels([f"Đoán: {lbl}" for lbl in labels], fontsize=10, fontweight="bold")
-    ax_cm.set_yticks(tick_marks)
-    ax_cm.set_yticklabels([f"Thực tế: {lbl}" for lbl in labels], fontsize=10, fontweight="bold")
-    ax_cm.set_xlabel("DỰ ĐOÁN CỦA HỆ THỐNG (PREDICTED)", fontsize=11, labelpad=10)
-    ax_cm.set_ylabel("NHÃN THỰC TẾ (GROUND TRUTH)", fontsize=11, labelpad=10)
-    ax_cm.set_title(title, fontsize=12, fontweight="bold", pad=12)
-
-    row_sums = matrix_arr.sum(axis=1)
-    max_val = matrix_arr.max() if matrix_arr.size > 0 else 1
-    for i in range(len(labels)):
-        for j in range(len(labels)):
-            val = matrix_arr[i, j]
-            total_row = row_sums[i]
-            pct = (val / total_row * 100) if total_row > 0 else 0.0
-            color = "white" if val > (max_val / 2) else "black"
-            ax_cm.text(
-                j,
-                i,
-                f"{val}\n({pct:.1f}%)",
-                ha="center",
-                va="center",
-                color=color,
-                fontsize=11,
-                fontweight="bold",
-            )
-
-    # 2. Bảng thống kê bên phải
-    ax_stats.axis("off")
-    acc = metrics.get("accuracy", 0.0)
-    tot = metrics.get("total_evaluated", 0)
-    cor = metrics.get("correct", 0)
-
-    header_text = (
-        f"[THỐNG KÊ HIỆU NĂNG PHÂN BIỆT TÁC PHẨM]\n"
-        f"• Tổng số bài đánh giá : {tot} bài\n"
-        f"• Số bài đoán đúng    : {cor} bài\n"
-        f"• Độ chính xác chung   : {acc * 100:.2f}%\n"
-        f"────────────────────────────────────────────────"
-    )
-    ax_stats.text(
-        0.05, 0.95, header_text, fontsize=11, family="sans-serif", va="top", fontweight="bold"
+    """Vẽ ma trận nhầm lẫn đa lớp (ủy quyền cho benchmark_evaluator để tránh trùng lặp mã)."""
+    from benchmark_evaluator import (
+        plot_work_type_confusion_matrix as _plot,
     )
 
-    y_pos = 0.65
-    per_class = metrics.get("per_class", {})
-    for lbl in labels:
-        c_met = per_class.get(lbl, {})
-        c_tot = c_met.get("total", 0)
-        c_prec = c_met.get("precision", 0.0) * 100
-        c_rec = c_met.get("recall", 0.0) * 100
-        c_f1 = c_met.get("f1_score", 0.0) * 100
-
-        class_text = (
-            f"[NHÃN]: {lbl} (Mẫu thực tế: {c_tot} bài)\n"
-            f"   - Precision (Độ chuẩn xác) : {c_prec:.1f}%\n"
-            f"   - Recall (Độ bao phủ)      : {c_rec:.1f}%\n"
-            f"   - F1-Score (Cân bằng)      : {c_f1:.1f}%\n"
-        )
-        ax_stats.text(0.05, y_pos, class_text, fontsize=10, family="sans-serif", va="top")
-        y_pos -= 0.18
-
-    plt.tight_layout()
-    fig.savefig(target_file, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    return target_file
+    return _plot(metrics, output_path=output_path, title=title)

@@ -1,4 +1,3 @@
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -8,19 +7,7 @@ import pandas as pd
 from ..core.config import OUTPUT_DIR
 from ..core.exceptions import RepositoryException
 from ..core.interfaces.repositories.report_repository_interface import IReportRepository
-
-ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
-ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-
-def clean_excel_text(val: Any) -> Any:
-    """Lọc bỏ ANSI escape codes, các ký tự điều khiển không hợp lệ và phòng chống CSV/Excel Formula Injection."""
-    if isinstance(val, str):
-        val = ANSI_ESCAPE_RE.sub("", val)
-        val = ILLEGAL_CHARACTERS_RE.sub("", val)
-        if val and val[0] in ("=", "+", "-", "@"):
-            val = f"'{val}"
-    return val
+from ..core.utils import clean_excel_text
 
 
 class FileReportRepository(IReportRepository):

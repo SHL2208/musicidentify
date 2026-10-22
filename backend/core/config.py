@@ -85,16 +85,13 @@ def get_configured_gemini_api_keys() -> list[str]:
 
 
 # Google AI Studio Configuration
-GEMINI_API_KEY_1 = os.getenv("GEMINI_API_KEY_1", "").strip()
-GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "").strip()
-GEMINI_API_KEY_3 = os.getenv("GEMINI_API_KEY_3", "").strip()
-
 GEMINI_API_KEYS: list[str] = get_configured_gemini_api_keys()
 GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
 DEFAULT_GEMINI_MODEL = (
-    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
+    os.getenv("DEFAULT_GEMINI_MODEL",
+              "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
 ).strip()
 
 # Thứ tự mô hình dự phòng tự động khi cạn Quota hoặc lỗi (Multi-tier Model Failover)
@@ -106,7 +103,8 @@ DEFAULT_FALLBACK_MODELS = [
 
 _env_fallback = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
 if _env_fallback:
-    GEMINI_FALLBACK_MODELS = [m.strip() for m in _env_fallback.split(",") if m.strip()]
+    GEMINI_FALLBACK_MODELS = [m.strip()
+                              for m in _env_fallback.split(",") if m.strip()]
 else:
     GEMINI_FALLBACK_MODELS = DEFAULT_FALLBACK_MODELS
 
@@ -115,11 +113,11 @@ AVAILABLE_MODELS = list(
         GEMINI_FALLBACK_MODELS
         + [
             "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.5-flash",
-            "gemini-3.6-flash",
             "gemini-3.8-flash",
             "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
         ]
     )
 )
@@ -228,7 +226,7 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
     # Bóc tách dấu ngoặc kép nếu người dùng dán cả ngoặc
     for q in ['"""', "'''"]:
         if content.startswith(q) and content.endswith(q):
-            content = content[len(q) : -len(q)].strip()
+            content = content[len(q): -len(q)].strip()
 
     # Hỗ trợ tiền tố base64: hoặc tự động nhận diện Base64
     if content.startswith("base64:"):
@@ -236,7 +234,8 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
 
     if "\t" not in content and "\n" not in content[:200] and len(content) > 50:
         try:
-            decoded = base64.b64decode(content, validate=True).decode("utf-8", errors="replace")
+            decoded = base64.b64decode(content, validate=True).decode(
+                "utf-8", errors="replace")
             if any(
                 k in decoded.lower()
                 for k in ["youtube", "netscape", "domain", "true", "false", "sid"]
@@ -328,15 +327,18 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
 
             # Lọc cookie khách: chỉ giữ token khách an toàn, bỏ token session cá nhân
             if name in guest_safe_names or (
-                name not in account_session_names and not name.startswith(("__Secure-", "SID"))
+                name not in account_session_names and not name.startswith(
+                    ("__Secure-", "SID"))
             ):
                 guest_cookies_dict[cookie_key] = cookie_line
 
     header = "# Netscape HTTP Cookie File\n# This file is generated for yt-dlp.\n\n"
     full_cookies = list(full_cookies_dict.values())
     guest_cookies = list(guest_cookies_dict.values())
-    full_content = (header + "\n".join(full_cookies) + "\n") if full_cookies else ""
-    guest_content = (header + "\n".join(guest_cookies) + "\n") if guest_cookies else ""
+    full_content = (header + "\n".join(full_cookies) +
+                    "\n") if full_cookies else ""
+    guest_content = (header + "\n".join(guest_cookies) +
+                     "\n") if guest_cookies else ""
 
     return full_content, guest_content, len(full_cookies), len(guest_cookies)
 
@@ -408,7 +410,8 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
     # 1. Từ Secrets hoặc biến môi trường nếu có
     raw_content = find_cookie_content_from_secrets_or_env()
     if raw_content:
-        full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(raw_content)
+        full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(
+            raw_content)
         target_c = guest_c if mode == "guest" else full_c
         target_cnt = guest_cnt if mode == "guest" else full_cnt
         if target_c and target_cnt > 0:
@@ -432,7 +435,8 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
         if cand.exists() and cand.stat().st_size > 0:
             try:
                 content = cand.read_text(encoding="utf-8", errors="replace")
-                full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(content)
+                full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(
+                    content)
                 target_c = guest_c if mode == "guest" else full_c
                 target_cnt = guest_cnt if mode == "guest" else full_cnt
                 if target_c and target_cnt > 0:
@@ -440,7 +444,8 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
                     if c_hash not in seen_hashes:
                         seen_hashes.add(c_hash)
                         stem = cand.stem
-                        out_path = TEMP_DIR / f"cookie_{stem}_{mode}_runtime.txt"
+                        out_path = TEMP_DIR / \
+                            f"cookie_{stem}_{mode}_runtime.txt"
                         out_path.write_text(target_c, encoding="utf-8")
                         results.append(out_path)
             except Exception:
@@ -475,20 +480,9 @@ def get_cookie_status() -> tuple[bool, int, str]:
 
     try:
         content = active_path.read_text(encoding="utf-8", errors="replace")
-        lines = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
+        lines = [line for line in content.splitlines() if line.strip()
+                 and not line.startswith("#")]
         mode_label = "Chế độ Cloud-Safe" if active_path == guest_path else "Chế độ Toàn phần"
         return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công ({mode_label})"
     except Exception as e:
         return False, 0, f"Lỗi đọc cookie: {e}"
-
-
-def get_local_cookies_as_base64() -> str | None:
-    """Đọc file cookies.txt cục bộ và chuyển đổi thành chuỗi Base64 để dán vào Secrets an toàn 100%."""
-    for candidate in [BASE_DIR / "cookies.txt", BASE_DIR / "cookies_master.txt"]:
-        if candidate.exists() and candidate.stat().st_size > 0:
-            try:
-                raw_bytes = candidate.read_bytes()
-                return base64.b64encode(raw_bytes).decode("ascii")
-            except Exception:
-                pass
-    return None

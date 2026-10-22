@@ -17,7 +17,6 @@ from ..services.gemini_classifier_service import GeminiClassifierService
 from ..services.report_service import ReportService
 from ..services.resolver_service import InputResolverService
 from ..services.signal_analyzer_service import SignalAnalyzerService
-from ..services.supabase_storage_service import SupabaseStorageService
 
 # Core Configurations
 from .config import (
@@ -72,7 +71,6 @@ class AppContainer:
             self.track_repository: ITrackRepository = DatabaseTrackRepository()
         else:
             self.track_repository: ITrackRepository = InMemoryTrackRepository()
-        self.supabase_storage: SupabaseStorageService = SupabaseStorageService()
 
         # 2. LAYER 2: SERVICES (Tất cả được gán kiểu là Interface)
         self.audio_engine: IAudioEngine = AudioEngineService(

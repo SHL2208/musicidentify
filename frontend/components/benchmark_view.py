@@ -91,6 +91,10 @@ def render_benchmark_view():
 
     # Nút kích hoạt
     if st.button("🚀 Bắt đầu Chấm Điểm Dự Án", type="primary", **get_width_kwargs(st.button)):
+        # Reset kết quả cũ để tập trung theo dõi tiến trình thời gian thực
+        st.session_state["benchmark_summary"] = None
+        st.session_state["benchmark_results"] = None
+
         try:
             with st.spinner("Đang nạp dữ liệu từ file testcase..."):
                 dataset = load_testcase_dataset(file_path=selected_file_path, sheet_name=sheet_name)
@@ -108,9 +112,12 @@ def render_benchmark_view():
                 f"Đã chọn {len(samples)} bài để thẩm định đối soát (AI: {s_ai} | Con người: {s_human})"
             )
 
-            # Tiến trình chạy
+            # Tiến trình chạy & Placeholders thời gian thực
             progress_bar = st.progress(0.0)
             status_box = st.empty()
+            live_metrics_placeholder = st.empty()
+            live_table_header = st.empty()
+            live_table_placeholder = st.empty()
 
             container = get_container()
             detection_service = container.detection_service
@@ -230,6 +237,24 @@ def render_benchmark_view():
                         }
                     )
 
+                # Cập nhật số liệu đếm trực tiếp
+                with live_metrics_placeholder.container():
+                    bm1, bm2, bm3, bm4 = st.columns(4)
+                    bm1.metric("Tiến độ", f"{i}/{len(samples)}")
+                    bm2.metric("Đúng (TP + TN)", tp + tn)
+                    bm3.metric("Sai (FP + FN)", fp + fn)
+                    eval_so_far = tp + tn + fp + fn
+                    curr_acc = f"{(tp + tn) / eval_so_far * 100:.1f}%" if eval_so_far > 0 else "0.0%"
+                    bm4.metric("Accuracy tạm tính", curr_acc)
+
+                # Cập nhật Data Table trực tiếp theo thời gian thực (Incremental Stream Table)
+                live_table_header.markdown(
+                    f"##### 📋 Bảng Đối Soát Trực Tiếp ({len(results)}/{len(samples)} bài)"
+                )
+                live_table_placeholder.dataframe(
+                    pd.DataFrame(results), **get_width_kwargs(st.dataframe)
+                )
+
             progress_bar.progress(1.0)
             status_box.text("🎉 Đã hoàn thành đối soát toàn bộ tập mẫu!")
 
@@ -285,6 +310,9 @@ def render_benchmark_view():
                     st.toast(f"☁️ Đã lưu đợt Benchmark '{run_id}' lên Supabase Cloud!", icon="✅")
                 except Exception as db_save_err:  # noqa: BLE001
                     st.warning(f"Không thể lưu đợt benchmark vào Cloud DB: {db_save_err}")
+
+            st.toast("🎉 Đã hoàn thành đối soát toàn bộ tập mẫu!", icon="✅")
+            st.rerun()
 
         except Exception as e:  # noqa: BLE001
             st.error(f"Lỗi trong quá trình thẩm định benchmark: {e}")

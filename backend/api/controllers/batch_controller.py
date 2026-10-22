@@ -23,6 +23,9 @@ class BatchController:
         request: BatchDetectRequest,
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
     ) -> StandardResponse[BatchReport]:
         """Tiếp nhận danh sách truy vấn dạng text và thực hiện quét hàng loạt."""
         try:
@@ -56,6 +59,9 @@ class BatchController:
                 model_override=request.model_override,
                 scan_mode=scan_m,
                 on_progress=on_progress,
+                stop_check=stop_check,
+                start_index=start_index,
+                initial_results=initial_results,
             )
             return StandardResponse[BatchReport](
                 success=True, message=f"Đã xử lý xong lô {report.total_tracks} bài hát", data=report
@@ -72,6 +78,9 @@ class BatchController:
         scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
     ) -> StandardResponse[BatchReport]:
         """Tiếp nhận tệp dữ liệu (.txt, .csv, .xlsx) và thực hiện quét hàng loạt."""
         try:
@@ -81,6 +90,9 @@ class BatchController:
                 model_override=model_override,
                 scan_mode=scan_mode,
                 on_progress=on_progress,
+                stop_check=stop_check,
+                start_index=start_index,
+                initial_results=initial_results,
             )
             return StandardResponse[BatchReport](
                 success=True,

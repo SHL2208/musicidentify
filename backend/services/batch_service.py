@@ -39,18 +39,30 @@ class BatchService(IBatchService):
         scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
     ) -> BatchReport:
-        """Xử lý danh sách bài hát có điều tiết tốc độ và cập nhật tiến độ."""
+        """Xử lý danh sách bài hát có điều tiết tốc độ, kiểm tra tín hiệu dừng và hỗ trợ tiếp tục (Resume)."""
         total = len(tracks)
-        results: list[DetectionResult] = []
-        ai_count = 0
-        human_count = 0
-        uncertain_count = 0
-        failed_count = 0
+        results: list[DetectionResult] = list(initial_results) if initial_results else []
+        ai_count = sum(1 for r in results if r.is_ai and r.verdict_type != VerdictType.UNCERTAIN)
+        human_count = sum(1 for r in results if not r.is_ai and r.verdict_type != VerdictType.ERROR)
+        uncertain_count = sum(1 for r in results if r.verdict_type == VerdictType.UNCERTAIN)
+        failed_count = sum(1 for r in results if r.verdict_type == VerdictType.ERROR)
 
-        for i, track in enumerate(tracks):
-            track.status = "PROCESSING"
-            self.track_repo.save_track(track)
+        start_idx = max(0, min(start_index, total))
+
+        for i in range(start_idx, total):
+            if stop_check and stop_check():
+                logger.info(
+                    "Đã nhận tín hiệu dừng quét từ người dùng trước khi xử lý bài %d/%d",
+                    i + 1,
+                    total,
+                )
+                break
+
+            track = tracks[i]
             was_cached = False
             try:
                 force_rescan = scan_mode == "force_all"
@@ -60,10 +72,31 @@ class BatchService(IBatchService):
                     )
                     force_rescan = existing is None or existing.verdict_type == VerdictType.ERROR
 
+                # Chỉ cập nhật sang PROCESSING nếu cần phân tích mới
+                if force_rescan or track.status != "COMPLETED":
+                    track.status = "PROCESSING"
+                    self.track_repo.save_track(track)
+
                 result = self.detection_service.detect_single(
                     track, model_override=model_override, force_rescan=force_rescan
                 )
                 was_cached = bool(getattr(result, "is_cached", False))
+
+                # Đồng bộ siêu dữ liệu đã hoàn thiện từ result sang track
+                if result.source_url and not track.resolved_url:
+                    track.resolved_url = result.source_url
+                if result.song_type and not track.song_type:
+                    track.song_type = result.song_type
+                if result.distributor and not track.distributor:
+                    track.distributor = result.distributor
+                if result.release_date and not track.release_date:
+                    track.release_date = result.release_date
+                dur_r = getattr(result, "duration_sec", None) or (
+                    result.acoustic_metrics.duration_sec if result.acoustic_metrics else None
+                )
+                if dur_r is not None and not track.duration_sec:
+                    track.duration_sec = dur_r
+
                 results.append(result)
                 track.status = "COMPLETED"
                 self.track_repo.save_track(track)

@@ -65,12 +65,21 @@ class BackendClient:
         scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ danh sách queries."""
         req = BatchDetectRequest(
             queries=queries, model_override=model_override, scan_mode=scan_mode
         )
-        resp = self.batch_controller.process_queries(req, on_progress=on_progress)
+        resp = self.batch_controller.process_queries(
+            req,
+            on_progress=on_progress,
+            stop_check=stop_check,
+            start_index=start_index,
+            initial_results=initial_results,
+        )
         if not resp.success or resp.data is None:
             raise RuntimeError(resp.error or resp.message)
         return resp.data
@@ -82,6 +91,9 @@ class BackendClient:
         scan_mode: str = "smart",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ tệp (.txt, .csv, .xlsx)."""
         resp = self.batch_controller.process_file(
@@ -89,6 +101,9 @@ class BackendClient:
             model_override=model_override,
             scan_mode=scan_mode,
             on_progress=on_progress,
+            stop_check=stop_check,
+            start_index=start_index,
+            initial_results=initial_results,
         )
         if not resp.success or resp.data is None:
             raise RuntimeError(resp.error or resp.message)
@@ -99,6 +114,15 @@ class BackendClient:
         req = ExportReportRequest(format=format)
         resp = self.report_controller.export_results(req)
         return resp.data if resp.success else None
+
+    def export_custom_results(
+        self, results: list[DetectionResult], format: str = "xlsx"
+    ) -> str | None:
+        """Xuất danh sách kết quả bất kỳ ra file báo cáo Excel."""
+        if not results:
+            return None
+        res_file = self.container.report_service.export_report(results, format=format)
+        return str(res_file) if res_file else None
 
     def get_history(self) -> list[DetectionResult]:
         """Truy xuất lịch sử giám định."""

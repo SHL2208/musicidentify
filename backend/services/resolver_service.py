@@ -3,10 +3,10 @@ import json
 import os
 import re
 import ssl
-import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
@@ -38,31 +38,39 @@ SPOTIFY_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-
-def _extract_first_entry(entries: Any) -> dict | None:
-    """Trích xuất phần tử đầu tiên từ entries của yt-dlp."""
-    if not entries:
-        return None
-    try:
-        entry = entries[0]
-        return dict(entry) if isinstance(entry, dict) else None
-    except (IndexError, TypeError, KeyError):
-        try:
-            entry = next(iter(entries))
-            return dict(entry) if isinstance(entry, dict) else None
-        except (StopIteration, TypeError):
-            return None
+from ..core.utils import extract_first_entry as _extract_first_entry
+from ..core.utils import normalize_vietnamese_text
 
 
 def _normalize_text(text: str) -> str:
     """Chuẩn hóa chuỗi văn bản loại bỏ dấu và ký tự đặc biệt để so khớp chuỗi."""
-    if not text:
-        return ""
-    text_norm = unicodedata.normalize("NFKD", text)
-    without_diacritics = "".join(c for c in text_norm if not unicodedata.combining(c))
-    without_diacritics = without_diacritics.replace("đ", "d").replace("Đ", "d")
-    cleaned = re.sub(r"[^\w\s]", " ", without_diacritics.lower())
-    return " ".join(cleaned.split())
+    return normalize_vietnamese_text(text, remove_special_chars=True)
+
+
+def _normalize_date_str(val: Any) -> str | None:
+    """Chuẩn hóa giá trị ngày phát hành về định dạng chuẩn YYYY-MM-DD."""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return val.strftime("%Y-%m-%d")
+    if isinstance(val, (int, float)):
+        try:
+            val = int(val)
+        except (ValueError, OverflowError):
+            pass
+    s = str(val).strip()
+    if s.endswith(".0"):
+        s = s[:-2].strip()
+    if not s or s.lower() in ("none", "nan", "null", "n/a", "nat"):
+        return None
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    if "t" in s.lower():
+        s = re.split(r"[Tt]", s)[0]
+    if " " in s:
+        s = s.split(" ")[0]
+    s = s.replace("/", "-")
+    return s.strip() or None
 
 
 def extract_content_id_metadata(description: str, tags: list[str] | None = None) -> dict[str, str]:
@@ -920,13 +928,17 @@ class InputResolverService(IInputResolver):
             )
 
     def _extract_tracks_from_df(self, df: pd.DataFrame) -> list[TrackItem]:
-        """Trích xuất danh sách TrackItem từ DataFrame (tự động nhận diện cột Title, Artist, URL)."""
-        url_col = None
-        title_col = None
-        artist_col = None
+        """Trích xuất danh sách TrackItem từ DataFrame (tự động nhận diện Title, Artist, URL, Song Type, Distributor, Release Date)."""
+        url_cols = []
+        title_cols = []
+        artist_cols = []
+        song_type_cols = []
+        distributor_cols = []
+        release_date_cols = []
+        duration_cols = []
 
         for col in df.columns:
-            c_low = col.strip().lower()
+            c_low = str(col).strip().lower()
             if any(
                 k in c_low
                 for k in [
@@ -939,16 +951,63 @@ class InputResolverService(IInputResolver):
                     "webpage",
                 ]
             ):
-                if url_col is None:
-                    url_col = col
+                url_cols.append(col)
             elif any(k in c_low for k in ["tên bài", "tiêu đề", "song title", "track", "title"]):
-                if title_col is None:
-                    title_col = col
+                title_cols.append(col)
             elif any(k in c_low for k in ["ca sĩ", "nghệ sĩ", "artist", "singer"]):
-                if artist_col is None:
-                    artist_col = col
+                artist_cols.append(col)
+            elif any(
+                k in c_low
+                for k in [
+                    "song type",
+                    "song_type",
+                    "loại bài",
+                    "loại tác phẩm",
+                    "work_type",
+                    "work type",
+                    "type",
+                ]
+            ):
+                song_type_cols.append(col)
+            elif any(
+                k in c_low
+                for k in [
+                    "distributor",
+                    "nhà phân phối",
+                    "phân phối",
+                    "publisher",
+                    "label",
+                    "nhãn",
+                ]
+            ):
+                distributor_cols.append(col)
+            elif any(
+                k in c_low
+                for k in [
+                    "release_date",
+                    "release date",
+                    "ngày phát hành",
+                    "ngay phat hanh",
+                    "publish_date",
+                    "upload_date",
+                    "release",
+                ]
+            ):
+                release_date_cols.append(col)
+            elif any(
+                k in c_low
+                for k in [
+                    "duration",
+                    "thời lượng",
+                    "thoi luong",
+                    "length",
+                    "thời gian",
+                    "duration_sec",
+                ]
+            ):
+                duration_cols.append(col)
 
-        if not title_col and not url_col:
+        if not title_cols and not url_cols:
             queries = self._extract_queries_from_df(df)
             tracks: list[TrackItem] = []
             for q in queries:
@@ -968,21 +1027,62 @@ class InputResolverService(IInputResolver):
 
         tracks = []
         for _, row in df.iterrows():
-            raw_u = (
-                str(row[url_col]).strip()
-                if (url_col is not None and pd.notna(row[url_col]))
-                else ""
-            )
-            raw_t = (
-                str(row[title_col]).strip()
-                if (title_col is not None and pd.notna(row[title_col]))
-                else ""
-            )
-            raw_a = (
-                str(row[artist_col]).strip()
-                if (artist_col is not None and pd.notna(row[artist_col]))
-                else ""
-            )
+            raw_u = ""
+            for c in url_cols:
+                if c in row and pd.notna(row[c]):
+                    v = str(row[c]).strip()
+                    if v and v.lower() not in ("none", "nan", "null", "n/a"):
+                        raw_u = v
+                        break
+
+            raw_t = ""
+            for c in title_cols:
+                if c in row and pd.notna(row[c]):
+                    v = str(row[c]).strip()
+                    if v and v.lower() not in ("none", "nan", "null", "n/a"):
+                        raw_t = v
+                        break
+
+            raw_a = ""
+            for c in artist_cols:
+                if c in row and pd.notna(row[c]):
+                    v = str(row[c]).strip()
+                    if v and v.lower() not in ("none", "nan", "null", "n/a"):
+                        raw_a = v
+                        break
+
+            raw_st = ""
+            for c in song_type_cols:
+                if c in row and pd.notna(row[c]):
+                    v = str(row[c]).strip()
+                    if v and v.lower() not in ("none", "nan", "null", "n/a"):
+                        raw_st = v
+                        break
+
+            raw_dist = ""
+            for c in distributor_cols:
+                if c in row and pd.notna(row[c]):
+                    v = str(row[c]).strip()
+                    if v and v.lower() not in ("none", "nan", "null", "n/a"):
+                        raw_dist = v
+                        break
+
+            raw_rd = None
+            for c in release_date_cols:
+                if c in row and pd.notna(row[c]):
+                    v = _normalize_date_str(row[c])
+                    if v:
+                        raw_rd = v
+                        break
+
+            raw_dur = None
+            for c in duration_cols:
+                if c in row and pd.notna(row[c]):
+                    try:
+                        raw_dur = float(row[c])
+                        break
+                    except (ValueError, TypeError):
+                        pass
 
             if not raw_u and not raw_t:
                 continue
@@ -1012,6 +1112,10 @@ class InputResolverService(IInputResolver):
                     track_title=effective_title,
                     artist=raw_a or None,
                     resolved_url=final_resolved_u,
+                    song_type=raw_st or None,
+                    distributor=raw_dist or None,
+                    release_date=raw_rd,
+                    duration_sec=raw_dur,
                 )
             )
         return tracks

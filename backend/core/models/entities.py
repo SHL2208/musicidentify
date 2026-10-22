@@ -222,6 +222,22 @@ class DetectionResult(BaseModel):
         default=None,
         description="Căn cứ xác định bản quyền / tác phẩm",
     )
+    song_type: str | None = Field(
+        default=None,
+        description="Loại tác phẩm / Thể loại (VD: ORIGINAL, COVER, REMIX, AI...)",
+    )
+    distributor: str | None = Field(
+        default=None,
+        description="Nhà phân phối / Hãng phát hành (VD: Zing Music, Believe, Sony Music...)",
+    )
+    release_date: str | None = Field(
+        default=None,
+        description="Ngày phát hành tác phẩm (VD: YYYY-MM-DD)",
+    )
+    duration_sec: float | None = Field(
+        default=None,
+        description="Thời lượng toàn bài hát tính bằng giây",
+    )
 
     @model_validator(mode="after")
     def sync_consensus_fields(self) -> DetectionResult:
@@ -237,6 +253,8 @@ class DetectionResult(BaseModel):
                 self.work_label = "COVER (Bản hát lại)"
             elif self.work_type == WorkType.REMIX:
                 self.work_label = "REMIX (Bản phối lại)"
+        if not self.song_type and self.work_type != WorkType.UNCERTAIN:
+            self.song_type = self.work_type.value
         return self
 
 

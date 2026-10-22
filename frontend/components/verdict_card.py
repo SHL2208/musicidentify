@@ -154,6 +154,25 @@ def render_verdict_card(result: DetectionResult):
         work_title = "UNCERTAIN (Chưa đủ thông tin đối chứng tác phẩm)"
         work_desc = "Chưa có đủ siêu dữ liệu hoặc bản thu đối chứng để khẳng định là nguyên tác hay bản cover."
 
+    meta_badges = []
+    if getattr(result, "song_type", None):
+        meta_badges.append(
+            f'<span style="background: rgba(255,255,255,0.08); padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; color: #A7F3D0; border: 1px solid rgba(167, 243, 208, 0.2);">🏷️ Loại: <b>{result.song_type}</b></span>'
+        )
+    if getattr(result, "distributor", None):
+        meta_badges.append(
+            f'<span style="background: rgba(255,255,255,0.08); padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; color: #38BDF8; border: 1px solid rgba(56, 189, 248, 0.2);">🏢 Phân phối: <b>{result.distributor}</b></span>'
+        )
+    if getattr(result, "release_date", None):
+        meta_badges.append(
+            f'<span style="background: rgba(255,255,255,0.08); padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; color: #FBBF24; border: 1px solid rgba(251, 191, 36, 0.2);">📅 Phát hành: <b>{result.release_date}</b></span>'
+        )
+    badges_html = (
+        f'<div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">{"".join(meta_badges)}</div>'
+        if meta_badges
+        else ""
+    )
+
     st.markdown(
         f"""
         <div style="margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; background: {work_bg}; border: 1px solid {work_border};">
@@ -166,6 +185,7 @@ def render_verdict_card(result: DetectionResult):
             <div style="font-size: 0.95rem; color: #E2E8F0; margin-top: 0.4rem;">
                 {work_desc}
             </div>
+            {badges_html}
         </div>
         """,
         unsafe_allow_html=True,

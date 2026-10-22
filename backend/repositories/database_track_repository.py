@@ -1,9 +1,10 @@
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from ..core.config import (
     CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD,
@@ -59,19 +60,76 @@ class DatabaseTrackRepository(ITrackRepository):
                 )
 
                 if existing:
-                    existing.raw_query = track.raw_query
-                    existing.input_type = input_type_val
-                    existing.resolved_url = track.resolved_url
-                    existing.track_title = track.track_title
-                    existing.artist = track.artist
-                    existing.duration_sec = track.duration_sec
-                    existing.platform = track.platform
-                    existing.song_type = track.song_type
-                    existing.release_date = track.release_date
-                    existing.distributor = track.distributor
-                    existing.is_verified_match = track.is_verified_match
-                    existing.match_score = track.match_score
-                    existing.status = track.status
+                    if track.raw_query:
+                        existing.raw_query = track.raw_query
+                    if input_type_val:
+                        existing.input_type = input_type_val
+
+                    # URL: Giữ lại URL đã phân giải nếu track mới chưa có
+                    if track.resolved_url:
+                        existing.resolved_url = track.resolved_url
+                    elif existing.resolved_url:
+                        track.resolved_url = existing.resolved_url
+
+                    # Tiêu đề bài hát
+                    if track.track_title and (not existing.track_title or existing.track_title == existing.raw_query):
+                        existing.track_title = track.track_title
+                    elif existing.track_title and not track.track_title:
+                        track.track_title = existing.track_title
+
+                    # Ca sĩ / Nghệ sĩ
+                    if track.artist:
+                        existing.artist = track.artist
+                    elif existing.artist:
+                        track.artist = existing.artist
+
+                    # Thời lượng bài hát
+                    if track.duration_sec is not None and track.duration_sec > 0:
+                        existing.duration_sec = track.duration_sec
+                    elif existing.duration_sec is not None:
+                        track.duration_sec = existing.duration_sec
+
+                    # Nền tảng
+                    if track.platform:
+                        existing.platform = track.platform
+                    elif existing.platform:
+                        track.platform = existing.platform
+
+                    # Loại tác phẩm (Song Type)
+                    if track.song_type:
+                        existing.song_type = track.song_type
+                    elif existing.song_type:
+                        track.song_type = existing.song_type
+
+                    # Ngày phát hành
+                    if track.release_date:
+                        existing.release_date = track.release_date
+                    elif existing.release_date:
+                        track.release_date = existing.release_date
+
+                    # Nhà phân phối
+                    if track.distributor:
+                        existing.distributor = track.distributor
+                    elif existing.distributor:
+                        track.distributor = existing.distributor
+
+                    # Match score & verification
+                    if track.is_verified_match is not None:
+                        existing.is_verified_match = track.is_verified_match
+                    elif existing.is_verified_match is not None:
+                        track.is_verified_match = existing.is_verified_match
+
+                    if track.match_score is not None:
+                        existing.match_score = track.match_score
+                    elif existing.match_score is not None:
+                        track.match_score = existing.match_score
+
+                    # Trạng thái: Không hạ cấp từ COMPLETED về PROCESSING nếu không có lỗi
+                    if track.status:
+                        if existing.status == "COMPLETED" and track.status == "PROCESSING":
+                            pass  # Giữ nguyên COMPLETED
+                        else:
+                            existing.status = track.status
                 else:
                     new_track = TrackModel(
                         id=track.id,
@@ -138,8 +196,11 @@ class DatabaseTrackRepository(ITrackRepository):
         self._in_memory_cache_results[result.track_id] = result
         try:
             with get_db_session() as session:
-                # 1. Đảm bảo track cha tồn tại
+                # 1. Đảm bảo track cha tồn tại và đồng bộ đầy đủ siêu dữ liệu
                 track_rec = session.get(TrackModel, result.track_id)
+                dur_val = getattr(result, "duration_sec", None) or (
+                    result.acoustic_metrics.duration_sec if result.acoustic_metrics else None
+                )
                 if not track_rec:
                     inp_type_str = (
                         result.input_type.value
@@ -152,10 +213,46 @@ class DatabaseTrackRepository(ITrackRepository):
                         input_type=inp_type_str,
                         resolved_url=result.source_url,
                         track_title=result.track_title,
+                        song_type=result.song_type,
+                        distributor=result.distributor,
+                        release_date=result.release_date,
+                        duration_sec=dur_val,
                         status="COMPLETED",
                     )
                     session.add(track_rec)
                     session.flush()
+                else:
+                    if result.source_url and not track_rec.resolved_url:
+                        track_rec.resolved_url = result.source_url
+                    elif track_rec.resolved_url and not result.source_url:
+                        result.source_url = track_rec.resolved_url
+
+                    if result.track_title and (not track_rec.track_title or track_rec.track_title == track_rec.raw_query):
+                        track_rec.track_title = result.track_title
+                    elif track_rec.track_title and not result.track_title:
+                        result.track_title = track_rec.track_title
+
+                    if result.song_type and not track_rec.song_type:
+                        track_rec.song_type = result.song_type
+                    elif track_rec.song_type and not result.song_type:
+                        result.song_type = track_rec.song_type
+
+                    if result.distributor and not track_rec.distributor:
+                        track_rec.distributor = result.distributor
+                    elif track_rec.distributor and not result.distributor:
+                        result.distributor = track_rec.distributor
+
+                    if result.release_date and not track_rec.release_date:
+                        track_rec.release_date = result.release_date
+                    elif track_rec.release_date and not result.release_date:
+                        result.release_date = track_rec.release_date
+
+                    if dur_val is not None and (track_rec.duration_sec is None or track_rec.duration_sec <= 0):
+                        track_rec.duration_sec = dur_val
+                    elif track_rec.duration_sec and getattr(result, "duration_sec", None) is None:
+                        result.duration_sec = track_rec.duration_sec
+
+                    track_rec.status = "COMPLETED"
 
                 # 2. Lưu hoặc cập nhật DetectionResultModel
                 res_id = f"res_{result.track_id}"
@@ -351,14 +448,27 @@ class DatabaseTrackRepository(ITrackRepository):
         if not clean_q and not clean_u:
             return None
 
+        # Trích xuất YouTube Video ID nếu có
+        yt_id = None
+        for cand in [clean_u, clean_q]:
+            if "youtube.com" in cand or "youtu.be" in cand:
+                m = re.search(r"(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})", cand)
+                if m:
+                    yt_id = m.group(1)
+                    break
+
         # 1. Kiểm tra cache bộ nhớ phiên làm việc trước
         for track_id, track in self._in_memory_cache_tracks.items():
             t_query = (track.raw_query or "").strip().lower()
             t_url = (track.resolved_url or "").strip().lower()
+            t_title = (track.track_title or "").strip().lower()
             q_lower = clean_q.lower()
             u_lower = clean_u.lower()
-            if (u_lower and (u_lower == t_url or u_lower == t_query)) or (
-                q_lower and (q_lower == t_query or q_lower == t_url)
+            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or track_id == f"yt_{yt_id}")
+            if (
+                yt_match
+                or (u_lower and (u_lower == t_url or u_lower == t_query))
+                or (q_lower and (q_lower == t_query or q_lower == t_url or q_lower == t_title))
             ):
                 cached = self._in_memory_cache_results.get(track_id)
                 if cached:
@@ -369,11 +479,16 @@ class DatabaseTrackRepository(ITrackRepository):
         try:
             with get_db_session() as session:
                 conditions = []
+                if yt_id:
+                    conditions.append(TrackModel.id == f"yt_{yt_id}")
+                    conditions.append(TrackModel.resolved_url.ilike(f"%{yt_id}%"))
+                    conditions.append(TrackModel.raw_query.ilike(f"%{yt_id}%"))
                 if clean_u:
                     conditions.append(TrackModel.resolved_url == clean_u)
                     conditions.append(TrackModel.raw_query == clean_u)
                 if clean_q:
-                    conditions.append(TrackModel.raw_query == clean_q)
+                    conditions.append(func.lower(TrackModel.raw_query) == clean_q.lower())
+                    conditions.append(func.lower(TrackModel.track_title) == clean_q.lower())
                     conditions.append(TrackModel.resolved_url == clean_q)
                     conditions.append(TrackModel.id == clean_q)
 
@@ -385,7 +500,9 @@ class DatabaseTrackRepository(ITrackRepository):
                 )
                 tm = session.scalars(stmt).first()
                 if tm:
-                    rm = session.get(DetectionResultModel, f"res_{tm.id}")
+                    rm = getattr(tm, "detection_result", None) or session.get(
+                        DetectionResultModel, f"res_{tm.id}"
+                    )
                     if rm:
                         res = self._map_model_to_detection_result(session, rm)
                         res.is_cached = True
@@ -407,6 +524,9 @@ class DatabaseTrackRepository(ITrackRepository):
                             is_verified_match=tm.is_verified_match,
                             match_score=tm.match_score,
                             status=tm.status,
+                            song_type=tm.song_type,
+                            distributor=tm.distributor,
+                            release_date=tm.release_date,
                         )
                         self._in_memory_cache_results[tm.id] = res
                         return res
@@ -660,4 +780,8 @@ class DatabaseTrackRepository(ITrackRepository):
             ai_model_verdict=rm.ai_model_verdict,
             consensus_is_ai=rm.consensus_is_ai,
             consensus_verdict=rm.consensus_verdict,
+            song_type=tm.song_type if tm else None,
+            distributor=tm.distributor if tm else None,
+            release_date=tm.release_date if tm else None,
+            duration_sec=tm.duration_sec if (tm and tm.duration_sec is not None) else (metrics_obj.duration_sec if metrics_obj else None),
         )

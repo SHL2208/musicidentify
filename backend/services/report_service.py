@@ -126,11 +126,28 @@ class ReportService(IReportService):
 
             cons_verdict = getattr(r, "consensus_verdict", None) or r.verdict_label
 
+            dur_val = getattr(r, "duration_sec", None) or (
+                r.acoustic_metrics.duration_sec if r.acoustic_metrics else None
+            )
+            dur_display = (
+                f"{int(dur_val // 60)}m {int(dur_val % 60)}s"
+                if (dur_val and dur_val > 0)
+                else "N/A"
+            )
+
+            song_type_display = r.song_type or getattr(r, "work_label", None) or "N/A"
+            if song_type_display in ("None", ""):
+                song_type_display = "N/A"
+
             if r.verdict_type == VerdictType.ERROR:
                 records.append(
                     {
                         "STT": idx + 1,
                         "Tên bài hát": display_title,
+                        "Thời lượng": dur_display,
+                        "Loại tác phẩm (Song Type)": song_type_display if song_type_display != "N/A" else "ERROR",
+                        "Nhà phân phối": r.distributor or "N/A",
+                        "Ngày phát hành": r.release_date or "N/A",
                         "Đánh giá Model AI": ai_eval,
                         "Kết luận Tổng hợp": cons_verdict,
                         "Kết luận thẩm định": r.verdict_label,
@@ -172,6 +189,10 @@ class ReportService(IReportService):
                     {
                         "STT": idx + 1,
                         "Tên bài hát": display_title,
+                        "Thời lượng": dur_display,
+                        "Loại tác phẩm (Song Type)": song_type_display,
+                        "Nhà phân phối": r.distributor or "N/A",
+                        "Ngày phát hành": r.release_date or "N/A",
                         "Đánh giá Model AI": ai_eval,
                         "Kết luận Tổng hợp": cons_verdict,
                         "Kết luận thẩm định": r.verdict_label,

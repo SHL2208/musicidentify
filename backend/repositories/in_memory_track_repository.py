@@ -10,6 +10,24 @@ class InMemoryTrackRepository(ITrackRepository):
         self._results: dict[str, DetectionResult] = {}
 
     def save_track(self, track: TrackItem) -> TrackItem:
+        existing = self._tracks.get(track.id)
+        if existing:
+            if not track.resolved_url and existing.resolved_url:
+                track.resolved_url = existing.resolved_url
+            if not track.duration_sec and existing.duration_sec:
+                track.duration_sec = existing.duration_sec
+            if not track.song_type and existing.song_type:
+                track.song_type = existing.song_type
+            if not track.distributor and existing.distributor:
+                track.distributor = existing.distributor
+            if not track.release_date and existing.release_date:
+                track.release_date = existing.release_date
+            if not track.artist and existing.artist:
+                track.artist = existing.artist
+            if (not track.track_title or track.track_title == track.raw_query) and existing.track_title:
+                track.track_title = existing.track_title
+            if existing.status == "COMPLETED" and track.status == "PROCESSING":
+                track.status = "COMPLETED"
         self._tracks[track.id] = track
         return track
 
@@ -18,6 +36,21 @@ class InMemoryTrackRepository(ITrackRepository):
 
     def save_result(self, result: DetectionResult) -> DetectionResult:
         self._results[result.track_id] = result
+        track = self._tracks.get(result.track_id)
+        if track:
+            if result.source_url and not track.resolved_url:
+                track.resolved_url = result.source_url
+            if result.song_type and not track.song_type:
+                track.song_type = result.song_type
+            if result.distributor and not track.distributor:
+                track.distributor = result.distributor
+            if result.release_date and not track.release_date:
+                track.release_date = result.release_date
+            dur_val = getattr(result, "duration_sec", None) or (
+                result.acoustic_metrics.duration_sec if result.acoustic_metrics else None
+            )
+            if dur_val is not None and not track.duration_sec:
+                track.duration_sec = dur_val
         return result
 
     def get_result(self, track_id: str) -> DetectionResult | None:
@@ -29,13 +62,26 @@ class InMemoryTrackRepository(ITrackRepository):
     def find_result_by_query_or_url(
         self, query: str, resolved_url: str | None = None
     ) -> DetectionResult | None:
+        import re
         clean_q = (query or "").strip().lower()
         clean_u = (resolved_url or "").strip().lower()
+        yt_id = None
+        for cand in [clean_u, clean_q]:
+            if "youtube.com" in cand or "youtu.be" in cand:
+                m = re.search(r"(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})", cand)
+                if m:
+                    yt_id = m.group(1).lower()
+                    break
+
         for track_id, track in self._tracks.items():
             t_query = (track.raw_query or "").strip().lower()
             t_url = (track.resolved_url or "").strip().lower()
-            if (clean_u and (clean_u == t_url or clean_u == t_query)) or (
-                clean_q and (clean_q == t_query or clean_q == t_url)
+            t_title = (track.track_title or "").strip().lower()
+            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or track_id.lower() == f"yt_{yt_id}")
+            if (
+                yt_match
+                or (clean_u and (clean_u == t_url or clean_u == t_query))
+                or (clean_q and (clean_q == t_query or clean_q == t_url or clean_q == t_title))
             ):
                 res = self._results.get(track_id)
                 if res:

@@ -101,6 +101,72 @@ class DetectionService(IDetectionService):
                         self.track_repo.save_result(existing_result)
                     except Exception:  # noqa: BLE001, S110
                         pass
+                # Đồng bộ 2 chiều các trường metadata giữa track và existing_result:
+                # 1. URL
+                if track.resolved_url and not getattr(existing_result, "source_url", None):
+                    existing_result.source_url = track.resolved_url
+                elif getattr(existing_result, "source_url", None) and not track.resolved_url:
+                    track.resolved_url = existing_result.source_url
+
+                # Nếu cả 2 đều chưa có resolved_url, tiến hành phân giải ngay để không bị miss link
+                if not track.resolved_url and not getattr(existing_result, "source_url", None) and track.input_type not in (InputType.LOCAL_FILE,):
+                    try:
+                        resolved_cand = self.resolver.resolve_track(track.raw_query, artist=track.artist or "")
+                        if resolved_cand and resolved_cand.resolved_url:
+                            track.resolved_url = resolved_cand.resolved_url
+                            existing_result.source_url = resolved_cand.resolved_url
+                            if resolved_cand.duration_sec and not track.duration_sec:
+                                track.duration_sec = resolved_cand.duration_sec
+                    except Exception:
+                        pass
+
+                # 2. Tiêu đề & Ca sĩ
+                if track.track_title and (not existing_result.track_title or existing_result.track_title == "N/A" or existing_result.track_title == existing_result.raw_query):
+                    existing_result.track_title = track.track_title
+                elif getattr(existing_result, "track_title", None) and existing_result.track_title != "N/A" and not track.track_title:
+                    track.track_title = existing_result.track_title
+
+                if getattr(existing_result, "cover_performer", None) and not track.artist:
+                    track.artist = existing_result.cover_performer
+
+                # 3. Thời lượng
+                if track.duration_sec is not None and getattr(existing_result, "duration_sec", None) is None:
+                    existing_result.duration_sec = track.duration_sec
+                elif getattr(existing_result, "duration_sec", None) is not None and track.duration_sec is None:
+                    track.duration_sec = existing_result.duration_sec
+                elif existing_result.acoustic_metrics and existing_result.acoustic_metrics.duration_sec and track.duration_sec is None:
+                    track.duration_sec = existing_result.acoustic_metrics.duration_sec
+                    existing_result.duration_sec = existing_result.acoustic_metrics.duration_sec
+
+                # 4. Loại tác phẩm (Song Type)
+                if track.song_type and not getattr(existing_result, "song_type", None):
+                    existing_result.song_type = track.song_type
+                elif getattr(existing_result, "song_type", None) and not track.song_type:
+                    track.song_type = existing_result.song_type
+                elif not getattr(existing_result, "song_type", None) and getattr(existing_result, "work_label", None):
+                    existing_result.song_type = existing_result.work_label
+                    track.song_type = existing_result.work_label
+
+                # 5. Nhà phân phối
+                if track.distributor and not getattr(existing_result, "distributor", None):
+                    existing_result.distributor = track.distributor
+                elif getattr(existing_result, "distributor", None) and not track.distributor:
+                    track.distributor = existing_result.distributor
+
+                # 6. Ngày phát hành
+                if track.release_date and not getattr(existing_result, "release_date", None):
+                    existing_result.release_date = track.release_date
+                elif getattr(existing_result, "release_date", None) and not track.release_date:
+                    track.release_date = existing_result.release_date
+
+                # Lưu cập nhật đồng bộ lại vào CSDL
+                track.status = "COMPLETED"
+                try:
+                    self.track_repo.save_result(existing_result)
+                    self.track_repo.save_track(track)
+                except Exception:
+                    pass
+
                 logger.info(
                     "⚡ [CACHE HIT] Đã tìm thấy kết quả phân tích cũ cho '%s' (ID: %s)",
                     track.track_title or track.raw_query,
@@ -215,6 +281,50 @@ class DetectionService(IDetectionService):
                                     self.track_repo.save_result(existing_after_resolve)
                                 except Exception:  # noqa: BLE001, S110
                                     pass
+                            # Đồng bộ 2 chiều các trường metadata giữa track và existing_after_resolve:
+                            if track.resolved_url and not getattr(existing_after_resolve, "source_url", None):
+                                existing_after_resolve.source_url = track.resolved_url
+                            elif getattr(existing_after_resolve, "source_url", None) and not track.resolved_url:
+                                track.resolved_url = existing_after_resolve.source_url
+
+                            if track.track_title and (not existing_after_resolve.track_title or existing_after_resolve.track_title == "N/A" or existing_after_resolve.track_title == existing_after_resolve.raw_query):
+                                existing_after_resolve.track_title = track.track_title
+                            elif getattr(existing_after_resolve, "track_title", None) and existing_after_resolve.track_title != "N/A" and not track.track_title:
+                                track.track_title = existing_after_resolve.track_title
+
+                            if track.duration_sec is not None and getattr(existing_after_resolve, "duration_sec", None) is None:
+                                existing_after_resolve.duration_sec = track.duration_sec
+                            elif getattr(existing_after_resolve, "duration_sec", None) is not None and track.duration_sec is None:
+                                track.duration_sec = existing_after_resolve.duration_sec
+                            elif existing_after_resolve.acoustic_metrics and existing_after_resolve.acoustic_metrics.duration_sec and track.duration_sec is None:
+                                track.duration_sec = existing_after_resolve.acoustic_metrics.duration_sec
+                                existing_after_resolve.duration_sec = existing_after_resolve.acoustic_metrics.duration_sec
+
+                            if track.song_type and not getattr(existing_after_resolve, "song_type", None):
+                                existing_after_resolve.song_type = track.song_type
+                            elif getattr(existing_after_resolve, "song_type", None) and not track.song_type:
+                                track.song_type = existing_after_resolve.song_type
+                            elif not getattr(existing_after_resolve, "song_type", None) and getattr(existing_after_resolve, "work_label", None):
+                                existing_after_resolve.song_type = existing_after_resolve.work_label
+                                track.song_type = existing_after_resolve.work_label
+
+                            if track.distributor and not getattr(existing_after_resolve, "distributor", None):
+                                existing_after_resolve.distributor = track.distributor
+                            elif getattr(existing_after_resolve, "distributor", None) and not track.distributor:
+                                track.distributor = existing_after_resolve.distributor
+
+                            if track.release_date and not getattr(existing_after_resolve, "release_date", None):
+                                existing_after_resolve.release_date = track.release_date
+                            elif getattr(existing_after_resolve, "release_date", None) and not track.release_date:
+                                track.release_date = existing_after_resolve.release_date
+
+                            track.status = "COMPLETED"
+                            try:
+                                self.track_repo.save_result(existing_after_resolve)
+                                self.track_repo.save_track(track)
+                            except Exception:
+                                pass
+
                             logger.info(
                                 "⚡ [CACHE HIT] Đã tìm thấy kết quả phân tích cũ sau khi phân giải URL cho '%s'",
                                 track.resolved_url,
@@ -282,6 +392,43 @@ class DetectionService(IDetectionService):
             elif not track.resolved_url and track.input_type == InputType.LOCAL_FILE:
                 track.resolved_url = track.raw_query
 
+            # Auto-enrich distributor nếu chưa có từ file đầu vào
+            if not getattr(track, "distributor", None):
+                cand_dist = (
+                    metadata.get("content_id_licensed_by")
+                    or metadata.get("distributor")
+                    or metadata.get("channel")
+                    or metadata.get("uploader")
+                )
+                if cand_dist:
+                    cand_dist_str = str(cand_dist).strip()
+                    if cand_dist_str and cand_dist_str.lower() not in ("none", "nan", "null"):
+                        track.distributor = cand_dist_str
+
+            # Auto-enrich release_date nếu chưa có từ file đầu vào
+            if not getattr(track, "release_date", None):
+                cand_date = metadata.get("release_date") or metadata.get("upload_date")
+                if cand_date:
+                    from .resolver_service import _normalize_date_str
+
+                    norm_date = _normalize_date_str(cand_date)
+                    if norm_date:
+                        track.release_date = norm_date
+
+            # Auto-enrich song_type nếu chưa có từ file đầu vào
+            if not getattr(track, "song_type", None):
+                cand_st = metadata.get("song_type") or metadata.get("work_type")
+                if cand_st:
+                    cand_st_str = str(cand_st).strip()
+                    if cand_st_str and cand_st_str.lower() not in ("none", "nan", "null"):
+                        track.song_type = cand_st_str
+
+            # Auto-enrich duration_sec nếu chưa có
+            if getattr(track, "duration_sec", None) is None:
+                cand_dur = metadata.get("duration")
+                if cand_dur and isinstance(cand_dur, (int, float)) and cand_dur > 0:
+                    track.duration_sec = float(cand_dur)
+
             self.track_repo.save_track(track)
         else:
             resolved_web_url = ""
@@ -344,6 +491,10 @@ class DetectionService(IDetectionService):
                 artist=track.artist or "",
                 metadata=metadata,
             )
+            if not getattr(track, "song_type", None) and w_type != WorkType.UNCERTAIN:
+                track.song_type = w_type.value
+                self.track_repo.save_track(track)
+
             result = DetectionResult(
                 track_id=track.id,
                 track_title=track.track_title or track.raw_query,
@@ -368,6 +519,9 @@ class DetectionService(IDetectionService):
                 is_cover=is_cov,
                 original_artist=orig_a,
                 original_song_title=orig_t,
+                song_type=track.song_type or (w_type.value if w_type != WorkType.UNCERTAIN else None),
+                distributor=track.distributor,
+                release_date=track.release_date,
             )
             self.track_repo.save_result(result)
             return result
@@ -426,6 +580,22 @@ class DetectionService(IDetectionService):
                 result.original_song_title = orig_t
 
         # Đồng bộ kết luận tổng hợp cuối cùng
+        if not getattr(track, "song_type", None) and result.work_type != WorkType.UNCERTAIN:
+            track.song_type = result.work_type.value
+
+        result.song_type = track.song_type or (
+            result.work_type.value if result.work_type != WorkType.UNCERTAIN else None
+        )
+        result.distributor = track.distributor
+        result.release_date = track.release_date
+
+        dur_val = getattr(track, "duration_sec", None) or (
+            result.acoustic_metrics.duration_sec if result.acoustic_metrics else None
+        )
+        if dur_val is not None:
+            result.duration_sec = dur_val
+            track.duration_sec = dur_val
+
         result.consensus_is_ai = result.is_ai
         result.consensus_verdict = (
             result.verdict_type.value
@@ -433,6 +603,11 @@ class DetectionService(IDetectionService):
             else str(result.verdict_type)
         )
 
+        track.status = "COMPLETED"
+        try:
+            self.track_repo.save_track(track)
+        except Exception:
+            pass
         self.track_repo.save_result(result)
         return result
 

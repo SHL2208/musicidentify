@@ -32,9 +32,6 @@ ENV/
 # Data folder
 data/
 
-# Tests folder
-tests/
-
 #document folder
 document/
 
@@ -45,7 +42,8 @@ scratch/
 sample_songs.*
 sample_songs.txt
 sample_songs.xlsx
-testcase.xlsx
+testcase*.xlsx
+edge_temp/
 
 # IDEs
 .agents/

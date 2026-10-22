@@ -52,21 +52,10 @@ from backend.core.models.entities import (
     DetectionResult,
     TrackItem,
 )
-from backend.services.work_type_resolver import resolve_work_type_from_metadata
-
-
-def map_song_type_to_work_type(song_type_val: str | None) -> str:
-    """Ánh xạ nhãn 'Song Type' từ testcase sang chuẩn WorkType enum value."""
-    st_clean = (str(song_type_val) if song_type_val is not None else "").strip().lower()
-    if not st_clean or st_clean in ("none", "nan", "null"):
-        return "UNCERTAIN"
-    if "cover" in st_clean:
-        return "COVER"
-    if any(k in st_clean for k in ["remix", "remake"]):
-        return "REMIX"
-    if any(k in st_clean for k in ["original", "live"]):
-        return "ORIGINAL"
-    return "UNCERTAIN"
+from backend.services.work_type_resolver import (
+    map_song_type_to_work_type,
+    resolve_work_type_from_metadata,
+)
 
 
 def calculate_work_type_confusion_matrix(

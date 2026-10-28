@@ -12,6 +12,8 @@ import yt_dlp
 from ..core.config import (
     AUDIO_SAMPLE_DURATION,
     AUDIO_SAMPLE_OFFSET,
+    ENABLE_RANGE_STREAM_DOWNLOAD,
+    PIPED_TIMEOUT_SECONDS,
     get_all_cookie_file_paths,
     get_cookie_file_path,
     get_ffmpeg_binary,
@@ -21,6 +23,7 @@ from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
 from ..core.interfaces.services.audio_engine_interface import IAudioEngine
 from ..core.models.entities import InputType, TrackItem
+from ..core.utils import extract_first_entry as _extract_first_entry
 
 
 def _safe_log(msg: str) -> None:
@@ -32,8 +35,6 @@ def _safe_log(msg: str) -> None:
             print(msg.encode("ascii", errors="replace").decode("ascii"))
         except Exception:
             pass
-
-from ..core.utils import extract_first_entry as _extract_first_entry
 
 
 def clean_music_search_queries(title: str, artist: str = "") -> list[str]:
@@ -376,8 +377,172 @@ class AudioEngineService(IAudioEngine):
                 f"Lỗi khi xử lý âm thanh bài '{track.track_title or track.raw_query}': {e}"
             ) from e
 
+    def _try_stream_slice_download(self, url: str, track_id: str) -> tuple[Path, dict] | None:
+        """
+        Tối ưu siêu tốc (HTTP Range Request):
+        Trích xuất direct stream URL từ yt-dlp mà không tải toàn bộ file video (download=False),
+        sau đó dùng FFmpeg stream slice trực tiếp 45 giây. Giảm tải dữ liệu từ ~10MB xuống ~800KB.
+        Nếu gặp bất kỳ sự cố nào (403, cipher, timeout), tự động trả về None để fallback sang tải thông thường.
+        """
+        if not ENABLE_RANGE_STREAM_DOWNLOAD:
+            return None
+
+        if not (isinstance(url, str) and url.startswith("http") and ("youtube.com" in url or "youtu.be" in url)):
+            return None
+
+        out_path = self.temp_dir / f"{track_id}_raw.mp3"
+        js_runtimes_cfg = get_js_runtimes_config()
+        full_cookie_paths = get_all_cookie_file_paths(mode="full")
+        cookie_file = str(full_cookie_paths[0]) if full_cookie_paths else None
+
+        ydl_opts: dict[str, Any] = {
+            "format": "bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 8,
+            "nocheckcertificate": True,
+        }
+        if cookie_file and Path(cookie_file).exists():
+            ydl_opts["cookiefile"] = cookie_file
+        if js_runtimes_cfg:
+            ydl_opts["js_runtimes"] = js_runtimes_cfg
+
+        try:
+            with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not isinstance(info, dict):
+                    return None
+                if "entries" in info:
+                    entries = list(info.get("entries") or [])
+                    if entries:
+                        info = entries[0]
+                info_dict = dict(info) if isinstance(info, dict) else {}
+                stream_url = info_dict.get("url")
+                if not stream_url and "formats" in info_dict:
+                    audio_fmts = [
+                        f
+                        for f in info_dict["formats"]
+                        if f.get("url") and f.get("acodec") != "none"
+                    ]
+                    if audio_fmts:
+                        audio_fmts.sort(
+                            key=lambda x: x.get("abr") or x.get("tbr") or 0, reverse=True
+                        )
+                        stream_url = audio_fmts[0]["url"]
+
+                if not stream_url or not str(stream_url).startswith("http"):
+                    return None
+
+                dur = float(info_dict.get("duration") or 0.0)
+                if dur <= 0.0:
+                    return None
+
+                http_headers = info_dict.get("http_headers") or {}
+                ua = http_headers.get("User-Agent")
+
+                if dur <= 45.0:
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                    ]
+                    if ua:
+                        cmd.extend(["-user_agent", ua])
+                    cmd.extend([
+                        "-i",
+                        str(stream_url),
+                        "-t",
+                        f"{dur:.2f}",
+                        "-vn",
+                        "-acodec",
+                        "libmp3lame",
+                        "-ab",
+                        "192k",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(out_path),
+                    ])
+                else:
+                    slice_dur = 15.0
+                    start_1 = max(0.0, min(dur * 0.20 - slice_dur / 2, dur - slice_dur))
+                    start_2 = max(0.0, min(dur * 0.50 - slice_dur / 2, dur - slice_dur))
+                    start_3 = max(0.0, min(dur * 0.75 - slice_dur / 2, dur - slice_dur))
+
+                    filter_complex = (
+                        f"[0:a]atrim=start={start_1:.2f}:end={start_1 + slice_dur:.2f},asetpts=PTS-STARTPTS[a1];"
+                        f"[0:a]atrim=start={start_2:.2f}:end={start_2 + slice_dur:.2f},asetpts=PTS-STARTPTS[a2];"
+                        f"[0:a]atrim=start={start_3:.2f}:end={start_3 + slice_dur:.2f},asetpts=PTS-STARTPTS[a3];"
+                        "[a1][a2][a3]concat=n=3:v=0:a=1[out]"
+                    )
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                    ]
+                    if ua:
+                        cmd.extend(["-user_agent", ua])
+                    cmd.extend([
+                        "-i",
+                        str(stream_url),
+                        "-filter_complex",
+                        filter_complex,
+                        "-map",
+                        "[out]",
+                        "-vn",
+                        "-acodec",
+                        "libmp3lame",
+                        "-ab",
+                        "192k",
+                        "-ar",
+                        "44100",
+                        "-ac",
+                        "2",
+                        str(out_path),
+                    ])
+
+                _safe_log(
+                    f"[AudioEngineService] [STREAM_SLICE] Thử stream slice trực tiếp 45s từ CDN ({url})..."
+                )
+                res = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=25,
+                )
+                if res.returncode == 0 and out_path.exists() and out_path.stat().st_size >= 10240:
+                    _safe_log(
+                        f"[AudioEngineService] [STREAM_SLICE] ✓ Hoàn thành stream slice siêu tốc ({out_path.stat().st_size // 1024} KB)"
+                    )
+                    if not info_dict.get("webpage_url"):
+                        info_dict["webpage_url"] = url
+                    return out_path, info_dict
+                else:
+                    _safe_log(
+                        f"[AudioEngineService] [STREAM_SLICE] FFmpeg stream slice không thành công (code {res.returncode}), fallback..."
+                    )
+                    if out_path.exists():
+                        out_path.unlink()
+                    return None
+        except Exception as slice_err:
+            _safe_log(
+                f"[AudioEngineService] [STREAM_SLICE] Stream slice thất bại: {slice_err}. Tự động fallback tải toàn bộ."
+            )
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                except Exception:
+                    pass
+            return None
+
     def _download_audio(self, url: str, track_id: str) -> tuple[Path, dict]:
         """Tải luồng âm thanh tốt nhất bằng yt-dlp với cơ chế phòng thủ lỗi đa tầng và chống bot/format/cookie mismatch."""
+        # 0. Thử nghiệm tối ưu tải trực tiếp bằng Stream Range Slicing
+        stream_slice_result = self._try_stream_slice_download(url, track_id)
+        if stream_slice_result:
+            return stream_slice_result
+
         out_template = str(self.temp_dir / f"{track_id}_raw.%(ext)s")
 
         # Nạp cookies từ cấu hình: tìm tất cả các file cookie khả dụng (cookies.txt, cookies_master.txt)
@@ -623,7 +788,7 @@ class AudioEngineService(IAudioEngine):
 
                 resp = req_lib.get(
                     api_endpoint,
-                    timeout=15,
+                    timeout=PIPED_TIMEOUT_SECONDS,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                     },
@@ -665,7 +830,7 @@ class AudioEngineService(IAudioEngine):
                 raw_tmp_path = self.temp_dir / f"{track_id}_piped_raw.tmp"
                 audio_resp = req_lib.get(
                     stream_url,
-                    timeout=90,
+                    timeout=min(20.0, PIPED_TIMEOUT_SECONDS * 5),
                     stream=True,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

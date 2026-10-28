@@ -125,7 +125,13 @@ AVAILABLE_MODELS = list(
 # Audio Processing Configuration
 AUDIO_SAMPLE_DURATION = int(os.getenv("AUDIO_SAMPLE_DURATION", "30"))
 AUDIO_SAMPLE_OFFSET = int(os.getenv("AUDIO_SAMPLE_OFFSET", "45"))
-BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "3.0"))
+BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "1.0"))
+
+# Performance Optimization Configuration
+PIPED_TIMEOUT_SECONDS = float(os.getenv("PIPED_TIMEOUT_SECONDS", "4.0"))
+SPECTROGRAM_DPI = int(os.getenv("SPECTROGRAM_DPI", "80"))
+ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").strip().lower() in ("true", "1", "yes")
+ENABLE_RANGE_STREAM_DOWNLOAD = os.getenv("ENABLE_RANGE_STREAM_DOWNLOAD", "false").strip().lower() in ("true", "1", "yes")
 
 # Media Cloud Storage Configuration
 CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = os.getenv(

@@ -11,6 +11,7 @@ import soundfile as sf
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from ..core.config import SPECTROGRAM_DPI
 from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.storage_repository_interface import (
     IStorageRepository,
@@ -483,7 +484,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         Phát hiện dấu hiệu giọng hát sinh bởi AI (Suno/Udio) do thiếu micro-tremors cơ học của dây thanh đới.
         """
         try:
-            target_sr = 16000
+            target_sr = 8000
             # Chọn phân đoạn 15-20s tiêu biểu ở giữa để tối ưu tốc độ CPU trước khi resample
             total_len = len(mono_harm)
             if total_len > sr * 20:
@@ -497,8 +498,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
             else:
                 y_vocal = raw_seg
 
+            # Ở 8kHz (Nyquist = 4000Hz, thừa chuẩn bắt dải giọng hát 80-500Hz),
+            # frame 512 = 64ms, hop 128 = 16ms (tương đương 1024/256 ở 16kHz)
             f0 = librosa.yin(
-                y_vocal, fmin=80, fmax=550, sr=target_sr, frame_length=1024, hop_length=256
+                y_vocal, fmin=80, fmax=550, sr=target_sr, frame_length=512, hop_length=128
             )
             voiced_mask = (f0 >= 85) & (f0 <= 500)
             voiced_f0 = f0[voiced_mask]
@@ -516,7 +519,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             # Phân tích biến thiên Formant trong dải thanh âm (1000 - 4000 Hz)
             # nhằm bóc tách Auto-Tune người thật với Lưới Latent nhân tạo của AI
             centroids = librosa.feature.spectral_centroid(
-                y=y_vocal, sr=target_sr, n_fft=1024, hop_length=256
+                y=y_vocal, sr=target_sr, n_fft=512, hop_length=128
             )
             formant_var = float(np.var(centroids)) if centroids.shape[1] > 1 else 0.0
 
@@ -791,6 +794,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         """Tạo biểu đồ phổ hình 3 tầng chuyên nghiệp chống hiện tượng che mờ âm học (Acoustic Masking)."""
         out_image_path = self.temp_dir / f"{audio_stem}_forensic.png"
         try:
+            out_image_path.parent.mkdir(parents=True, exist_ok=True)
             fig, (ax1, ax2, ax3) = plt.subplots(
                 3, 1, figsize=(11, 9.8), gridspec_kw={"height_ratios": [1.5, 1.5, 1.1]}
             )
@@ -886,7 +890,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
             plt.tight_layout()
             plt.savefig(
-                str(out_image_path), dpi=100, facecolor=fig.get_facecolor(), edgecolor="none"
+                str(out_image_path), dpi=SPECTROGRAM_DPI, facecolor=fig.get_facecolor(), edgecolor="none"
             )
             plt.close(fig)
             return out_image_path

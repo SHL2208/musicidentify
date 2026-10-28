@@ -1,14 +1,22 @@
 import json
+import logging
 import re
 import subprocess
+import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+warnings.filterwarnings("ignore", message=".*automatic function calling.*")
 
 from pydantic import BaseModel, Field
 
 from ..core.config import (
     DEFAULT_GEMINI_MODEL,
+    ENABLE_CASCADED_EVALUATION,
     GEMINI_API_KEYS,
     GEMINI_FALLBACK_MODELS,
     get_ffmpeg_binary,
@@ -60,7 +68,66 @@ def is_derivative_or_remix_context(metadata: dict[str, Any] | None) -> bool:
     return any(t in genre_tags for t in tags)
 
 
-class GeminiResponseSchema(BaseModel):
+def should_require_deep_audio_inspection(
+    metrics: AcousticMetrics | None, metadata: dict[str, Any] | None
+) -> bool:
+    """
+    Xác định xem bài hát có cần thẩm âm chuyên sâu bằng Audio sample 45s và Ảnh phổ hay không.
+    BẢO VỆ TUYỆT ĐỐI KHÔNG BỎ SÓT AI THẾ HỆ MỚI (Suno v3.5/v4, Udio, AI Ballad/Bolero):
+    Bất kỳ bài nào rơi vào một trong các điều kiện nghi vấn sẽ BẮT BUỘC gửi Audio và Ảnh phổ lên Gemini.
+    """
+    if not metrics:
+        return True
+
+    # 1. Cờ nghi vấn giọng hát AI thế hệ mới (Modern AI Vocal Suspect)
+    if getattr(metrics, "modern_ai_vocal_suspect", False):
+        return True
+
+    # 2. Ngữ cảnh phái sinh (Remix, Cover, Remake, Lo-Fi, Slowed) hoặc từ khóa AI / Voice Clone
+    if is_derivative_or_remix_context(metadata):
+        return True
+    if metadata:
+        title_context = f"{metadata.get('title', '')} {metadata.get('target_title', '')} {metadata.get('raw_query', '')}".lower()
+        if re.search(r"\b(cover|ai|voice\s*clone|suno|udio|deepfake)\b", title_context, re.IGNORECASE):
+            return True
+
+    # 3. Chỉ số cao độ nằm trong dải chuyển tiếp / nghi vấn phẳng (Latent Rigidity)
+    rigidity = float(getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0)
+    jitter = float(getattr(metrics, "pitch_jitter", 0.0) or 0.0)
+    if 0.28 <= rigidity <= 0.55 or (0.0 < jitter < 0.022):
+        return True
+
+    # 4. Chỉ số rò rỉ âm học (Stem Bleed) trên ngưỡng nghi vấn
+    stem_bleed = float(getattr(metrics, "stem_bleed_score", 0.0) or 0.0)
+    if stem_bleed >= 0.28:
+        return True
+
+    # 5. Dải suy giảm tần số cao nằm ở vùng xám (11.5kHz - 17.5kHz)
+    rolloff_95 = float(getattr(metrics, "spectral_rolloff_95_hz", 20000.0) or 20000.0)
+    if 11500.0 <= rolloff_95 <= 17500.0:
+        return True
+
+    # 6. Dấu vân Fakeprint nằm ở vùng ranh giới
+    fakeprint = float(getattr(metrics, "fakeprint_score", 0.0) or 0.0)
+    if 0.32 <= fakeprint <= 0.65:
+        return True
+
+    # 7. Nhạc ra mắt gần đây (>= 2023) có chỉ số mấp mé ranh giới
+    if metadata:
+        target_date = str(metadata.get("target_release_date") or metadata.get("release_date") or "")
+        if target_date and len(target_date) >= 4:
+            try:
+                if int(target_date[:4]) >= 2023:
+                    if rigidity > 0.24 or stem_bleed > 0.22 or rolloff_95 < 18500.0:
+                        return True
+            except ValueError:
+                pass
+
+    # Nếu vượt qua tất cả các bộ lọc nghi vấn trên: Bài hát có số liệu vật lý cực kỳ rõ ràng
+    return False
+
+
+class GeminiResponseSchemaVi(BaseModel):
     verdict_type: str = Field(
         description="One of 5 labels: 'CONFIRMED_HUMAN' (100% human organic acoustic), 'PROCESSED_HUMAN' (100% human artist & 100% human beat with modern studio production/Auto-tune), 'HYBRID_AI' (ANY AI participation: AI beat + human voice, or AI voice + human beat, or AI remix), 'AI_GENERATED' (fully AI generated via Suno/Udio), 'UNCERTAIN' (inconclusive evidence, severe noise/distortion, or conflicting indicators)"
     )
@@ -72,10 +139,10 @@ class GeminiResponseSchema(BaseModel):
         description="Suspected platform/model: 'Suno', 'Udio', 'Stable Audio', or 'None'"
     )
     reasons: list[str] = Field(
-        description="2-4 sharp, objective bullet points justifying the verdict. MANDATORY FOR HYBRID_AI: The FIRST reason MUST strictly begin with: '[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]'"
+        description="2-4 sharp, objective bullet points justifying the verdict written strictly in VIETNAMESE (Tiếng Việt). MANDATORY FOR HYBRID_AI: The FIRST reason MUST strictly begin with: '[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]'"
     )
     detailed_explanation: str = Field(
-        description="In-depth technical forensic analysis covering vocal timbre, frequency spectrum, and studio effects vs AI artifacts"
+        description="In-depth technical forensic analysis covering vocal timbre, frequency spectrum, and studio effects vs AI artifacts, written strictly in VIETNAMESE (Tiếng Việt)"
     )
     work_type: str = Field(
         default="UNCERTAIN",
@@ -97,6 +164,49 @@ class GeminiResponseSchema(BaseModel):
         default="",
         description="The actual performer singing in this recording",
     )
+
+
+class GeminiResponseSchemaEn(BaseModel):
+    verdict_type: str = Field(
+        description="One of 5 labels: 'CONFIRMED_HUMAN' (100% human organic acoustic), 'PROCESSED_HUMAN' (100% human artist & 100% human beat with modern studio production/Auto-tune), 'HYBRID_AI' (ANY AI participation: AI beat + human voice, or AI voice + human beat, or AI remix), 'AI_GENERATED' (fully AI generated via Suno/Udio), 'UNCERTAIN' (inconclusive evidence, severe noise/distortion, or conflicting indicators)"
+    )
+    is_ai: bool = Field(
+        description="MANDATORY: True if 'AI_GENERATED' or 'HYBRID_AI' (ANY AI involvement in beat, vocal, or composition). False ONLY if 100% human-created ('CONFIRMED_HUMAN', 'PROCESSED_HUMAN'), or 'UNCERTAIN'."
+    )
+    confidence_score: float = Field(description="Confidence score ranging from 0.0 to 1.0")
+    suspected_engine: str = Field(
+        description="Suspected platform/model: 'Suno', 'Udio', 'Stable Audio', or 'None'"
+    )
+    reasons: list[str] = Field(
+        description="2-4 sharp, objective bullet points justifying the verdict written strictly in ENGLISH. MANDATORY FOR HYBRID_AI: The FIRST reason MUST strictly begin with: '[HYBRID AI]: Vocal component is [Human/AI] | Beat/Arrangement component is [AI-generated/Human-made] - [Detailed technical forensic evidence]'"
+    )
+    detailed_explanation: str = Field(
+        description="In-depth technical forensic analysis covering vocal timbre, frequency spectrum, and studio effects vs AI artifacts, written strictly in ENGLISH"
+    )
+    work_type: str = Field(
+        default="UNCERTAIN",
+        description="Work classification: 'ORIGINAL' (official original release), 'COVER' (performed by someone else or an AI voice clone), 'REMIX' (remixed/re-arranged preserving original vocal stem), or 'UNCERTAIN' (inconclusive)",
+    )
+    is_cover: bool = Field(
+        default=False,
+        description="True if this is a cover version performed by another singer or an AI voice clone",
+    )
+    original_artist: str = Field(
+        default="",
+        description="Original artist/creator of the song if known, or empty",
+    )
+    original_song_title: str = Field(
+        default="",
+        description="Original title of the song if this is a cover/remix, or empty",
+    )
+    cover_performer: str = Field(
+        default="",
+        description="The actual performer singing in this recording",
+    )
+
+
+# Backward-compatible alias
+GeminiResponseSchema = GeminiResponseSchemaVi
 
 
 SYSTEM_INSTRUCTION = """
@@ -193,8 +303,12 @@ Always return JSON strictly adhering to the specified schema.
 class GeminiClassifierService(IAIClassifier):
     """
     Hiện thực phân loại giám định âm nhạc AI bằng Gemini API.
-    Hỗ trợ luân chuyển đa chìa khóa (Failover 1 > 2 > 3) và tuân thủ IAIClassifier.
+    Hỗ trợ luân chuyển đa chìa khóa (Failover 1 > 2 > 3), Sticky Key và tuân thủ IAIClassifier.
     """
+
+    _active_key_index: int = 0
+    _key_cooldowns: dict[int, float] = {}
+    _key_lock = threading.Lock()
 
     def __init__(
         self,
@@ -269,6 +383,7 @@ class GeminiClassifierService(IAIClassifier):
         track_id: str,
         metrics: AcousticMetrics | None,
         metadata: dict[str, Any] | None = None,
+        language: str = "vi",
     ) -> str:
         metrics_text = "No acoustic metrics available."
         if metrics:
@@ -377,13 +492,31 @@ class GeminiClassifierService(IAIClassifier):
 - Evaluate strictly the acoustic instrument authenticity, algorithmic loop repetitions, MIDI/sampler textures vs neural diffusion smearing, and acoustic soundstage depth.
 """
 
+        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        if is_en:
+            lang_directive = """
+🌐 MANDATORY OUTPUT LANGUAGE REQUIREMENT:
+- All items in 'reasons' and the entire text in 'detailed_explanation' MUST be written strictly in ENGLISH.
+- DO NOT use Vietnamese for 'reasons' and 'detailed_explanation'.
+- MANDATORY REASON FORMAT FOR HYBRID_AI: If you classify as 'HYBRID_AI', the FIRST reason in reasons MUST start with:
+  "[HYBRID AI]: Vocal component is [Human/AI] | Beat/Arrangement component is [AI-generated/Human-made] - [Detailed technical forensic evidence]"
+"""
+        else:
+            lang_directive = """
+🌐 MANDATORY OUTPUT LANGUAGE REQUIREMENT:
+- All items in 'reasons' and the entire text in 'detailed_explanation' MUST be written strictly in VIETNAMESE (Tiếng Việt).
+- DO NOT use English for 'reasons' and 'detailed_explanation'.
+- MANDATORY REASON FORMAT FOR HYBRID_AI: If you classify as 'HYBRID_AI', the FIRST reason in reasons MUST start with:
+  "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
+"""
+
         prompt = f"""
 PLEASE FORENSICALLY EVALUATE THE FOLLOWING AUDIO TRACK:
 
 🎵 Track: {blind_track_title}
 
 📊 FORENSIC AUDIT PROTOCOL:
-{metadata_text}{genre_directive}{instrumental_directive}{modern_ai_alert}
+{metadata_text}{genre_directive}{instrumental_directive}{modern_ai_alert}{lang_directive}
 🔬 PHYSICAL ACOUSTIC & FORENSIC METRICS:
 {metrics_text}
 
@@ -400,8 +533,6 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
      * If audio quality is too degraded, contradictory, or inconclusive -> Classify as 'UNCERTAIN' (is_ai: false).
    - INSPECTION OF TIER 2 SPECTROGRAM (HPSS HARMONIC VOCAL):
      * Check Tier 2 of the attached image: Percussion and heavy drums (e.g. lion dance / múa lân drums) have been stripped away using HPSS. Look closely at Tier 2 to inspect pure vocal harmonics for artificial smearing or synthetic sheen that was masked by drums.
-   - MANDATORY REASON FORMAT FOR HYBRID_AI: If you classify as 'HYBRID_AI', the FIRST reason in reasons MUST start with:
-     "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
    - SUNO V3.5/V4 & GENRE DECEPTION COUNTERMEASURES:
      * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads, Bolero, Dân Ca (Folk), and Choral music specifically GENERATE realistic human-like intake breaths, chest voice formants, Auto-Tune-like vibrato, and melisma (luyến láy).
      * The presence of natural-sounding breath intakes, sweet ballad/bolero vocal phrasing, or organic chest resonance MUST NOT be treated as definitive proof of a human singer!
@@ -412,6 +543,7 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
      * Inspect Tier 2 Harmonic Vocal carefully: look for faint digital fuzz beneath sustained vowels and check if the backing accompaniment has true acoustic multitrack depth or monolithic latent space entanglement.
 2. Correlate with the provided acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and the 3-tier spectrogram image.
 3. Deliver an objective, rigorous verdict based purely on the real sonic evidence.
+{lang_directive}
 """
         return prompt
 
@@ -427,9 +559,12 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         metadata: dict[str, Any] | None = None,
         input_type: InputType | None = None,
         raw_query: str | None = None,
+        language: str = "vi",
     ) -> DetectionResult:
         candidate_models = self._resolve_model_chain(model_override)
-        prompt = self._build_forensic_prompt(track_id, metrics, metadata)
+        prompt = self._build_forensic_prompt(track_id, metrics, metadata, language=language)
+        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        chosen_schema = GeminiResponseSchemaEn if is_en else GeminiResponseSchemaVi
 
         candidate_keys = [k.strip() for k in self.api_keys if k and k.strip()]
         if not candidate_keys and self.api_key and self.api_key.strip():
@@ -451,76 +586,110 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
 
         from google.genai import types
 
+        # --- TỐI ƯU CASCADED TWO-TIER EVALUATION ---
+        needs_deep_audio = (
+            should_require_deep_audio_inspection(metrics, metadata)
+            if ENABLE_CASCADED_EVALUATION
+            else True
+        )
+
         contents: list[Any] = [prompt]
 
-        if spectrogram_path and Path(spectrogram_path).exists():
-            try:
-                spec_bytes = Path(spectrogram_path).read_bytes()
-                contents.append(
-                    types.Part.from_bytes(
-                        data=spec_bytes,
-                        mime_type="image/png",
-                    )
-                )
-            except Exception as upload_err:  # noqa: BLE001
-                print(f"[GeminiClassifierService] Không thể đính kèm ảnh phổ: {upload_err}")
-
-        compressed_audio: Path | None = None
-        if audio_path and Path(audio_path).exists():
-            raw_p = Path(audio_path)
-            upload_target = raw_p
-            if raw_p.suffix.lower() == ".wav":
-                mp3_p = raw_p.with_suffix(".mp3")
+        if needs_deep_audio:
+            if spectrogram_path and Path(spectrogram_path).exists():
                 try:
-                    ffmpeg_bin = get_ffmpeg_binary()
-                    cmd = [
-                        ffmpeg_bin,
-                        "-y",
-                        "-i",
-                        str(raw_p),
-                        "-b:a",
-                        "160k",
-                        "-ac",
-                        "2",
-                        str(mp3_p),
-                    ]
-                    res = subprocess.run(
-                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                    spec_bytes = Path(spectrogram_path).read_bytes()
+                    contents.append(
+                        types.Part.from_bytes(
+                            data=spec_bytes,
+                            mime_type="image/png",
+                        )
                     )
-                    if res.returncode == 0 and mp3_p.exists():
-                        compressed_audio = mp3_p
-                        upload_target = mp3_p
-                except Exception as comp_err:  # noqa: BLE001
-                    print(f"[GeminiClassifierService] Không thể nén MP3: {comp_err}")
+                except Exception as upload_err:  # noqa: BLE001
+                    print(f"[GeminiClassifierService] Không thể đính kèm ảnh phổ: {upload_err}")
 
-            try:
-                mime = "audio/mp3" if upload_target.suffix.lower() == ".mp3" else "audio/wav"
-                audio_bytes = upload_target.read_bytes()
-                contents.append(
-                    types.Part.from_bytes(
-                        data=audio_bytes,
-                        mime_type=mime,
+            compressed_audio: Path | None = None
+            if audio_path and Path(audio_path).exists():
+                raw_p = Path(audio_path)
+                upload_target = raw_p
+                if raw_p.suffix.lower() == ".wav":
+                    mp3_p = raw_p.with_suffix(".mp3")
+                    try:
+                        ffmpeg_bin = get_ffmpeg_binary()
+                        cmd = [
+                            ffmpeg_bin,
+                            "-y",
+                            "-i",
+                            str(raw_p),
+                            "-b:a",
+                            "160k",
+                            "-ac",
+                            "2",
+                            str(mp3_p),
+                        ]
+                        res = subprocess.run(
+                            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                        )
+                        if res.returncode == 0 and mp3_p.exists():
+                            compressed_audio = mp3_p
+                            upload_target = mp3_p
+                    except Exception as comp_err:  # noqa: BLE001
+                        print(f"[GeminiClassifierService] Không thể nén MP3: {comp_err}")
+
+                try:
+                    mime = "audio/mp3" if upload_target.suffix.lower() == ".mp3" else "audio/wav"
+                    audio_bytes = upload_target.read_bytes()
+                    contents.append(
+                        types.Part.from_bytes(
+                            data=audio_bytes,
+                            mime_type=mime,
+                        )
                     )
+                except Exception as upload_err:  # noqa: BLE001
+                    print(f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}")
+                finally:
+                    if compressed_audio and compressed_audio.exists():
+                        compressed_audio.unlink(missing_ok=True)
+        else:
+            try:
+                print(
+                    "[GeminiClassifierService] [CASCADED TIER 1] Số liệu vật lý rõ ràng. "
+                    "Đánh giá siêu tốc qua Text Metrics Prompt (Tiết kiệm 95% tokens, tránh 429)."
                 )
-            except Exception as upload_err:  # noqa: BLE001
-                print(f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}")
-            finally:
-                if compressed_audio and compressed_audio.exists():
-                    compressed_audio.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         config = types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
             response_mime_type="application/json",
-            response_schema=GeminiResponseSchema,
+            response_schema=chosen_schema,
             temperature=0.1,
             http_options=types.HttpOptions(timeout=45000),
         )
 
         last_error = None
+        n_keys = len(candidate_keys)
 
-        # Failover 2 tầng: Mô hình (Gemini 3.8 Flash -> 3.7 Flash -> 3.6 Flash) x Khóa API (Key 1 -> 2 -> 3)
+        # Xếp thứ tự khóa bắt đầu từ Sticky Key đang hoạt động (_active_key_index)
+        with GeminiClassifierService._key_lock:
+            start_k = GeminiClassifierService._active_key_index
+        ordered_key_indices = [
+            ((start_k - 1 + offset) % n_keys) + 1
+            for offset in range(n_keys)
+        ]
+
+        # Failover 2 tầng: Mô hình (Gemini 3.8 Flash -> 3.7 Flash -> 3.6 Flash) x Khóa API (Bắt đầu từ Active Key)
         for model_idx, model in enumerate(candidate_models, 1):
-            for key_idx, current_key in enumerate(candidate_keys, 1):
+            for key_idx in ordered_key_indices:
+                now = time.time()
+                # Kiểm tra Cooldown nếu key từng dính lỗi 429
+                with GeminiClassifierService._key_lock:
+                    cd_until = GeminiClassifierService._key_cooldowns.get(key_idx, 0.0)
+                    if now < cd_until and n_keys > 1:
+                        # Bỏ qua key này vì đang trong thời gian 60s cooldown và còn key khác khả dụng
+                        continue
+
+                current_key = candidate_keys[key_idx - 1]
                 client = self._get_client(current_key)
                 if not client:
                     continue
@@ -531,10 +700,14 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             model=model, contents=contents, config=config
                         )
 
-                        if key_idx > 1 or model_idx > 1:
+                        # Thành công: Cập nhật sticky key index
+                        with GeminiClassifierService._key_lock:
+                            GeminiClassifierService._active_key_index = key_idx
+
+                        if key_idx != start_k or model_idx > 1:
                             try:
                                 print(
-                                    f"[GeminiClassifierService] [SUCCESS] Đã tự động chuyển đổi thành công sang Key dự phòng #{key_idx} (Model: {model})!"
+                                    f"[GeminiClassifierService] [SUCCESS] Đã sử dụng thành công Key #{key_idx} (Model: {model})!"
                                 )
                             except Exception:
                                 pass
@@ -637,26 +810,26 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             time.sleep(wait_sec)
                             continue
 
+                        # Xử lý lỗi 429 Rate Limit / Resource Exhausted
+                        if "429" in err_str or "resource_exhausted" in err_str.lower():
+                            with GeminiClassifierService._key_lock:
+                                GeminiClassifierService._key_cooldowns[key_idx] = time.time() + 60.0
+                                next_k = (key_idx % n_keys) + 1
+                                GeminiClassifierService._active_key_index = next_k
+                                try:
+                                    print(
+                                        f"[GeminiClassifierService] [COOLDOWN] Key #{key_idx} chạm hạn ngạch 429 (Cooldown 60s). "
+                                        f"Chuyển active sang Key #{next_k}!"
+                                    )
+                                except Exception:
+                                    pass
+
                         try:
                             print(
-                                f"[GeminiClassifierService] [WARNING] Key #{key_idx} (***) gặp lỗi khi gọi ({model}): {err_str}"
+                                f"[GeminiClassifierService] [WARNING] Key #{key_idx} gặp lỗi khi gọi ({model}): {err_str}"
                             )
                         except Exception:
                             pass
-                        if key_idx < len(candidate_keys):
-                            try:
-                                print(
-                                    f"[GeminiClassifierService] [FAILOVER] Đang tự động chuyển sang Key dự phòng kế tiếp #{key_idx + 1}/{len(candidate_keys)} (thứ tự 1>2>3)..."
-                                )
-                            except Exception:
-                                pass
-                        else:
-                            try:
-                                print(
-                                    f"[GeminiClassifierService] [ERROR] Đã thử tất cả {len(candidate_keys)} API keys nhưng đều thất bại cho model ({model})."
-                                )
-                            except Exception:
-                                pass
                         break
 
             # Cả candidate_keys đều thất bại cho model này -> Chuyển sang model tiếp theo
@@ -670,3 +843,90 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         raise ClassificationException(
             f"Tất cả {len(candidate_keys)} Gemini API Keys đều thất bại trên tất cả mô hình ({', '.join(candidate_models)}). Lỗi cuối cùng: {last_error}"
         )
+
+    def translate_forensic_text(
+        self,
+        reasons: list[str],
+        detailed_explanation: str,
+        target_lang: str = "vi",
+        model_override: str | None = None,
+    ) -> tuple[list[str], str]:
+        """
+        Dịch reasons và detailed_explanation sang ngôn ngữ mong muốn ('vi' hoặc 'en').
+        Giữ nguyên các thuật ngữ chuyên ngành và tag đặc thù.
+        """
+        if not reasons and not detailed_explanation:
+            return reasons, detailed_explanation
+
+        is_en = str(target_lang).strip().lower().startswith("en") or "anh" in str(target_lang).strip().lower()
+        target_name = "ENGLISH" if is_en else "VIETNAMESE (Tiếng Việt)"
+
+        # Kiểm tra xem văn bản hiện tại đã thuộc ngôn ngữ đích chưa
+        combined_curr = " ".join((reasons or []) + [detailed_explanation or ""]).lower()
+        vi_chars = set("àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ")
+        has_vi = any(c in vi_chars for c in combined_curr)
+
+        if is_en and not has_vi:
+            return reasons, detailed_explanation
+        if not is_en and has_vi:
+            return reasons, detailed_explanation
+
+        candidate_keys = [k.strip() for k in self.api_keys if k and k.strip()]
+        if not candidate_keys and self.api_key:
+            candidate_keys = [self.api_key.strip()]
+        if not candidate_keys:
+            from ..core.config import get_configured_gemini_api_keys
+
+            candidate_keys = get_configured_gemini_api_keys()
+
+        if not candidate_keys:
+            return reasons, detailed_explanation
+
+        from google.genai import types
+
+        class TranslationSchema(BaseModel):
+            reasons: list[str] = Field(description=f"Translated reasons in {target_name}")
+            detailed_explanation: str = Field(description=f"Translated detailed forensic report in {target_name}")
+
+        prompt = f"""
+Translate the following forensic audio audit report into {target_name}.
+Preserve technical terms accurately (e.g. Mel-Spectrogram, HPSS, Fakeprint, Fourier Deconvolution, Auto-Tune, Pitch Jitter, Stem Bleed, Rigidity).
+Adapt safeguard tags properly:
+- '[BẢO VỆ NHẠC NGƯỜI]' <-> '[HUMAN MUSIC SAFEGUARD]'
+- '[CẢNH BÁO ÂM HỌC VẬT LÝ]' <-> '[AI PHYSICAL ACOUSTICS ALERT]'
+- '[CẢNH BÁO DANH MỤC AI]' <-> '[AI CATALOG ALERT]'
+- '[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]' <-> '[MULTI-CRITERIA CONSENSUS ALERT]'
+- '[HYBRID AI]: Thành phần Vocal là...' <-> '[HYBRID AI]: Vocal component is...'
+
+Original reasons:
+{json.dumps(reasons or [], ensure_ascii=False)}
+
+Original detailed explanation:
+{detailed_explanation or ''}
+"""
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=TranslationSchema,
+            temperature=0.0,
+            http_options=types.HttpOptions(timeout=15000),
+        )
+
+        model = model_override or "gemini-3.5-flash-lite"
+        for key in candidate_keys[:3]:
+            try:
+                client = self._get_client(key)
+                if not client:
+                    continue
+                resp = client.models.generate_content(
+                    model=model, contents=[prompt], config=config
+                )
+                if resp.text:
+                    parsed = json.loads(resp.text)
+                    t_reasons = parsed.get("reasons") or reasons
+                    t_detail = parsed.get("detailed_explanation") or detailed_explanation
+                    return t_reasons, t_detail
+            except Exception as e:
+                logger.warning("Lỗi khi dịch reasons sang %s: %s", target_name, e)
+                continue
+
+        return reasons, detailed_explanation

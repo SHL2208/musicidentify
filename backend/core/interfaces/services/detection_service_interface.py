@@ -12,6 +12,7 @@ class IDetectionService(ABC):
         track: TrackItem,
         model_override: str | None = None,
         force_rescan: bool = False,
+        language: str = "vi",
     ) -> DetectionResult:
         """Thực hiện toàn bộ quy trình nhận diện bài hát từ TrackItem đã chuẩn hóa."""
         pass
@@ -22,6 +23,7 @@ class IDetectionService(ABC):
         query: str,
         model_override: str | None = None,
         force_rescan: bool = False,
+        language: str = "vi",
     ) -> DetectionResult:
         """Phân giải chuỗi query tự do và thực hiện nhận diện bài hát."""
         pass

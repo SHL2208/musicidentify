@@ -22,6 +22,19 @@ def render_sidebar():
         )
         st.session_state.model_name = model_selected
 
+        # Tùy chọn ngôn ngữ cho Luận cứ (Reason)
+        lang_options = ["Tiếng Việt", "English"]
+        curr_lang = st.session_state.get("reason_language", "vi")
+        lang_idx = 0 if curr_lang in ("vi", "Tiếng Việt") else 1
+        selected_lang = st.selectbox(
+            "🌐 Ngôn ngữ Luận cứ (Reason):",
+            options=lang_options,
+            index=lang_idx,
+            help="Chọn ngôn ngữ hiển thị luận cứ phân tích (Reasons) và giải thích chi tiết của AI.",
+            key="sb_reason_language",
+        )
+        st.session_state.reason_language = "vi" if selected_lang == "Tiếng Việt" else "en"
+
         st.divider()
         st.subheader("📊 Thông số Giám định")
         st.info(f"""

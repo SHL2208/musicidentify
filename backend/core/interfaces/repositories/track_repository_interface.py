@@ -33,9 +33,9 @@ class ITrackRepository(ABC):
 
     @abstractmethod
     def find_result_by_query_or_url(
-        self, query: str, resolved_url: str | None = None
+        self, query: str, resolved_url: str | None = None, track_id: str | None = None
     ) -> DetectionResult | None:
-        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn hoặc URL nguồn."""
+        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn, URL nguồn hoặc track_id."""
         pass
 
     @abstractmethod

@@ -26,14 +26,20 @@ class TrackController:
         """Tiếp nhận yêu cầu giám định một bài hát (hỗ trợ Cache & Force Re-scan)."""
         try:
             force_rescan_flag = getattr(request, "force_rescan", False)
+            lang = getattr(request, "language", "vi") or "vi"
+            track_id_param = getattr(request, "track_id", None)
             try:
                 track = self.resolver.resolve_track(request.query, force_rescan=force_rescan_flag)
             except TypeError:
                 track = self.resolver.resolve_track(request.query)
+
+            if track_id_param:
+                track.id = track_id_param
             result = self.detection_service.detect_single(
                 track,
                 model_override=request.model_override,
                 force_rescan=force_rescan_flag,
+                language=lang,
             )
             return StandardResponse[DetectionResult](
                 success=True,

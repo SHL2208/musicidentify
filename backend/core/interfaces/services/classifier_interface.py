@@ -21,6 +21,7 @@ class IAIClassifier(ABC):
         metadata: dict[str, Any] | None = None,
         input_type: Any | None = None,
         raw_query: str | None = None,
+        language: str = "vi",
     ) -> DetectionResult:
         """
         Thực hiện giám định đa tầng bằng AI kết hợp tín hiệu âm thanh và biểu đồ phổ tần.

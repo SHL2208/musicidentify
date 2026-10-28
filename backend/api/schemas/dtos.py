@@ -14,11 +14,17 @@ class StandardResponse(BaseModel, Generic[T]):
 
 class TrackDetectRequest(BaseModel):
     query: str = Field(description="URL bài hát, tên bài hát, hoặc đường dẫn file âm thanh")
+    track_id: str | None = Field(
+        default=None, description="ID bài hát đã có trong CSDL để cập nhật đè khi quét lại"
+    )
     model_override: str | None = Field(
         default=None, description="Mô hình Gemini chỉ định (nếu muốn ghi đè)"
     )
     force_rescan: bool = Field(
         default=False, description="Bỏ qua cache và buộc phân tích lại từ đầu"
+    )
+    language: str | None = Field(
+        default="vi", description="Ngôn ngữ cho kết quả luận cứ ('vi' hoặc 'en')"
     )
 
 
@@ -28,6 +34,9 @@ class BatchDetectRequest(BaseModel):
     scan_mode: str = Field(
         default="smart",
         description="Chế độ quét: 'smart' (bỏ qua bài có sẵn), 'force_all' (quét lại toàn bộ), 'retry_errors' (chỉ quét lỗi)",
+    )
+    language: str | None = Field(
+        default="vi", description="Ngôn ngữ cho kết quả luận cứ ('vi' hoặc 'en')"
     )
 
 

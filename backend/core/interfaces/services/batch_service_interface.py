@@ -13,6 +13,7 @@ class IBatchService(ABC):
         tracks: list[TrackItem],
         model_override: str | None = None,
         scan_mode: str = "smart",
+        language: str = "vi",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
         stop_check: Callable[[], bool] | None = None,

@@ -47,13 +47,14 @@ class DetectionService(IDetectionService):
         track: TrackItem,
         model_override: str | None = None,
         force_rescan: bool = False,
+        language: str = "vi",
     ) -> DetectionResult:
         """Thực hiện toàn bộ quy trình nhận diện 1 bài hát từ A đến Z (hỗ trợ Cache thông minh và Force Re-scan)."""
         # 0a. Kiểm tra kết quả trong CSDL trước nếu không yêu cầu quét lại (Force Re-scan)
+        existing_result = self.track_repo.find_result_by_query_or_url(
+            query=track.raw_query, resolved_url=track.resolved_url, track_id=track.id
+        )
         if not force_rescan:
-            existing_result = self.track_repo.find_result_by_query_or_url(
-                query=track.raw_query, resolved_url=track.resolved_url
-            )
             if existing_result and existing_result.verdict_type != VerdictType.ERROR:
                 if existing_result.acoustic_metrics:
                     m = existing_result.acoustic_metrics
@@ -173,7 +174,21 @@ class DetectionService(IDetectionService):
                     existing_result.track_id,
                 )
                 existing_result.is_cached = True
+                existing_result = self._adapt_result_language(
+                    existing_result, language=language, model_override=model_override
+                )
                 return existing_result
+        else:
+            # Khi yêu cầu quét lại (force_rescan = True): nếu bài hát đã tồn tại trong CSDL,
+            # đồng bộ lại ID để đảm bảo UPDATE đè vào bản ghi hiện có, tránh tạo thêm dòng mới
+            if existing_result:
+                track.id = existing_result.track_id
+                if not track.song_type and getattr(existing_result, "song_type", None):
+                    track.song_type = existing_result.song_type
+                if not track.distributor and getattr(existing_result, "distributor", None):
+                    track.distributor = existing_result.distributor
+                if not track.release_date and getattr(existing_result, "release_date", None):
+                    track.release_date = existing_result.release_date
 
         # 0b. Phân giải URL và xác thực bài hát nếu track chưa có resolved_url hợp lệ (hoặc khi yêu cầu quét lại)
         if (not track.resolved_url or force_rescan) and track.input_type not in (
@@ -215,10 +230,22 @@ class DetectionService(IDetectionService):
                     ):
                         track.platform = resolved_item.platform
 
-                    # Sau khi phân giải ra URL chính thức, kiểm tra cache một lần nữa
-                    if not force_rescan and track.resolved_url:
+                    # Sau khi phân giải ra URL chính thức:
+                    if force_rescan:
                         existing_after_resolve = self.track_repo.find_result_by_query_or_url(
-                            query=track.raw_query, resolved_url=track.resolved_url
+                            query=track.raw_query, resolved_url=track.resolved_url, track_id=track.id
+                        )
+                        if existing_after_resolve:
+                            track.id = existing_after_resolve.track_id
+                            if not track.song_type and getattr(existing_after_resolve, "song_type", None):
+                                track.song_type = existing_after_resolve.song_type
+                            if not track.distributor and getattr(existing_after_resolve, "distributor", None):
+                                track.distributor = existing_after_resolve.distributor
+                            if not track.release_date and getattr(existing_after_resolve, "release_date", None):
+                                track.release_date = existing_after_resolve.release_date
+                    elif track.resolved_url:
+                        existing_after_resolve = self.track_repo.find_result_by_query_or_url(
+                            query=track.raw_query, resolved_url=track.resolved_url, track_id=track.id
                         )
                         if (
                             existing_after_resolve
@@ -330,6 +357,9 @@ class DetectionService(IDetectionService):
                                 track.resolved_url,
                             )
                             existing_after_resolve.is_cached = True
+                            existing_after_resolve = self._adapt_result_language(
+                                existing_after_resolve, language=language, model_override=model_override
+                            )
                             return existing_after_resolve
             except Exception as resolve_err:
                 logger.warning(
@@ -495,6 +525,23 @@ class DetectionService(IDetectionService):
                 track.song_type = w_type.value
                 self.track_repo.save_track(track)
 
+            is_en_lang = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+            h_reason = heuristics_result["reason"]
+            if is_en_lang:
+                if "năm" in h_reason and "trước" in h_reason:
+                    year_match = re.search(r"\b(19\d\d|20\d\d)\b", h_reason)
+                    yr = year_match.group(1) if year_match else "2022"
+                    h_reason = f"Official release in {yr} (prior to commercial generative AI music models)."
+                elif "Suno" in h_reason:
+                    h_reason = "Detected Suno AI authoring confirmation tags in metadata / title."
+                elif "Udio" in h_reason:
+                    h_reason = "Detected Udio AI authoring confirmation tags in metadata / title."
+                elif "hàng loạt" in h_reason:
+                    h_reason = "Detected serial batch release pattern characteristic of AI music project."
+                h_detail = f"Verified via source metadata: {h_reason}"
+            else:
+                h_detail = f"Xác thực qua siêu dữ liệu nguồn: {heuristics_result['reason']}"
+
             result = DetectionResult(
                 track_id=track.id,
                 track_title=track.track_title or track.raw_query,
@@ -506,8 +553,8 @@ class DetectionService(IDetectionService):
                 verdict_label=verdict_label,
                 confidence_score=heuristics_result["confidence"],
                 suspected_engine=heuristics_result["engine"],
-                reasons=[heuristics_result["reason"]],
-                detailed_explanation=f"Xác thực qua siêu dữ liệu nguồn: {heuristics_result['reason']}",
+                reasons=[h_reason],
+                detailed_explanation=h_detail,
                 acoustic_metrics=metrics,
                 spectrogram_image_path=str(spec_image_path) if spec_image_path else None,
                 ai_model_is_ai=None,
@@ -541,7 +588,9 @@ class DetectionService(IDetectionService):
             metadata=metadata,
             input_type=track.input_type,
             raw_query=track.raw_query,
+            language=language,
         )
+        result.track_id = track.id
 
         # Ghi nhận kết quả nguyên bản do Model AI đánh giá độc lập trước khi qua các tầng Trọng tài / Tiêu chí cứng
         raw_ai_is_ai = result.is_ai
@@ -561,7 +610,9 @@ class DetectionService(IDetectionService):
             result.source_url = source_url_val
 
         # 5. Bộ lọc Trọng tài Kiểm chéo hai chiều (Cross-Validation Safeguard)
-        result = self._apply_cross_validation_safeguard(result, track, metadata, metrics)
+        result = self._apply_cross_validation_safeguard(
+            result, track, metadata, metrics, language=language
+        )
 
         # 6. Đảm bảo phân loại Tác phẩm (Work Type) luôn được giải mã chuẩn xác nếu mô hình để trống
         if getattr(result, "work_type", WorkType.UNCERTAIN) == WorkType.UNCERTAIN:
@@ -608,7 +659,41 @@ class DetectionService(IDetectionService):
             self.track_repo.save_track(track)
         except Exception:
             pass
+        result.track_id = track.id
         self.track_repo.save_result(result)
+        return result
+
+    def _adapt_result_language(
+        self,
+        result: DetectionResult,
+        language: str,
+        model_override: str | None = None,
+    ) -> DetectionResult:
+        """Đảm bảo reasons và detailed_explanation của kết quả khớp với ngôn ngữ được yêu cầu."""
+        if not result or not result.reasons:
+            return result
+        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        combined_text = " ".join((result.reasons or []) + [result.detailed_explanation or ""]).lower()
+        vi_chars = set("àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ")
+        has_vi = any(c in vi_chars for c in combined_text)
+
+        needs_translation = (is_en and has_vi) or (not is_en and not has_vi)
+        if needs_translation and hasattr(self.classifier, "translate_forensic_text"):
+            try:
+                t_reasons, t_detail = self.classifier.translate_forensic_text(
+                    reasons=result.reasons,
+                    detailed_explanation=result.detailed_explanation or "",
+                    target_lang=language,
+                    model_override=model_override,
+                )
+                result.reasons = t_reasons
+                result.detailed_explanation = t_detail
+                try:
+                    self.track_repo.save_result(result)
+                except Exception:
+                    pass
+            except Exception as tr_err:
+                logger.warning("Không thể tự động dịch cached result: %s", tr_err)
         return result
 
     def _apply_cross_validation_safeguard(
@@ -617,6 +702,7 @@ class DetectionService(IDetectionService):
         track: TrackItem,
         metadata: dict | None,
         metrics: AcousticMetrics | None,
+        language: str = "vi",
     ) -> DetectionResult:
         """
         Bộ lọc Trọng tài Kiểm chéo hai chiều (Cross-Validation Safeguard):
@@ -669,6 +755,7 @@ class DetectionService(IDetectionService):
         if result.is_ai:
             first_reason = (result.reasons[0] if result.reasons else "").lower()
 
+            is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
             # 1a. Bảo vệ ca sĩ người thật đã xác thực hoặc hãng đĩa lớn độc quyền
             if is_human_artist or is_major_exclusive_label:
                 stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
@@ -680,10 +767,16 @@ class DetectionService(IDetectionService):
                     result.is_ai = False
                     result.verdict_type = VerdictType.PROCESSED_HUMAN
                     result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
-                    safeguard_reason = (
-                        f"[BẢO VỆ NHẠC NGƯỜI]: Bản thu của nghệ sĩ '{artist_str or track.artist}' là sản phẩm âm nhạc có con người thực hiện, "
-                        "tránh nhận diện nhầm do hiệu ứng Auto-Tune phòng thu hoặc nén băng thông phát trực tuyến."
-                    )
+                    if is_en:
+                        safeguard_reason = (
+                            f"[HUMAN MUSIC SAFEGUARD]: Recording by artist '{artist_str or track.artist}' is verified human-created, "
+                            "avoiding false positives from studio Auto-Tune or streaming bitrate compression."
+                        )
+                    else:
+                        safeguard_reason = (
+                            f"[BẢO VỆ NHẠC NGƯỜI]: Bản thu của nghệ sĩ '{artist_str or track.artist}' là sản phẩm âm nhạc có con người thực hiện, "
+                            "tránh nhận diện nhầm do hiệu ứng Auto-Tune phòng thu hoặc nén băng thông phát trực tuyến."
+                        )
                     result.reasons = [safeguard_reason] + (result.reasons or [])
                     result.confidence_score = max(0.92, result.confidence_score)
                     result.suspected_engine = "None"
@@ -726,11 +819,18 @@ class DetectionService(IDetectionService):
                 result.is_ai = False
                 result.verdict_type = VerdictType.PROCESSED_HUMAN
                 result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
-                safeguard_reason = (
-                    "[BẢO VỆ NHẠC NGƯỜI]: Bản thu có các chỉ số vật lý sạch "
-                    f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed_val:.2f}). "
-                    "Không có dấu vết tạo sinh từ mô hình AI."
-                )
+                if is_en:
+                    safeguard_reason = (
+                        "[HUMAN MUSIC SAFEGUARD]: Recording exhibits clean physical metrics "
+                        f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed_val:.2f}). "
+                        "No generative AI model signatures detected."
+                    )
+                else:
+                    safeguard_reason = (
+                        "[BẢO VỆ NHẠC NGƯỜI]: Bản thu có các chỉ số vật lý sạch "
+                        f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed_val:.2f}). "
+                        "Không có dấu vết tạo sinh từ mô hình AI."
+                    )
                 result.reasons = [safeguard_reason] + (result.reasons or [])
                 result.confidence_score = max(0.90, result.confidence_score)
                 result.suspected_engine = "None"
@@ -792,32 +892,58 @@ class DetectionService(IDetectionService):
             should_override_to_ai = False
             override_reason = ""
 
+            is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
             if not is_human_artist:
                 if is_ai_dist:
                     should_override_to_ai = True
-                    override_reason = (
-                        "[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành thuộc danh mục dự án AI / nhà phân phối ảo. "
-                        f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
-                    )
+                    if is_en:
+                        override_reason = (
+                            "[AI CATALOG ALERT]: Artist or release belongs to known AI music project / virtual distributor catalog. "
+                            f"Physical metrics: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành thuộc danh mục dự án AI / nhà phân phối ảo. "
+                            f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
+                        )
                 elif is_instrumental_ai:
                     should_override_to_ai = True
-                    override_reason = (
-                        "[CẢNH BÁO ÂM HỌC NHẠC CỤ AI]: Tần số suy giảm đột ngột và độ cứng cao bất thường "
-                        f"(Rolloff: {rolloff:.0f} Hz, Rigidity: {rigidity:.2f}), đặc trưng của mô hình tạo sinh nhạc cụ/ambient."
-                    )
+                    if is_en:
+                        override_reason = (
+                            "[AI INSTRUMENTAL ACOUSTIC ALERT]: Severe high-frequency rolloff deficiency and abnormal pitch rigidity "
+                            f"(Rolloff: {rolloff:.0f} Hz, Rigidity: {rigidity:.2f}), characteristic of generative instrumental/ambient models."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO ÂM HỌC NHẠC CỤ AI]: Tần số suy giảm đột ngột và độ cứng cao bất thường "
+                            f"(Rolloff: {rolloff:.0f} Hz, Rigidity: {rigidity:.2f}), đặc trưng của mô hình tạo sinh nhạc cụ/ambient."
+                        )
                 elif strong_physical_ai:
                     should_override_to_ai = True
-                    override_reason = (
-                        "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI vượt trội "
-                        f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
-                        "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
-                    )
+                    if is_en:
+                        override_reason = (
+                            "[AI PHYSICAL ACOUSTICS ALERT]: Physical mathematical evidence confirms prominent AI signatures "
+                            f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
+                            "Fourier deconvolution fakeprint and intermodulation stem bleed outweigh initial assessment."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI vượt trội "
+                            f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
+                            "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
+                        )
                 elif borderline_ai and not has_human_bio_evidence and not is_major_exclusive_label:
                     should_override_to_ai = True
-                    override_reason = (
-                        "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
-                        f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
-                    )
+                    if is_en:
+                        override_reason = (
+                            "[MULTI-CRITERIA CONSENSUS ALERT]: Detected consensus of AI physical metrics "
+                            f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
+                            f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
+                        )
 
             if should_override_to_ai:
                 logger.info(
@@ -845,7 +971,13 @@ class DetectionService(IDetectionService):
         query: str,
         model_override: str | None = None,
         force_rescan: bool = False,
+        language: str = "vi",
     ) -> DetectionResult:
         """Phân giải chuỗi query tự do qua IInputResolver và thực hiện nhận diện bài hát."""
         track = self.resolver.resolve_track(query)
-        return self.detect_single(track, model_override=model_override, force_rescan=force_rescan)
+        return self.detect_single(
+            track,
+            model_override=model_override,
+            force_rescan=force_rescan,
+            language=language,
+        )

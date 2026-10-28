@@ -19,16 +19,23 @@ class BackendClient:
         self.track_controller = self.container.track_controller
         self.batch_controller = self.container.batch_controller
         self.report_controller = self.container.report_controller
+        self.batch_job_manager = self.container.batch_job_manager
 
     def detect_single_track(
         self,
         query: str,
+        track_id: str | None = None,
         model_override: str | None = None,
         force_rescan: bool = False,
+        language: str = "vi",
     ) -> DetectionResult:
         """Gọi Controller phân tích một bài hát đơn lẻ (hỗ trợ Cache và Force Re-scan)."""
         req = TrackDetectRequest(
-            query=query, model_override=model_override, force_rescan=force_rescan
+            query=query,
+            track_id=track_id,
+            model_override=model_override,
+            force_rescan=force_rescan,
+            language=language,
         )
         resp = self.track_controller.detect_track(req)
         if not resp.success or resp.data is None:
@@ -63,6 +70,7 @@ class BackendClient:
         queries: list[str],
         model_override: str | None = None,
         scan_mode: str = "smart",
+        language: str = "vi",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
         stop_check: Callable[[], bool] | None = None,
@@ -71,7 +79,10 @@ class BackendClient:
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ danh sách queries."""
         req = BatchDetectRequest(
-            queries=queries, model_override=model_override, scan_mode=scan_mode
+            queries=queries,
+            model_override=model_override,
+            scan_mode=scan_mode,
+            language=language,
         )
         resp = self.batch_controller.process_queries(
             req,
@@ -89,6 +100,7 @@ class BackendClient:
         file_path: Path,
         model_override: str | None = None,
         scan_mode: str = "smart",
+        language: str = "vi",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
         stop_check: Callable[[], bool] | None = None,
@@ -100,6 +112,7 @@ class BackendClient:
             file_path,
             model_override=model_override,
             scan_mode=scan_mode,
+            language=language,
             on_progress=on_progress,
             stop_check=stop_check,
             start_index=start_index,
@@ -128,3 +141,52 @@ class BackendClient:
         """Truy xuất lịch sử giám định."""
         resp = self.report_controller.get_history()
         return resp.data or []
+
+    # --- Tương tác với Background Batch Job Manager ---
+
+    def get_batch_job_snapshot(self):
+        """Lấy snapshot của tác vụ quét hàng loạt hiện tại."""
+        return self.batch_job_manager.get_active_job_snapshot()
+
+    def get_batch_queue_snapshots(self):
+        """Lấy danh sách các tác vụ đang nằm trong hàng đợi chờ xử lý."""
+        return self.batch_job_manager.get_queue_snapshots()
+
+    def enqueue_batch_job(
+        self,
+        file_path: Path | str | None = None,
+        queries: list[str] | None = None,
+        scan_mode: str = "smart",
+        model_override: str | None = None,
+        job_name: str | None = None,
+        start_index: int = 0,
+        initial_results: list[DetectionResult] | None = None,
+        language: str = "vi",
+    ):
+        """Gửi yêu cầu quét hàng loạt vào hàng đợi chạy ngầm."""
+        return self.batch_job_manager.enqueue_job(
+            file_path=file_path,
+            queries=queries,
+            scan_mode=scan_mode,
+            model_override=model_override,
+            job_name=job_name,
+            start_index=start_index,
+            initial_results=initial_results,
+            language=language,
+        )
+
+    def cancel_queued_batch_job(self, job_id: str) -> bool:
+        """Hủy một tác vụ trong hàng đợi."""
+        return self.batch_job_manager.cancel_queued_job(job_id)
+
+    def stop_batch_job(self) -> bool:
+        """Yêu cầu dừng an toàn tác vụ quét ngầm đang chạy."""
+        return self.batch_job_manager.request_stop()
+
+    def resume_batch_job(self) -> tuple[bool, str]:
+        """Tiếp tục chạy tác vụ đang bị tạm dừng (Circuit Breaker hoặc Dừng bởi người dùng)."""
+        return self.batch_job_manager.resume_active_job()
+
+    def reset_batch_job(self):
+        """Xóa sạch trạng thái quét và hàng đợi để bắt đầu mới."""
+        self.batch_job_manager.reset_job()

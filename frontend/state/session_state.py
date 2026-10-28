@@ -40,3 +40,5 @@ def init_session_state():
         st.session_state.history_results = []
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = 0
+    if "reason_language" not in st.session_state:
+        st.session_state.reason_language = "vi"

@@ -10,7 +10,6 @@ import streamlit as st
 
 from backend.core.config import TEMP_DIR
 from frontend.components.batch_view import render_batch_view
-from frontend.components.benchmark_view import render_benchmark_view
 
 # UI Components
 from frontend.components.header import render_header
@@ -54,16 +53,20 @@ def main():
     )
 
     # Tabs
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2 = st.tabs(
         [
             "🔍 Thẩm định Đơn bài (Single Track)",
             "📁 Quét Hàng loạt (Batch Mode)",
-            "🎯 Chấm điểm Testcase (Benchmark)",
         ]
     )
 
     # TAB 1: SINGLE TRACK
     with tab1:
+        current_reason_lang = st.session_state.get("reason_language", "vi")
+        lang_display = "Tiếng Việt" if current_reason_lang == "vi" else "English"
+        st.caption(
+            f"🌐 Ngôn ngữ Luận cứ kết quả: **{lang_display}** (thay đổi tại thanh bên ⚙️ Cấu hình)"
+        )
         input_method = st.radio(
             "Phương thức thẩm định:",
             ["🔗 Nhập Link YouTube / Tên bài hát", "📤 Tải file âm thanh lên (.mp3, .wav, .m4a)"],
@@ -118,12 +121,15 @@ def main():
                 target_display_name = uploaded_audio.name
 
         if query_to_process:
+            req_lang = st.session_state.get("reason_language", "vi")
             with st.spinner(
-                f"Đang thẩm định: '{target_display_name}' bằng {st.session_state.model_name}..."
+                f"Đang thẩm định: '{target_display_name}' bằng {st.session_state.model_name} ({'Tiếng Việt' if req_lang == 'vi' else 'English'})..."
             ):
                 try:
                     result = client.detect_single_track(
-                        query=query_to_process, model_override=st.session_state.model_name
+                        query=query_to_process,
+                        model_override=st.session_state.model_name,
+                        language=req_lang,
                     )
                     st.session_state.single_result = result
                 except Exception as e:
@@ -187,11 +193,13 @@ def main():
                 ):
                     with st.spinner("Đang tải lại âm thanh và chạy lại toàn bộ mô hình AI..."):
                         try:
-                            rescan_query = res.raw_query or res.track_title or res.source_url
+                            rescan_query = res.source_url or res.raw_query or res.track_title
                             fresh_res = client.detect_single_track(
                                 query=rescan_query,
+                                track_id=res.track_id,
                                 model_override=st.session_state.model_name,
                                 force_rescan=True,
+                                language=st.session_state.get("reason_language", "vi"),
                             )
                             st.session_state.single_result = fresh_res
                             st.toast("🎉 Đã quét lại thành công và cập nhật CSDL!", icon="✅")
@@ -248,22 +256,19 @@ def main():
 
             # Luận cứ và giải thích chi tiết
             col_reasons, col_detail = st.columns([1, 1])
+            is_en_lang = st.session_state.get("reason_language", "vi") == "en"
             with col_reasons:
-                st.subheader("📌 Luận cứ Giám định Chính")
+                st.subheader("📌 Key Forensic Reasons" if is_en_lang else "📌 Luận cứ Giám định Chính")
                 for r in res.reasons:
                     st.markdown(f"- **{r}**")
 
             with col_detail:
-                st.subheader("📝 Báo cáo Thẩm âm Chi tiết")
+                st.subheader("📝 Detailed Forensic Report" if is_en_lang else "📝 Báo cáo Thẩm âm Chi tiết")
                 st.info(res.detailed_explanation)
 
     # TAB 2: BATCH SCAN
     with tab2:
         render_batch_view(client)
-
-    # TAB 3: BENCHMARK & ACCURACY EVALUATION
-    with tab3:
-        render_benchmark_view()
 
 
 if __name__ == "__main__":

@@ -1,588 +1,378 @@
-import json
 import logging
-import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from backend.core.config import TEMP_DIR
-from backend.core.models.entities import BatchReport, DetectionResult, VerdictType
+from backend.services.batch_job_manager import (
+    JobStatus,
+    format_detection_row,
+    format_time_duration,
+)
 from frontend.components.ui_compat import get_width_kwargs
 from frontend.services.backend_client import BackendClient
 
 logger = logging.getLogger(__name__)
 
-BATCH_STATE_FILE = TEMP_DIR / "batch_state.json"
 
-
-def save_batch_persistent_state(
-    file_path: Path | str | None,
-    queries: list[str],
-    scan_mode: str,
-    total_tracks: int,
-    start_time: float | None,
-    counts: dict,
-    live_rows: list[dict],
-    live_results: list[DetectionResult],
-    report_file_path: str | None = None,
-    partial_excel_path: str | None = None,
-):
-    """Lưu trạng thái quét hàng loạt xuống đĩa để chịu lỗi khi người dùng reload / đóng tab."""
-    try:
-        TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        data = {
-            "file_path": str(file_path) if file_path else None,
-            "queries": queries,
-            "scan_mode": scan_mode,
-            "total_tracks": total_tracks,
-            "start_time": start_time,
-            "counts": counts,
-            "live_rows": live_rows,
-            "live_results": [r.model_dump() for r in live_results],
-            "report_file_path": report_file_path,
-            "partial_excel_path": partial_excel_path,
-            "saved_at": time.time(),
-        }
-        with open(BATCH_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"Không thể lưu trạng thái batch xuống đĩa: {e}")
-
-
-def load_batch_persistent_state() -> dict | None:
-    """Nạp lại trạng thái quét từ đĩa nếu tồn tại."""
-    if not BATCH_STATE_FILE.exists():
-        return None
-    try:
-        with open(BATCH_STATE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        return data
-    except Exception as e:
-        logger.warning(f"Không thể đọc trạng thái batch từ đĩa: {e}")
-        return None
-
-
-def clear_batch_persistent_state():
-    """Xóa bỏ trạng thái quét trên đĩa khi người dùng bấm Đặt lại."""
-    try:
-        if BATCH_STATE_FILE.exists():
-            BATCH_STATE_FILE.unlink()
-    except Exception as e:
-        logger.warning(f"Không thể xóa tệp trạng thái batch: {e}")
-
-
-def format_time_duration(seconds: float) -> str:
-    """Định dạng số giây thành chuỗi hiển thị dễ đọc (VD: '3m 45s', '1h 12m')."""
-    if not seconds or seconds <= 0:
-        return "0s"
-    mins, secs = divmod(int(seconds), 60)
-    hours, mins = divmod(mins, 60)
-    if hours > 0:
-        return f"{hours}h {mins}m"
-    if mins > 0:
-        return f"{mins}m {secs}s"
-    return f"{secs}s"
-
-
-def format_detection_row(r: DetectionResult) -> dict:
-    """Định dạng kết quả giám định thành một hàng hiển thị đồng nhất trong Data Table."""
-    origin_tag = "⚡ CSDL (Cached)" if getattr(r, "is_cached", False) else "🔄 Quét mới"
-    corr_tag = "🧑‍🎤 Đã đính chính" if getattr(r, "is_human_corrected", False) else "-"
-    ai_model_col = r.ai_model_verdict or ("AI" if getattr(r, "ai_model_is_ai", False) else "HUMAN")
-    consensus_col = r.consensus_verdict or r.verdict_label
-    conf = getattr(r, "confidence_score", 0.0)
-    conf_str = f"{conf * 100:.0f}%" if isinstance(conf, (int, float)) else "0%"
-    reasons = r.reasons or []
-    song_type_val = r.song_type or getattr(r, "work_label", "-") or "-"
-    distributor_val = r.distributor or "-"
-    release_date_val = r.release_date or "-"
-
-    dur_sec = getattr(r, "duration_sec", None)
-    if (dur_sec is None or dur_sec <= 0) and r.acoustic_metrics:
-        dur_sec = getattr(r.acoustic_metrics, "duration_sec", None)
-    dur_str = format_time_duration(dur_sec) if dur_sec and dur_sec > 0 else "-"
-
-    return {
-        "Tên bài hát": r.track_title,
-        "Thời lượng": dur_str,
-        "Loại tác phẩm": song_type_val,
-        "Nhà phân phối": distributor_val,
-        "Ngày phát hành": release_date_val,
-        "Đánh giá Model AI": ai_model_col,
-        "Kết luận Tổng hợp": consensus_col,
-        "Nguồn gốc": origin_tag,
-        "Đính chính": corr_tag,
-        "Độ tin cậy": conf_str,
-        "Mô hình nghi vấn": r.suspected_engine or "N/A",
-        "Luận cứ": " | ".join(reasons[:2]) if reasons else "N/A",
-        "Nguồn link": r.source_url or "N/A",
+def render_notification_script(enable: bool = True):
+    """Nhúng Web Notification & Web Audio API (chuông Chime) để báo động khi quét xong."""
+    if not enable:
+        return
+    script = """
+    <script>
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
     }
+    window.playBatchChime = function() {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const now = ctx.currentTime;
+            const osc1 = ctx.createOscillator();
+            const osc2 = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc1.type = 'sine';
+            osc1.frequency.setValueAtTime(587.33, now); // D5
+            osc2.type = 'sine';
+            osc2.frequency.setValueAtTime(880.00, now + 0.15); // A5
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+            osc1.connect(gain);
+            osc2.connect(gain);
+            gain.connect(ctx.destination);
+            osc1.start(now);
+            osc1.stop(now + 0.2);
+            osc2.start(now + 0.15);
+            osc2.stop(now + 0.9);
+        } catch(e) {}
+    };
+    </script>
+    """
+    if hasattr(st, "html"):
+        st.html(script, unsafe_allow_javascript=True)
+    else:
+        components.html(script, height=0)
+
+
+def trigger_completion_alert(job_name: str, total_tracks: int):
+    """Kích hoạt chuông và desktop notification khi job hoàn thành."""
+    safe_name = job_name.replace('"', '\\"')
+    script = f"""
+    <script>
+    if (typeof window.playBatchChime === 'function') {{
+        window.playBatchChime();
+    }} else if (typeof window.parent !== 'undefined' && typeof window.parent.playBatchChime === 'function') {{
+        window.parent.playBatchChime();
+    }}
+    const notifObj = window.Notification || (window.parent && window.parent.Notification);
+    if (notifObj && notifObj.permission === "granted") {{
+        new notifObj("🎵 AI Music Detector - Hoàn tất!", {{
+            body: "Đã quét xong lô '{safe_name}' ({total_tracks} bài)!",
+            icon: "https://emojicdn.elk.sh/🎵"
+        }});
+    }}
+    </script>
+    """
+    if hasattr(st, "html"):
+        st.html(script, unsafe_allow_javascript=True)
+    else:
+        components.html(script, height=0)
 
 
 def render_batch_view(client: BackendClient):
-    """Hiển thị giao diện quét hàng loạt bài hát với cơ chế bền bỉ (Session Persistence & Resilience)."""
+    """
+    Giao diện Quét Hàng Loạt chạy ngầm độc lập (Decoupled Background Worker & FIFO Queue).
+    Hỗ trợ chuyển tab, tắt tab, F5 reload mà không bị mất tiến trình quét.
+    """
     st.markdown("### 📁 Quét Hàng Loạt (Batch Mode)")
     st.write(
-        "Tải lên tệp (.txt, .csv, .xlsx) hoặc nhập trực tiếp danh sách bài hát / link YouTube. "
-        "Hệ thống có cơ chế tự động khôi phục và tiếp tục quét khi tab bị ngắt quãng hoặc reload."
+        "Tải lên tệp (.xlsx, .csv, .txt) hoặc nhập trực tiếp danh sách bài hát / link YouTube. "
+        "Hệ thống chạy trên **Luồng ngầm độc lập (Background Worker)**: Bạn có thể chuyển tab, "
+        "thu nhỏ trình duyệt hoặc làm việc khác thoải mái mà không lo bị ngắt quãng."
     )
 
-    # Tự động nạp lại trạng thái nếu session vừa bị reload nhưng đĩa vẫn còn dữ liệu
-    if not st.session_state.get("batch_live_rows"):
-        saved_state = load_batch_persistent_state()
-        if saved_state and saved_state.get("live_rows"):
-            if saved_state.get("file_path") and not st.session_state.get("batch_last_file_path"):
-                st.session_state.batch_last_file_path = saved_state.get("file_path")
-            if saved_state.get("queries") and not st.session_state.get("batch_last_queries"):
-                st.session_state.batch_last_queries = saved_state.get("queries")
-            if "batch_last_scan_mode" not in st.session_state:
-                st.session_state.batch_last_scan_mode = saved_state.get("scan_mode") or "smart"
-            st.session_state.batch_total_tracks = saved_state.get("total_tracks") or len(saved_state["live_rows"])
-            st.session_state.batch_start_time = saved_state.get("start_time")
-            st.session_state.batch_live_counts = saved_state.get("counts") or {
-                "ai": 0,
-                "human": 0,
-                "uncertain": 0,
-                "failed": 0,
-            }
-            st.session_state.batch_live_rows = saved_state.get("live_rows") or []
-            restored_results = []
-            for r_dict in saved_state.get("live_results", []):
-                try:
-                    restored_results.append(DetectionResult.model_validate(r_dict))
-                except Exception:
-                    pass
-            st.session_state.batch_live_results = restored_results
-            st.session_state.batch_partial_excel_path = saved_state.get("partial_excel_path")
-            rep_path = saved_state.get("report_file_path")
-            if rep_path and Path(rep_path).exists():
-                st.session_state.batch_report = BatchReport(
-                    total_tracks=st.session_state.batch_total_tracks,
-                    processed_count=len(restored_results),
-                    ai_count=st.session_state.batch_live_counts.get("ai", 0),
-                    human_count=st.session_state.batch_live_counts.get("human", 0),
-                    uncertain_count=st.session_state.batch_live_counts.get("uncertain", 0),
-                    failed_count=st.session_state.batch_live_counts.get("failed", 0),
-                    results=restored_results,
-                    report_file_path=rep_path,
-                )
+    # 1. Tùy chọn thông báo Desktop & Âm thanh
+    col_opt1, col_opt2 = st.columns([3, 1])
+    with col_opt1:
+        enable_notifications = st.toggle(
+            "🔔 Bật thông báo Desktop & Chuông khi quét xong (Dù đang ở tab khác)",
+            value=st.session_state.get("batch_enable_notifications", True),
+            key="batch_notif_toggle",
+            help="Hệ thống sẽ gửi Desktop Notification và phát tiếng chuông nhẹ khi hoàn thành 100%.",
+        )
+        st.session_state.batch_enable_notifications = enable_notifications
+    with col_opt2:
+        st.caption("🛡️ Bounded Concurrency: 1 Worker")
 
-    if st.session_state.get("batch_live_rows"):
-        curr_len = len(st.session_state.batch_live_rows)
-        exp_total = st.session_state.get("batch_total_tracks", curr_len)
-        if exp_total > curr_len:
-            st.info(
-                f"💾 **Đã tự động khôi phục tiến trình quét dang dở ({curr_len}/{exp_total} bài).** "
-                "Bạn có thể bấm **▶️ Tiếp tục quét** bên dưới để chạy tiếp các bài còn lại mà không mất dữ liệu."
+    render_notification_script(enable_notifications)
+
+    # 2. Truy xuất trạng thái từ Background Job Manager
+    active_snapshot = client.get_batch_job_snapshot()
+    queue_snapshots = client.get_batch_queue_snapshots()
+
+    is_running = bool(active_snapshot and active_snapshot.status == JobStatus.RUNNING)
+    is_paused = bool(active_snapshot and active_snapshot.status == JobStatus.PAUSED)
+    is_stopped = bool(active_snapshot and active_snapshot.status == JobStatus.STOPPED)
+    is_completed = bool(active_snapshot and active_snapshot.status == JobStatus.COMPLETED)
+    has_results = bool(active_snapshot and active_snapshot.live_rows)
+
+    # 3. Hiển thị Panel Hàng Đợi (Queue Drawer / Panel) nếu có task đang chờ
+    if queue_snapshots:
+        with st.expander(f"📬 Hàng Đợi Đang Chờ ({len(queue_snapshots)} lô bài hát)", expanded=True):
+            st.info("Hệ thống xử lý tuần tự từng lô để đảm bảo CPU/RAM ổn định và tránh bị YouTube chặn IP.")
+            for q_idx, q_job in enumerate(queue_snapshots):
+                qc1, qc2, qc3, qc4 = st.columns([1, 4, 2, 2])
+                with qc1:
+                    st.markdown(f"**#{q_idx + 1}**")
+                with qc2:
+                    st.markdown(f"**{q_job.job_name}** ({q_job.total_tracks or 'Chờ đếm'} bài)")
+                with qc3:
+                    st.caption(f"Chế độ: `{q_job.scan_mode}`")
+                with qc4:
+                    if st.button("❌ Hủy yêu cầu", key=f"cancel_q_{q_job.job_id}", use_container_width=True):
+                        if client.cancel_queued_batch_job(q_job.job_id):
+                            st.toast(f"Đã hủy lô '{q_job.job_name}' khỏi hàng đợi!", icon="🗑️")
+                            st.rerun()
+
+    # 4. Form nộp lô mới (Chỉ hiển thị hoặc cho phép khi không bị trùng)
+    with st.expander("➕ Nộp Lô Bài Hát Mới", expanded=not is_running and not has_results):
+        upload_mode = st.radio(
+            "Phương thức nhập dữ liệu:",
+            ["Tải lên tệp (.txt, .csv, .xlsx)", "Nhập danh sách trực tiếp"],
+            horizontal=True,
+            key="batch_input_mode",
+        )
+
+        tracks_to_process = []
+        file_path = None
+
+        if upload_mode == "Tải lên tệp (.txt, .csv, .xlsx)":
+            uploaded_file = st.file_uploader(
+                "Chọn tệp danh sách bài hát:", type=["txt", "csv", "xlsx", "xls"], key="batch_file_uploader"
             )
+            if uploaded_file:
+                temp_path = TEMP_DIR / uploaded_file.name
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                file_path = temp_path
+                st.session_state.batch_last_file_path = str(temp_path)
+                st.success(f"Đã nạp file: {uploaded_file.name}")
+            elif st.session_state.get("batch_last_file_path"):
+                cand = Path(st.session_state.batch_last_file_path)
+                if cand.exists():
+                    file_path = cand
+                    st.info(f"💡 Đang dùng tệp đã nạp trước đó: **{cand.name}**")
         else:
-            st.success(
-                f"💾 **Đã khôi phục kết quả quét gần nhất ({curr_len} bài).** "
-                "Dữ liệu và file báo cáo Excel được lưu giữ đầy đủ bên dưới."
+            text_queries = st.text_area(
+                "Nhập danh sách link hoặc tên bài hát (mỗi dòng 1 bài):",
+                value="\n".join(st.session_state.get("batch_last_queries", [])),
+                placeholder="https://www.youtube.com/watch?v=...\nSơn Tùng M-TP - Đừng Làm Trái Tim Anh Đau\nBài hát 3...",
+                height=180,
+                key="batch_text_queries",
             )
+            if text_queries.strip():
+                tracks_to_process = [q.strip() for q in text_queries.split("\n") if q.strip()]
+                st.session_state.batch_last_queries = tracks_to_process
 
-    upload_mode = st.radio(
-        "Phương thức nhập dữ liệu:",
-        ["Tải lên tệp (.txt, .csv, .xlsx)", "Nhập danh sách trực tiếp"],
-        horizontal=True,
-    )
-
-    tracks_to_process = []
-    file_path = None
-
-    if upload_mode == "Tải lên tệp (.txt, .csv, .xlsx)":
-        uploaded_file = st.file_uploader(
-            "Chọn tệp danh sách bài hát:", type=["txt", "csv", "xlsx", "xls"]
+        scan_mode_choice = st.radio(
+            "🎯 **Chế độ quét hàng loạt:**",
+            options=[
+                "⚡ Quét gia số thông minh (Tự động dùng lại CSDL đã có - Tiết kiệm thời gian & Quota)",
+                "🔄 Quét lại toàn bộ (Bỏ qua CSDL và ép buộc AI phân tích lại - Cập nhật đè CSDL)",
+                "🛠️ Chỉ quét lại bài bị lỗi hoặc chưa có kết luận",
+            ],
+            index=0,
+            key="batch_scan_mode_radio",
         )
-        if uploaded_file:
-            temp_path = TEMP_DIR / uploaded_file.name
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            file_path = temp_path
-            st.session_state.batch_last_file_path = str(temp_path)
-            st.success(f"Đã nạp file: {uploaded_file.name}")
-        elif st.session_state.get("batch_last_file_path"):
-            cand = Path(st.session_state.batch_last_file_path)
-            if cand.exists():
-                file_path = cand
-                st.info(f"💡 Đang dùng tệp đã nạp trước đó: **{cand.name}**")
-    else:
-        text_queries = st.text_area(
-            "Nhập danh sách link hoặc tên bài hát (mỗi dòng 1 bài):",
-            value="\n".join(st.session_state.get("batch_last_queries", [])),
-            placeholder="https://www.youtube.com/watch?v=...\nSơn Tùng M-TP - Đừng Làm Trái Tim Anh Đau\nBài hát 3...",
-            height=200,
-        )
-        if text_queries.strip():
-            tracks_to_process = [q.strip() for q in text_queries.split("\n") if q.strip()]
-            st.session_state.batch_last_queries = tracks_to_process
+        scan_mode_map = {
+            "⚡ Quét gia số thông minh (Tự động dùng lại CSDL đã có - Tiết kiệm thời gian & Quota)": "smart",
+            "🔄 Quét lại toàn bộ (Bỏ qua CSDL và ép buộc AI phân tích lại - Cập nhật đè CSDL)": "force_all",
+            "🛠️ Chỉ quét lại bài bị lỗi hoặc chưa có kết luận": "retry_errors",
+        }
+        selected_scan_mode = scan_mode_map[scan_mode_choice]
 
-    # Tùy chọn chế độ quét hàng loạt
-    scan_mode_choice = st.radio(
-        "🎯 **Chế độ quét hàng loạt:**",
-        options=[
-            "⚡ Quét gia số thông minh (Tự động dùng lại CSDL đã có - Tiết kiệm thời gian & Quota)",
-            "🔄 Quét lại toàn bộ (Bỏ qua CSDL và ép buộc AI phân tích lại - Cập nhật đè CSDL)",
-            "🛠️ Chỉ quét lại bài bị lỗi hoặc chưa có kết luận",
-        ],
-        index=0,
-    )
-    scan_mode_map = {
-        "⚡ Quét gia số thông minh (Tự động dùng lại CSDL đã có - Tiết kiệm thời gian & Quota)": "smart",
-        "🔄 Quét lại toàn bộ (Bỏ qua CSDL và ép buộc AI phân tích lại - Cập nhật đè CSDL)": "force_all",
-        "🛠️ Chỉ quét lại bài bị lỗi hoặc chưa có kết luận": "retry_errors",
-    }
-    selected_scan_mode = scan_mode_map[scan_mode_choice]
-    st.session_state.batch_last_scan_mode = selected_scan_mode
-
-    # Trạng thái hiện tại
-    has_live_data = bool(st.session_state.get("batch_live_rows"))
-    has_report = bool(st.session_state.get("batch_report"))
-    live_count = len(st.session_state.get("batch_live_rows", []))
-    total_expected = st.session_state.get("batch_total_tracks", 0)
-    is_partially_done = has_live_data and (total_expected > 0 and live_count < total_expected)
+        col_submit, col_hint = st.columns([2, 3])
+        with col_submit:
+            start_btn_label = "🚀 Bắt đầu Quét Hàng Loạt" if not is_running else "➕ Xếp Vào Hàng Đợi (Đang Quét)"
+            btn_type = "primary" if not is_running else "secondary"
+            if st.button(start_btn_label, type=btn_type, use_container_width=True, key="btn_start_batch"):
+                target_file = file_path
+                target_queries = tracks_to_process
+                if not target_file and not target_queries:
+                    st.warning("Vui lòng tải lên tệp (.xlsx, .csv) hoặc nhập danh sách bài hát trước!")
+                else:
+                    success, msg, job = client.enqueue_batch_job(
+                        file_path=target_file,
+                        queries=target_queries,
+                        scan_mode=selected_scan_mode,
+                        model_override=st.session_state.model_name,
+                        language=st.session_state.get("reason_language", "vi"),
+                    )
+                    if success:
+                        st.toast(msg, icon="🚀")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        with col_hint:
+            if is_running:
+                st.caption("⏳ Hệ thống đang chạy 1 lô. Lô mới sẽ tự động vào hàng đợi và chạy tiếp khi xong.")
+            else:
+                st.caption("🚀 Quá trình quét chạy trên luồng ngầm độc lập. Bạn có thể chuyển tab thoải mái.")
 
     st.divider()
 
-    # KHU VỰC ĐIỀU KHIỂN CHÍNH (ACTION BUTTONS)
-    col_act1, col_act2, col_act3, col_act4 = st.columns([2, 2, 2, 2])
-
-    start_clicked = False
-    resume_clicked = False
-    stop_clicked = False
-    reset_clicked = False
-    retry_errors_clicked = False
-
-    with col_act1:
-        if is_partially_done:
-            resume_clicked = st.button(
-                f"▶️ Tiếp tục quét ({live_count}/{total_expected})",
-                type="primary",
-                use_container_width=True,
-                help="Tiếp tục quét các bài còn lại từ vị trí dang dở mà không quét lại các bài đã xong.",
-            )
-        else:
-            start_clicked = st.button(
-                "🚀 Bắt đầu Quét Hàng Loạt",
-                type="primary",
-                use_container_width=True,
-            )
-
-    with col_act2:
-        if has_live_data:
-            stop_clicked = st.button(
-                "🛑 Dừng Quét (Lưu kết quả)",
-                use_container_width=True,
-                help="Dừng quét an toàn sau bài hiện tại và giữ nguyên kết quả các bài đã hoàn thành.",
-            )
-
-    with col_act3:
-        failed_count_now = st.session_state.get("batch_live_counts", {}).get("failed", 0)
-        if failed_count_now > 0:
-            retry_errors_clicked = st.button(
-                f"🛠️ Quét lại {failed_count_now} bài lỗi",
-                use_container_width=True,
-                help="Chỉ quét lại các bài có nhãn lỗi kỹ thuật hoặc chưa hoàn tất.",
-            )
-
-    with col_act4:
-        if has_live_data or has_report:
-            reset_clicked = st.button(
-                "🔄 Đặt lại từ đầu",
-                use_container_width=True,
-                help="Xóa kết quả hiển thị hiện tại để bắt đầu lượt quét hoàn toàn mới.",
-            )
-
-    # Xử lý Đặt lại (Reset)
-    if reset_clicked:
-        clear_batch_persistent_state()
-        st.session_state.batch_live_rows = []
-        st.session_state.batch_live_results = []
-        st.session_state.batch_report = None
-        st.session_state.batch_is_running = False
-        st.session_state.batch_stop_requested = False
-        st.session_state.batch_total_tracks = 0
-        st.session_state.batch_partial_excel_path = None
-        st.toast("Đã đặt lại tiến trình quét!", icon="🔄")
-        st.rerun()
-
-    # Xử lý Dừng quét (Stop)
-    if stop_clicked:
-        st.session_state.batch_stop_requested = True
-        st.toast("🛑 Đã gửi lệnh dừng! Hệ thống sẽ chốt kết quả sau bài đang chạy dở...", icon="🛑")
-
-    # Xử lý Bắt đầu mới hoặc Tiếp tục quét
-    should_run = start_clicked or resume_clicked or retry_errors_clicked
-
-    if should_run:
-        target_file = file_path
-        target_queries = tracks_to_process
-
-        if not target_file and not target_queries:
-            st.warning("Vui lòng tải lên tệp (.xlsx, .csv) hoặc nhập danh sách bài hát trước!")
+    # 5. KHU VỰC HIỂN THỊ TIẾN TRÌNH THỜI GIAN THỰC & ĐIỀU KHIỂN
+    # Định nghĩa hàm render tiến trình (hỗ trợ st.fragment tự refresh nếu có)
+    def render_progress_dashboard():
+        curr_snap = client.get_batch_job_snapshot()
+        if not curr_snap:
+            st.info("Chưa có tác vụ quét nào. Hãy tải tệp hoặc nhập danh sách ở trên để bắt đầu.")
             return
 
-        start_index = 0
-        initial_results: list[DetectionResult] = []
+        c_status = curr_snap.status
+        c_running = c_status == JobStatus.RUNNING
+        c_paused = c_status == JobStatus.PAUSED
+        c_stopped = c_status == JobStatus.STOPPED
+        c_completed = c_status == JobStatus.COMPLETED
 
-        if start_clicked:
-            # Bắt đầu lượt quét hoàn toàn mới
-            clear_batch_persistent_state()
-            st.session_state.batch_live_rows = []
-            st.session_state.batch_live_results = []
-            st.session_state.batch_report = None
-            st.session_state.batch_partial_excel_path = None
-            st.session_state.batch_stop_requested = False
-            st.session_state.batch_live_counts = {
-                "ai": 0,
-                "human": 0,
-                "uncertain": 0,
-                "failed": 0,
-            }
-            st.session_state.batch_start_time = time.time()
-        elif resume_clicked:
-            # Tiếp tục từ vị trí đã dừng
-            st.session_state.batch_stop_requested = False
-            start_index = len(st.session_state.batch_live_results)
-            initial_results = list(st.session_state.batch_live_results)
-            st.session_state.batch_start_time = time.time()
-            st.info(f"▶️ Đang tiếp tục quét từ bài thứ {start_index + 1}...")
-        elif retry_errors_clicked:
-            # Quét lại các bài lỗi
-            st.session_state.batch_stop_requested = False
-            selected_scan_mode = "retry_errors"
-
-        st.session_state.batch_is_running = True
-
-        # Vùng hiển thị tiến trình thời gian thực
-        progress_bar = st.progress(0.0)
-        status_box = st.empty()
-        eta_box = st.empty()
-        live_metrics_placeholder = st.empty()
-        live_table_header = st.empty()
-        live_table_placeholder = st.empty()
-
-        def stop_checker() -> bool:
-            return bool(st.session_state.get("batch_stop_requested", False))
-
-        def update_progress(curr, total, track, res, err):
-            st.session_state.batch_total_tracks = total
-            pct = min(1.0, max(0.0, curr / total)) if total > 0 else 0.0
-            progress_bar.progress(pct)
-
-            counts = st.session_state.batch_live_counts
-            start_t = st.session_state.get("batch_start_time") or time.time()
-            elapsed_sec = max(0.1, time.time() - start_t)
-            speed_per_track = elapsed_sec / max(1, (curr - start_index))
-            remaining_tracks = max(0, total - curr)
-            eta_sec = remaining_tracks * speed_per_track
-
-            elapsed_str = format_time_duration(elapsed_sec)
-            eta_str = format_time_duration(eta_sec)
-
-            if res:
-                cached_tag = " [⚡ CSDL]" if getattr(res, "is_cached", False) else ""
-                status_box.markdown(
-                    f"**[{curr}/{total}]** ✅ **{res.track_title}** ➔ `{res.verdict_label}`{cached_tag}"
-                )
-                row = format_detection_row(res)
-                if getattr(res, "verdict_type", None) == VerdictType.UNCERTAIN:
-                    counts["uncertain"] += 1
-                elif getattr(res, "verdict_type", None) == VerdictType.ERROR:
-                    counts["failed"] += 1
-                elif res.is_ai:
-                    counts["ai"] += 1
-                else:
-                    counts["human"] += 1
-                st.session_state.batch_live_results.append(res)
-            else:
-                status_box.markdown(
-                    f"**[{curr}/{total}]** ❌ **{track.raw_query}** ➔ `Lỗi: {err}`"
-                )
-                counts["failed"] += 1
-                dur_raw = getattr(track, "duration_sec", 0) or 0
-                dur_str = format_time_duration(dur_raw) if dur_raw > 0 else "-"
-                row = {
-                    "Tên bài hát": track.track_title or track.raw_query,
-                    "Thời lượng": dur_str,
-                    "Loại tác phẩm": getattr(track, "song_type", "-") or "-",
-                    "Nhà phân phối": getattr(track, "distributor", "-") or "-",
-                    "Ngày phát hành": getattr(track, "release_date", "-") or "-",
-                    "Đánh giá Model AI": "ERROR",
-                    "Kết luận Tổng hợp": "❌ LỖI XỬ LÝ",
-                    "Nguồn gốc": "🔄 Quét mới",
-                    "Đính chính": "-",
-                    "Độ tin cậy": "0%",
-                    "Mô hình nghi vấn": "N/A",
-                    "Luận cứ": str(err or "Lỗi không xác định"),
-                    "Nguồn link": getattr(track, "resolved_url", "N/A") or "N/A",
-                }
-
-            st.session_state.batch_live_rows.append(row)
-            st.session_state.batch_live_counts = counts
-
-            # Lưu bền vững xuống đĩa để chống mất dữ liệu khi reload tab
-            save_batch_persistent_state(
-                file_path=target_file,
-                queries=target_queries,
-                scan_mode=selected_scan_mode,
-                total_tracks=total,
-                start_time=st.session_state.get("batch_start_time"),
-                counts=counts,
-                live_rows=st.session_state.batch_live_rows,
-                live_results=st.session_state.batch_live_results,
-                partial_excel_path=st.session_state.get("batch_partial_excel_path"),
+        # Banner trạng thái
+        if c_running:
+            st.markdown(
+                f"#### 🚀 Đang Quét Ngầm: **{curr_snap.job_name}** "
+                f"({curr_snap.current_index}/{curr_snap.total_tracks} bài)"
             )
-
-            # Cập nhật thông số thời gian & tốc độ (ETA Dashboard)
-            with eta_box.container():
-                ec1, ec2, ec3 = st.columns(3)
-                ec1.caption(f"⏱️ Đã chạy: **{elapsed_str}**")
-                ec2.caption(f"⚡ Tốc độ: **{speed_per_track:.1f}s / bài**")
-                ec3.caption(f"⏳ Ước tính còn lại (ETA): **~{eta_str}**")
-
-            # Cập nhật metric cards
-            with live_metrics_placeholder.container():
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Đã quét", f"{curr}/{total}")
-                m2.metric("Nghi vấn AI", counts["ai"])
-                m3.metric("Người làm", counts["human"])
-                m4.metric("Chưa rõ", counts["uncertain"])
-                m5.metric("Lỗi / Bỏ qua", counts["failed"])
-
-            # Cập nhật Data Table trực tiếp
-            live_table_header.markdown(
-                f"##### 📋 Bảng Dữ Liệu Thời Gian Thực ({len(st.session_state.batch_live_rows)}/{total} bài)"
+            pct = (
+                min(1.0, max(0.0, curr_snap.current_index / curr_snap.total_tracks))
+                if curr_snap.total_tracks > 0
+                else 0.0
             )
-            live_table_placeholder.dataframe(
-                pd.DataFrame(st.session_state.batch_live_rows),
-                **get_width_kwargs(st.dataframe),
+            st.progress(pct)
+
+            col_inf1, col_inf2, col_inf3 = st.columns(3)
+            col_inf1.caption(f"⏱️ Đã chạy: **{format_time_duration(curr_snap.elapsed_sec)}**")
+            col_inf2.caption(f"⚡ Tốc độ: **{curr_snap.speed_per_track:.1f}s / bài**")
+            col_inf3.caption(f"⏳ Dự kiến còn: **~{format_time_duration(curr_snap.eta_sec)}**")
+
+            if curr_snap.current_track_title:
+                st.markdown(f"Đang xử lý: 🎵 `{curr_snap.current_track_title}`")
+
+        elif c_paused:
+            st.warning(
+                f"⚠️ **TẠM DỪNG AN TOÀN (Circuit Breaker):**\n\n"
+                f"{curr_snap.pause_reason or 'Hệ thống đã tự động dừng để bảo toàn danh sách.'}\n\n"
+                f"Đã xử lý: **{len(curr_snap.live_rows)}/{curr_snap.total_tracks} bài**. "
+                f"Bạn có thể kiểm tra lại kết nối/API key rồi bấm **▶️ Tiếp tục quét** bên dưới."
             )
-
-        try:
-            if target_file:
-                report = client.process_batch_file(
-                    file_path=target_file,
-                    model_override=st.session_state.model_name,
-                    scan_mode=selected_scan_mode,
-                    on_progress=update_progress,
-                    stop_check=stop_checker,
-                    start_index=start_index,
-                    initial_results=initial_results,
-                )
-            else:
-                report = client.process_batch_queries(
-                    queries=target_queries,
-                    model_override=st.session_state.model_name,
-                    scan_mode=selected_scan_mode,
-                    on_progress=update_progress,
-                    stop_check=stop_checker,
-                    start_index=start_index,
-                    initial_results=initial_results,
-                )
-
-            st.session_state.batch_report = report
-            st.session_state.batch_is_running = False
-
-            save_batch_persistent_state(
-                file_path=target_file,
-                queries=target_queries,
-                scan_mode=selected_scan_mode,
-                total_tracks=getattr(report, "total_tracks", len(st.session_state.batch_live_rows)),
-                start_time=st.session_state.get("batch_start_time"),
-                counts=st.session_state.batch_live_counts,
-                live_rows=st.session_state.batch_live_rows,
-                live_results=st.session_state.batch_live_results,
-                report_file_path=getattr(report, "report_file_path", None),
-                partial_excel_path=st.session_state.get("batch_partial_excel_path"),
+        elif c_stopped:
+            st.info(
+                f"🛑 **Tiến trình quét đã dừng:** Đã hoàn thành {len(curr_snap.live_rows)}/{curr_snap.total_tracks} bài. "
+                "Kết quả đã được bảo toàn đầy đủ."
             )
+        elif c_completed:
+            st.success(
+                f"🎉 **ĐÃ HOÀN TẤT 100%:** Quét xong toàn bộ **{curr_snap.total_tracks} bài** của lô '{curr_snap.job_name}'!"
+            )
+            # Phát âm thanh & Notification nếu vừa hoàn thành
+            last_notified = st.session_state.get("batch_last_notified_job_id")
+            if last_notified != curr_snap.job_id and st.session_state.get("batch_enable_notifications", True):
+                st.session_state.batch_last_notified_job_id = curr_snap.job_id
+                trigger_completion_alert(curr_snap.job_name, curr_snap.total_tracks)
 
-            if st.session_state.get("batch_stop_requested"):
-                st.warning(
-                    f"🛑 Đã dừng quét theo yêu cầu tại {len(st.session_state.batch_live_rows)}/{report.total_tracks} bài. "
-                    "Kết quả đã được bảo toàn đầy đủ bên dưới."
-                )
-            else:
-                st.success("🎉 Đã hoàn thành quét toàn bộ danh sách!")
+        # 5 Thẻ Metrics
+        counts = curr_snap.counts
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Đã quét", f"{len(curr_snap.live_rows)}/{curr_snap.total_tracks}")
+        m2.metric("Nghi vấn AI", counts.get("ai", 0), delta="AI Detected", delta_color="inverse")
+        m3.metric("Người làm", counts.get("human", 0), delta="Human", delta_color="normal")
+        m4.metric("Chưa rõ", counts.get("uncertain", 0))
+        m5.metric("Lỗi / Bỏ qua", counts.get("failed", 0))
 
-            st.rerun()
+        # Nút điều khiển
+        st.write("")
+        act_c1, act_c2, act_c3, act_c4 = st.columns([2, 2, 2, 2])
 
-        except Exception as e:
-            st.session_state.batch_is_running = False
-            st.error(f"Lỗi trong quá trình quét hàng loạt: {e}")
+        with act_c1:
+            if c_running:
+                if st.button("🛑 Dừng Quét (Lưu kết quả)", type="primary", use_container_width=True, key="btn_stop_job"):
+                    if client.stop_batch_job():
+                        st.toast("🛑 Đang dừng quét an toàn sau bài hiện tại...", icon="🛑")
+                        st.rerun()
+            elif c_paused or c_stopped:
+                remain_c = curr_snap.total_tracks - len(curr_snap.live_rows)
+                if st.button(
+                    f"▶️ Tiếp tục quét ({remain_c} bài còn lại)",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_resume_job",
+                ):
+                    succ, r_msg = client.resume_batch_job()
+                    if succ:
+                        st.toast(r_msg, icon="▶️")
+                        st.rerun()
+                    else:
+                        st.error(r_msg)
 
-    # HIỂN THỊ KẾT QUẢ ĐÃ LƯU BỀN VỮNG (PERSISTENT DATA TABLE & REPORT)
-    if st.session_state.get("batch_live_rows"):
-        live_rows = st.session_state.batch_live_rows
-        counts = st.session_state.get("batch_live_counts", {})
-        total_trk = st.session_state.get("batch_total_tracks", len(live_rows))
+        with act_c2:
+            if not c_running and curr_snap.live_rows:
+                if st.button("🔄 Đặt lại từ đầu", use_container_width=True, key="btn_reset_job"):
+                    client.reset_batch_job()
+                    st.toast("Đã đặt lại trạng thái!", icon="🔄")
+                    st.rerun()
 
-        st.subheader("📊 Báo Cáo & Dữ Liệu Hiện Tại")
-
-        # 5 Cards thống kê
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Tổng bài đã quét", f"{len(live_rows)} / {total_trk}")
-        c2.metric("Nghi vấn AI", counts.get("ai", 0), delta="AI Detected", delta_color="inverse")
-        c3.metric("Người làm", counts.get("human", 0), delta="Human", delta_color="normal")
-        c4.metric("Chưa rõ", counts.get("uncertain", 0))
-        c5.metric("Lỗi / Bỏ qua", counts.get("failed", 0))
-
-        # Nút tải Excel luôn khả dụng
-        excel_path_to_download = None
-        if (
-            st.session_state.get("batch_report")
-            and getattr(st.session_state.batch_report, "report_file_path", None)
-            and Path(st.session_state.batch_report.report_file_path).exists()
-        ):
-            excel_path_to_download = st.session_state.batch_report.report_file_path
-        elif (
-            st.session_state.get("batch_partial_excel_path")
-            and Path(st.session_state.batch_partial_excel_path).exists()
-        ):
-            excel_path_to_download = st.session_state.batch_partial_excel_path
-        elif st.session_state.get("batch_live_results"):
-            # Chỉ tạo file một lần khi cần tải mà chưa có file trên đĩa
+        # Nút tải Excel
+        excel_path = curr_snap.report_file_path or curr_snap.partial_excel_path
+        if not excel_path and curr_snap.live_results:
             try:
-                excel_path_to_download = client.export_custom_results(
-                    st.session_state.batch_live_results, format="xlsx"
-                )
-                st.session_state.batch_partial_excel_path = excel_path_to_download
+                excel_path = client.export_custom_results(curr_snap.live_results, format="xlsx")
+                curr_snap.partial_excel_path = excel_path
             except Exception:
                 pass
 
-        if excel_path_to_download and Path(excel_path_to_download).exists():
-            with open(excel_path_to_download, "rb") as f:
-                st.download_button(
-                    label=f"📥 Tải xuống File Báo Cáo Excel Hiện Tại ({len(live_rows)} bài)",
-                    data=f.read(),
-                    file_name=Path(excel_path_to_download).name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+        if excel_path and Path(excel_path).exists():
+            with act_c3:
+                with open(excel_path, "rb") as f:
+                    st.download_button(
+                        label=f"📥 Tải Excel ({len(curr_snap.live_rows)} bài)",
+                        data=f.read(),
+                        file_name=Path(excel_path).name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="btn_download_excel",
+                    )
 
         # Bảng dữ liệu chi tiết
-        st.markdown(f"##### 📋 Danh Sách Chi Tiết ({len(live_rows)} bài)")
-        st.dataframe(pd.DataFrame(live_rows), **get_width_kwargs(st.dataframe))
+        st.markdown(f"##### 📋 Danh Sách Chi Tiết ({len(curr_snap.live_rows)} bài)")
+        if curr_snap.live_rows:
+            df_rows = pd.DataFrame(curr_snap.live_rows)
+            # Luôn đảm bảo cột STT bắt đầu từ 1 và đứng ở vị trí đầu tiên
+            if "STT" not in df_rows.columns:
+                df_rows.insert(0, "STT", range(1, len(df_rows) + 1))
+            else:
+                df_rows["STT"] = range(1, len(df_rows) + 1)
+                cols = ["STT"] + [c for c in df_rows.columns if c != "STT"]
+                df_rows = df_rows[cols]
+            st.dataframe(df_rows, hide_index=True, **get_width_kwargs(st.dataframe))
+        else:
+            st.dataframe(pd.DataFrame(curr_snap.live_rows), hide_index=True, **get_width_kwargs(st.dataframe))
 
-        # Can thiệp nhanh từng bài trong danh sách
-        live_results = st.session_state.get("batch_live_results", [])
-        if live_results:
-            with st.expander(
-                "✍️ Can thiệp & Đính chính nhanh từng bài trong danh sách", expanded=False
-            ):
+        # Can thiệp nhanh từng bài khi không đang chạy
+        if not c_running and curr_snap.live_results:
+            with st.expander("✍️ Can thiệp & Đính chính nhanh từng bài trong danh sách", expanded=False):
                 st.caption("Chọn bài hát để đính chính kết quả hoặc quét lại độc lập:")
+                live_res_list = curr_snap.live_results
                 track_labels = [
-                    f"{idx + 1}. {r.track_title} [{r.verdict_label}]"
-                    for idx, r in enumerate(live_results)
+                    f"{idx + 1}. {r.track_title} [{r.verdict_label}]" for idx, r in enumerate(live_res_list)
                 ]
                 selected_idx = st.selectbox(
                     "Chọn bài cần can thiệp:",
                     range(len(track_labels)),
                     format_func=lambda i: track_labels[i],
+                    key="batch_corr_select",
                 )
-                if selected_idx is not None and selected_idx < len(live_results):
-                    target_res = live_results[selected_idx]
+                if selected_idx is not None and selected_idx < len(live_res_list):
+                    target_res = live_res_list[selected_idx]
                     col_b1, col_b2, col_b3 = st.columns(3)
                     with col_b1:
                         if st.button(
@@ -598,27 +388,9 @@ def render_batch_view(client: BackendClient):
                                     verdict_label="CONFIRMED HUMAN (Người làm)",
                                     note="Đính chính từ bảng danh sách hàng loạt",
                                 )
-                                live_results[selected_idx] = updated
-                                st.session_state.batch_live_results = live_results
-                                st.session_state.batch_live_rows[selected_idx] = (
-                                    format_detection_row(updated)
-                                )
-                                save_batch_persistent_state(
-                                    file_path=st.session_state.get("batch_last_file_path"),
-                                    queries=st.session_state.get("batch_last_queries", []),
-                                    scan_mode=st.session_state.get("batch_last_scan_mode", "smart"),
-                                    total_tracks=st.session_state.get("batch_total_tracks", len(live_results)),
-                                    start_time=st.session_state.get("batch_start_time"),
-                                    counts=st.session_state.get("batch_live_counts", {}),
-                                    live_rows=st.session_state.batch_live_rows,
-                                    live_results=st.session_state.batch_live_results,
-                                    report_file_path=getattr(st.session_state.get("batch_report"), "report_file_path", None),
-                                    partial_excel_path=st.session_state.get("batch_partial_excel_path"),
-                                )
-                                st.toast(
-                                    f"✅ Đã đính chính '{updated.track_title}' thành Người thật!",
-                                    icon="🧑‍🎤",
-                                )
+                                live_res_list[selected_idx] = updated
+                                curr_snap.live_rows[selected_idx] = format_detection_row(updated, stt=selected_idx + 1)
+                                st.toast(f"✅ Đã đính chính '{updated.track_title}' thành Người thật!", icon="🧑‍🎤")
                                 st.rerun()
                             except Exception as err:
                                 st.error(f"Lỗi: {err}")
@@ -636,27 +408,9 @@ def render_batch_view(client: BackendClient):
                                     verdict_label="AI-GENERATED (Nhạc AI tạo)",
                                     note="Đính chính từ bảng danh sách hàng loạt",
                                 )
-                                live_results[selected_idx] = updated
-                                st.session_state.batch_live_results = live_results
-                                st.session_state.batch_live_rows[selected_idx] = (
-                                    format_detection_row(updated)
-                                )
-                                save_batch_persistent_state(
-                                    file_path=st.session_state.get("batch_last_file_path"),
-                                    queries=st.session_state.get("batch_last_queries", []),
-                                    scan_mode=st.session_state.get("batch_last_scan_mode", "smart"),
-                                    total_tracks=st.session_state.get("batch_total_tracks", len(live_results)),
-                                    start_time=st.session_state.get("batch_start_time"),
-                                    counts=st.session_state.get("batch_live_counts", {}),
-                                    live_rows=st.session_state.batch_live_rows,
-                                    live_results=st.session_state.batch_live_results,
-                                    report_file_path=getattr(st.session_state.get("batch_report"), "report_file_path", None),
-                                    partial_excel_path=st.session_state.get("batch_partial_excel_path"),
-                                )
-                                st.toast(
-                                    f"🤖 Đã đính chính '{updated.track_title}' thành Nhạc AI!",
-                                    icon="🤖",
-                                )
+                                live_res_list[selected_idx] = updated
+                                curr_snap.live_rows[selected_idx] = format_detection_row(updated, stt=selected_idx + 1)
+                                st.toast(f"🤖 Đã đính chính '{updated.track_title}' thành Nhạc AI!", icon="🤖")
                                 st.rerun()
                             except Exception as err:
                                 st.error(f"Lỗi: {err}")
@@ -668,36 +422,35 @@ def render_batch_view(client: BackendClient):
                         ):
                             with st.spinner(f"Đang quét lại '{target_res.track_title}'..."):
                                 try:
-                                    rescan_query = (
-                                        target_res.raw_query
+                                    rescan_q = (
+                                        target_res.source_url
+                                        or target_res.raw_query
                                         or target_res.track_title
-                                        or target_res.source_url
+                                        or ""
                                     )
+                                    if not rescan_q:
+                                        st.error("Không tìm thấy thông tin query của bài hát để quét lại.")
+                                        return
                                     fresh = client.detect_single_track(
-                                        query=rescan_query,
+                                        query=rescan_q,
+                                        track_id=target_res.track_id,
                                         model_override=st.session_state.model_name,
                                         force_rescan=True,
                                     )
-                                    live_results[selected_idx] = fresh
-                                    st.session_state.batch_live_results = live_results
-                                    st.session_state.batch_live_rows[selected_idx] = (
-                                        format_detection_row(fresh)
-                                    )
-                                    save_batch_persistent_state(
-                                        file_path=st.session_state.get("batch_last_file_path"),
-                                        queries=st.session_state.get("batch_last_queries", []),
-                                        scan_mode=st.session_state.get("batch_last_scan_mode", "smart"),
-                                        total_tracks=st.session_state.get("batch_total_tracks", len(live_results)),
-                                        start_time=st.session_state.get("batch_start_time"),
-                                        counts=st.session_state.get("batch_live_counts", {}),
-                                        live_rows=st.session_state.batch_live_rows,
-                                        live_results=st.session_state.batch_live_results,
-                                        report_file_path=getattr(st.session_state.get("batch_report"), "report_file_path", None),
-                                        partial_excel_path=st.session_state.get("batch_partial_excel_path"),
-                                    )
-                                    st.toast(
-                                        f"🎉 Đã quét lại xong '{fresh.track_title}'!", icon="✅"
-                                    )
+                                    live_res_list[selected_idx] = fresh
+                                    curr_snap.live_rows[selected_idx] = format_detection_row(fresh, stt=selected_idx + 1)
+                                    st.toast(f"🎉 Đã quét lại xong '{fresh.track_title}'!", icon="✅")
                                     st.rerun()
                                 except Exception as err:
                                     st.error(f"Lỗi: {err}")
+
+    # Bọc trong st.fragment(run_every="2s") nếu Streamlit hỗ trợ, giúp tự làm mới khi đang quét
+    if hasattr(st, "fragment") and is_running:
+
+        @st.fragment(run_every="2s")
+        def live_fragment():
+            render_progress_dashboard()
+
+        live_fragment()
+    else:
+        render_progress_dashboard()

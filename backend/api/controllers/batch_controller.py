@@ -54,10 +54,12 @@ class BatchController:
                 )
 
             scan_m = getattr(request, "scan_mode", "smart")
+            lang = getattr(request, "language", "vi") or "vi"
             report = self.batch_service.process_batch(
                 tracks=tracks,
                 model_override=request.model_override,
                 scan_mode=scan_m,
+                language=lang,
                 on_progress=on_progress,
                 stop_check=stop_check,
                 start_index=start_index,
@@ -76,6 +78,7 @@ class BatchController:
         file_path: Path,
         model_override: str | None = None,
         scan_mode: str = "smart",
+        language: str = "vi",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
         stop_check: Callable[[], bool] | None = None,
@@ -89,6 +92,7 @@ class BatchController:
                 tracks=tracks,
                 model_override=model_override,
                 scan_mode=scan_mode,
+                language=language,
                 on_progress=on_progress,
                 stop_check=stop_check,
                 start_index=start_index,

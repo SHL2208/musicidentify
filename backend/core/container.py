@@ -113,6 +113,11 @@ class AppContainer:
         self.report_controller: ReportController = ReportController(
             report_service=self.report_service, track_repo=self.track_repository
         )
+        from ..services.batch_job_manager import get_batch_job_manager
+
+        self.batch_job_manager = get_batch_job_manager(
+            batch_service=self.batch_service, resolver=self.resolver
+        )
 
 
 # Global default container instance

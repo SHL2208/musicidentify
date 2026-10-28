@@ -60,9 +60,12 @@ class InMemoryTrackRepository(ITrackRepository):
         return list(self._results.values())
 
     def find_result_by_query_or_url(
-        self, query: str, resolved_url: str | None = None
+        self, query: str, resolved_url: str | None = None, track_id: str | None = None
     ) -> DetectionResult | None:
         import re
+        if track_id and track_id in self._results:
+            return self._results[track_id]
+
         clean_q = (query or "").strip().lower()
         clean_u = (resolved_url or "").strip().lower()
         yt_id = None
@@ -73,17 +76,18 @@ class InMemoryTrackRepository(ITrackRepository):
                     yt_id = m.group(1).lower()
                     break
 
-        for track_id, track in self._tracks.items():
+        for t_id, track in self._tracks.items():
             t_query = (track.raw_query or "").strip().lower()
             t_url = (track.resolved_url or "").strip().lower()
             t_title = (track.track_title or "").strip().lower()
-            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or track_id.lower() == f"yt_{yt_id}")
+            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or t_id.lower() == f"yt_{yt_id}")
             if (
                 yt_match
                 or (clean_u and (clean_u == t_url or clean_u == t_query))
                 or (clean_q and (clean_q == t_query or clean_q == t_url or clean_q == t_title))
+                or (track_id and t_id == track_id)
             ):
-                res = self._results.get(track_id)
+                res = self._results.get(t_id)
                 if res:
                     return res
         return None

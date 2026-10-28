@@ -22,6 +22,7 @@ from ..core.models.db_models import (
     DistributorCatalogModel,
     MediaAssetModel,
     TrackModel,
+    get_utc_now,
 )
 from ..core.models.entities import (
     AcousticMetrics,
@@ -72,7 +73,7 @@ class DatabaseTrackRepository(ITrackRepository):
                         track.resolved_url = existing.resolved_url
 
                     # Tiêu đề bài hát
-                    if track.track_title and (not existing.track_title or existing.track_title == existing.raw_query):
+                    if track.track_title:
                         existing.track_title = track.track_title
                     elif existing.track_title and not track.track_title:
                         track.track_title = existing.track_title
@@ -98,19 +99,19 @@ class DatabaseTrackRepository(ITrackRepository):
                     # Loại tác phẩm (Song Type)
                     if track.song_type:
                         existing.song_type = track.song_type
-                    elif existing.song_type:
+                    elif existing.song_type and not track.song_type:
                         track.song_type = existing.song_type
 
                     # Ngày phát hành
                     if track.release_date:
                         existing.release_date = track.release_date
-                    elif existing.release_date:
+                    elif existing.release_date and not track.release_date:
                         track.release_date = existing.release_date
 
                     # Nhà phân phối
                     if track.distributor:
                         existing.distributor = track.distributor
-                    elif existing.distributor:
+                    elif existing.distributor and not track.distributor:
                         track.distributor = existing.distributor
 
                     # Match score & verification
@@ -130,6 +131,7 @@ class DatabaseTrackRepository(ITrackRepository):
                             pass  # Giữ nguyên COMPLETED
                         else:
                             existing.status = track.status
+                    existing.updated_at = get_utc_now()
                 else:
                     new_track = TrackModel(
                         id=track.id,
@@ -222,37 +224,38 @@ class DatabaseTrackRepository(ITrackRepository):
                     session.add(track_rec)
                     session.flush()
                 else:
-                    if result.source_url and not track_rec.resolved_url:
+                    if result.source_url:
                         track_rec.resolved_url = result.source_url
                     elif track_rec.resolved_url and not result.source_url:
                         result.source_url = track_rec.resolved_url
 
-                    if result.track_title and (not track_rec.track_title or track_rec.track_title == track_rec.raw_query):
+                    if result.track_title:
                         track_rec.track_title = result.track_title
                     elif track_rec.track_title and not result.track_title:
                         result.track_title = track_rec.track_title
 
-                    if result.song_type and not track_rec.song_type:
+                    if result.song_type:
                         track_rec.song_type = result.song_type
                     elif track_rec.song_type and not result.song_type:
                         result.song_type = track_rec.song_type
 
-                    if result.distributor and not track_rec.distributor:
+                    if result.distributor:
                         track_rec.distributor = result.distributor
                     elif track_rec.distributor and not result.distributor:
                         result.distributor = track_rec.distributor
 
-                    if result.release_date and not track_rec.release_date:
+                    if result.release_date:
                         track_rec.release_date = result.release_date
                     elif track_rec.release_date and not result.release_date:
                         result.release_date = track_rec.release_date
 
-                    if dur_val is not None and (track_rec.duration_sec is None or track_rec.duration_sec <= 0):
+                    if dur_val is not None and dur_val > 0:
                         track_rec.duration_sec = dur_val
                     elif track_rec.duration_sec and getattr(result, "duration_sec", None) is None:
                         result.duration_sec = track_rec.duration_sec
 
                     track_rec.status = "COMPLETED"
+                    track_rec.updated_at = get_utc_now()
 
                 # 2. Lưu hoặc cập nhật DetectionResultModel
                 res_id = f"res_{result.track_id}"
@@ -276,6 +279,7 @@ class DatabaseTrackRepository(ITrackRepository):
                     existing_res.ai_model_verdict = result.ai_model_verdict
                     existing_res.consensus_is_ai = result.consensus_is_ai
                     existing_res.consensus_verdict = result.consensus_verdict
+                    existing_res.processed_at = get_utc_now()
                 else:
                     existing_res = DetectionResultModel(
                         id=res_id,
@@ -440,17 +444,24 @@ class DatabaseTrackRepository(ITrackRepository):
         return list(self._in_memory_cache_results.values())
 
     def find_result_by_query_or_url(
-        self, query: str, resolved_url: str | None = None
+        self, query: str, resolved_url: str | None = None, track_id: str | None = None
     ) -> DetectionResult | None:
-        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn hoặc URL nguồn."""
+        """Tìm kiếm kết quả thẩm định đã có theo câu truy vấn, URL nguồn hoặc track_id."""
         clean_q = (query or "").strip()
         clean_u = (resolved_url or "").strip()
-        if not clean_q and not clean_u:
+        clean_id = (track_id or "").strip()
+        if not clean_q and not clean_u and not clean_id:
             return None
+
+        # 0. Nếu có track_id, kiểm tra cache bộ nhớ trước
+        if clean_id and clean_id in self._in_memory_cache_results:
+            cached = self._in_memory_cache_results[clean_id]
+            cached.is_cached = True
+            return cached
 
         # Trích xuất YouTube Video ID nếu có
         yt_id = None
-        for cand in [clean_u, clean_q]:
+        for cand in [clean_u, clean_q, clean_id]:
             if "youtube.com" in cand or "youtu.be" in cand:
                 m = re.search(r"(?:v=|\/|youtu\.be\/)([0-9A-Za-z_-]{11})", cand)
                 if m:
@@ -458,19 +469,20 @@ class DatabaseTrackRepository(ITrackRepository):
                     break
 
         # 1. Kiểm tra cache bộ nhớ phiên làm việc trước
-        for track_id, track in self._in_memory_cache_tracks.items():
+        for t_id, track in self._in_memory_cache_tracks.items():
             t_query = (track.raw_query or "").strip().lower()
             t_url = (track.resolved_url or "").strip().lower()
             t_title = (track.track_title or "").strip().lower()
             q_lower = clean_q.lower()
             u_lower = clean_u.lower()
-            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or track_id == f"yt_{yt_id}")
+            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or t_id == f"yt_{yt_id}")
             if (
-                yt_match
+                (clean_id and t_id == clean_id)
+                or yt_match
                 or (u_lower and (u_lower == t_url or u_lower == t_query))
                 or (q_lower and (q_lower == t_query or q_lower == t_url or q_lower == t_title))
             ):
-                cached = self._in_memory_cache_results.get(track_id)
+                cached = self._in_memory_cache_results.get(t_id)
                 if cached:
                     cached.is_cached = True
                     return cached
@@ -479,6 +491,8 @@ class DatabaseTrackRepository(ITrackRepository):
         try:
             with get_db_session() as session:
                 conditions = []
+                if clean_id:
+                    conditions.append(TrackModel.id == clean_id)
                 if yt_id:
                     conditions.append(TrackModel.id == f"yt_{yt_id}")
                     conditions.append(TrackModel.resolved_url.ilike(f"%{yt_id}%"))

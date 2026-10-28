@@ -37,6 +37,7 @@ class BatchService(IBatchService):
         tracks: list[TrackItem],
         model_override: str | None = None,
         scan_mode: str = "smart",
+        language: str = "vi",
         on_progress: Callable[[int, int, TrackItem, DetectionResult | None, str | None], None]
         | None = None,
         stop_check: Callable[[], bool] | None = None,
@@ -78,7 +79,10 @@ class BatchService(IBatchService):
                     self.track_repo.save_track(track)
 
                 result = self.detection_service.detect_single(
-                    track, model_override=model_override, force_rescan=force_rescan
+                    track,
+                    model_override=model_override,
+                    force_rescan=force_rescan,
+                    language=language,
                 )
                 was_cached = bool(getattr(result, "is_cached", False))
 
@@ -168,7 +172,9 @@ class BatchService(IBatchService):
                         pass
 
             if i < total - 1 and not was_cached:
-                time.sleep(self.sleep_interval)
+                sleep_time = 0.0 if track.input_type == InputType.LOCAL_FILE else self.sleep_interval
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
         # Xuất báo cáo qua IReportService
         report_file = self.report_service.export_report(results, format="xlsx")

@@ -250,3 +250,107 @@ def test_database_track_repository_no_upload_audio_to_cloud(tmp_path: Path, monk
 
     # Đảm bảo file WAV tạm đã được xóa sạch sau khi xử lý
     assert not dummy_wav.exists()
+
+
+def test_rescan_updates_db_without_adding_duplicate(tmp_path):
+    """Kiểm tra chức năng quét lại (force_rescan) cập nhật đè CSDL thay vì thêm bản ghi mới."""
+    from backend.api.controllers.track_controller import TrackController
+    from backend.api.schemas.dtos import TrackDetectRequest
+    from backend.core.models.entities import AcousticMetrics, InputType
+
+    repo = InMemoryTrackRepository()
+    mock_audio_engine = MagicMock()
+    mock_audio_engine.process_track_audio.return_value = (tmp_path / "audio.mp3", {})
+    mock_signal_analyzer = MagicMock()
+    mock_signal_analyzer.analyze_audio.return_value = (
+        AcousticMetrics(duration_sec=120.0),
+        tmp_path / "spec.png",
+    )
+    mock_classifier = MagicMock()
+    initial_res = DetectionResult(
+        track_id="trk_initial123",
+        track_title="Bài hát thử nghiệm",
+        source_url="https://www.youtube.com/watch?v=12345678901",
+        input_type=InputType.SONG_NAME,
+        raw_query="Bài hát thử nghiệm",
+        is_ai=False,
+        verdict_type=VerdictType.CONFIRMED_HUMAN,
+        verdict_label="CONFIRMED HUMAN",
+        confidence_score=0.90,
+        suspected_engine="None",
+        reasons=["Âm học tự nhiên"],
+        detailed_explanation="Human",
+    )
+    mock_classifier.classify_track.return_value = initial_res
+    mock_resolver = MagicMock()
+    service = DetectionService(
+        audio_engine=mock_audio_engine,
+        signal_analyzer=mock_signal_analyzer,
+        classifier=mock_classifier,
+        resolver=mock_resolver,
+        track_repo=repo,
+    )
+
+    # 1. Quét lần đầu
+    track1 = TrackItem(
+        id="trk_initial123",
+        raw_query="Bài hát thử nghiệm",
+        input_type=InputType.SONG_NAME,
+        resolved_url="https://www.youtube.com/watch?v=12345678901",
+        track_title="Bài hát thử nghiệm",
+    )
+    res1 = service.detect_single(track1, force_rescan=False)
+    assert len(repo.list_results()) == 1
+    assert repo.get_result("trk_initial123").is_ai is False
+
+    # 2. Quét lại với force_rescan=True nhưng đối tượng track mới có ID khác (do resolver sinh ra)
+    updated_res = DetectionResult(
+        track_id="yt_12345678901",
+        track_title="Bài hát thử nghiệm",
+        source_url="https://www.youtube.com/watch?v=12345678901",
+        input_type=InputType.SONG_NAME,
+        raw_query="Bài hát thử nghiệm",
+        is_ai=True,
+        verdict_type=VerdictType.AI_GENERATED,
+        verdict_label="AI GENERATED",
+        confidence_score=0.98,
+        suspected_engine="Suno",
+        reasons=["Dấu vết AI"],
+        detailed_explanation="AI Detected",
+    )
+    mock_classifier.classify_track.return_value = updated_res
+    track2 = TrackItem(
+        id="yt_12345678901",
+        raw_query="Bài hát thử nghiệm",
+        input_type=InputType.URL,
+        resolved_url="https://www.youtube.com/watch?v=12345678901",
+        track_title="Bài hát thử nghiệm",
+    )
+    res2 = service.detect_single(track2, force_rescan=True)
+
+    # Đảm bảo KHÔNG thêm bản ghi mới (vẫn chỉ có 1 bản ghi duy nhất)
+    assert len(repo.list_results()) == 1
+    # ID của bài hát được đồng bộ cập nhật đè lên bản ghi cũ
+    assert res2.track_id == "trk_initial123"
+    assert repo.get_result("trk_initial123").is_ai is True
+    assert repo.get_result("trk_initial123").verdict_type == VerdictType.AI_GENERATED
+
+    # 3. Quét lại qua TrackController với tham số track_id
+    controller = TrackController(detection_service=service, resolver=mock_resolver, track_repo=repo)
+    mock_resolver.resolve_track.return_value = TrackItem(
+        id="random_fresh_id",
+        raw_query="Bài hát thử nghiệm",
+        input_type=InputType.URL,
+        resolved_url="https://www.youtube.com/watch?v=12345678901",
+    )
+    resp = controller.detect_track(
+        TrackDetectRequest(
+            query="https://www.youtube.com/watch?v=12345678901",
+            track_id="trk_initial123",
+            force_rescan=True,
+        )
+    )
+    assert resp.success is True
+    assert resp.data.track_id == "trk_initial123"
+    assert len(repo.list_results()) == 1
+

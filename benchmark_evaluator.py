@@ -77,8 +77,8 @@ def calculate_work_type_confusion_matrix(
     correct = 0
 
     for yt, yp in zip(y_true, y_pred, strict=False):
-        yt_norm = str(yt or "").upper().strip()
-        yp_norm = str(yp or "").upper().strip()
+        yt_norm = (yt or "").upper().strip()
+        yp_norm = (yp or "").upper().strip()
         if yt_norm in matrix:
             if yp_norm not in matrix[yt_norm]:
                 yp_norm = "UNCERTAIN"

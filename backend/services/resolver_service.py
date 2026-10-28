@@ -5,7 +5,6 @@ import re
 import ssl
 import urllib.parse
 import urllib.request
-import uuid
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -485,7 +484,7 @@ class InputResolverService(IInputResolver):
         if not force_rescan and cache_key in self._cache:
             c = self._cache[cache_key]
             return TrackItem(
-                id=str(uuid.uuid4())[:8],
+                id=c.id,
                 raw_query=c.raw_query,
                 input_type=c.input_type,
                 resolved_url=c.resolved_url,

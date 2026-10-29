@@ -494,6 +494,18 @@ def get_cookie_status() -> tuple[bool, int, str]:
         return False, 0, f"Lỗi đọc cookie: {e}"
 
 
+def _normalize_proxy_url(proxy_url: str) -> str:
+    """Tự động chuẩn hóa URL proxy (ví dụ Webshare backbone cần thêm -rotate nếu thiếu)."""
+    raw = proxy_url.strip()
+    if "@p.webshare.io" in raw:
+        m = re.match(r"^(https?://)([^:@]+)(:[^@]+@p\.webshare\.io.*)$", raw)
+        if m:
+            proto, user, rest = m.groups()
+            if "-" not in user:
+                return f"{proto}{user}-rotate{rest}"
+    return raw
+
+
 def get_youtube_proxy() -> str | None:
     """
     Tìm kiếm cấu hình Proxy cho YouTube từ biến môi trường hoặc Streamlit Secrets.
@@ -504,7 +516,7 @@ def get_youtube_proxy() -> str | None:
     for key in candidate_keys:
         val = os.getenv(key, "").strip()
         if val:
-            return val
+            return _normalize_proxy_url(val)
 
     try:
         import streamlit as st
@@ -512,7 +524,7 @@ def get_youtube_proxy() -> str | None:
         if hasattr(st, "secrets"):
             for key in candidate_keys:
                 if key in st.secrets and str(st.secrets[key]).strip():
-                    return str(st.secrets[key]).strip()
+                    return _normalize_proxy_url(str(st.secrets[key]).strip())
 
             for k, v in st.secrets.items():
                 if (
@@ -520,7 +532,7 @@ def get_youtube_proxy() -> str | None:
                     and "proxy" in str(k).lower()
                     and str(v).startswith(("http://", "https://", "socks"))
                 ):
-                    return str(v).strip()
+                    return _normalize_proxy_url(str(v).strip())
     except Exception:
         pass
 

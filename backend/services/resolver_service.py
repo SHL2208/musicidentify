@@ -13,7 +13,7 @@ from typing import Any, cast
 import pandas as pd
 import yt_dlp
 
-from ..core.config import get_cookie_file_path, get_js_runtimes_config
+from ..core.config import get_cookie_file_path, get_js_runtimes_config, get_youtube_proxy
 from ..core.exceptions import InvalidInputException, TrackNotFoundException
 from ..core.interfaces.services.resolver_interface import IInputResolver
 from ..core.models.entities import InputType, TrackItem
@@ -713,6 +713,9 @@ class InputResolverService(IInputResolver):
         }
         if js_runtimes_cfg:
             ydl_opts["js_runtimes"] = js_runtimes_cfg
+        yt_proxy = get_youtube_proxy()
+        if yt_proxy:
+            ydl_opts["proxy"] = yt_proxy
 
         # Danh sách các câu truy vấn tìm kiếm theo thứ tự ưu tiên
         candidate_queries: list[str] = []
@@ -851,6 +854,9 @@ class InputResolverService(IInputResolver):
             ydl_opts["cookiefile"] = str(cookie_file)
         if js_runtimes_cfg:
             ydl_opts["js_runtimes"] = js_runtimes_cfg
+        yt_proxy = get_youtube_proxy()
+        if yt_proxy:
+            ydl_opts["proxy"] = yt_proxy
 
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:

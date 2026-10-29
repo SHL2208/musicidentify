@@ -492,3 +492,36 @@ def get_cookie_status() -> tuple[bool, int, str]:
         return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công ({mode_label})"
     except Exception as e:
         return False, 0, f"Lỗi đọc cookie: {e}"
+
+
+def get_youtube_proxy() -> str | None:
+    """
+    Tìm kiếm cấu hình Proxy cho YouTube từ biến môi trường hoặc Streamlit Secrets.
+    Hỗ trợ các định dạng: http://user:pass@host:port, http://host:port, socks5://...
+    Thứ tự ưu tiên: YOUTUBE_PROXY -> PROXY -> HTTP_PROXY -> HTTPS_PROXY.
+    """
+    candidate_keys = ["YOUTUBE_PROXY", "PROXY", "HTTP_PROXY", "HTTPS_PROXY"]
+    for key in candidate_keys:
+        val = os.getenv(key, "").strip()
+        if val:
+            return val
+
+    try:
+        import streamlit as st
+
+        if hasattr(st, "secrets"):
+            for key in candidate_keys:
+                if key in st.secrets and str(st.secrets[key]).strip():
+                    return str(st.secrets[key]).strip()
+
+            for k, v in st.secrets.items():
+                if (
+                    isinstance(v, str)
+                    and "proxy" in str(k).lower()
+                    and str(v).startswith(("http://", "https://", "socks"))
+                ):
+                    return str(v).strip()
+    except Exception:
+        pass
+
+    return None

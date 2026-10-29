@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
-import requests as req_lib
 import soundfile as sf
 import yt_dlp
 
@@ -13,11 +12,11 @@ from ..core.config import (
     AUDIO_SAMPLE_DURATION,
     AUDIO_SAMPLE_OFFSET,
     ENABLE_RANGE_STREAM_DOWNLOAD,
-    PIPED_TIMEOUT_SECONDS,
     get_all_cookie_file_paths,
     get_cookie_file_path,
     get_ffmpeg_binary,
     get_js_runtimes_config,
+    get_youtube_proxy,
 )
 from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.storage_repository_interface import IStorageRepository
@@ -249,27 +248,6 @@ class AudioEngineService(IAudioEngine):
                                         f"[AudioEngineService] [FAIL] YouTube search query thất bại ({q}): {yt_q_err}"
                                     )
 
-                    # Nhánh 1.5: Piped API — YouTube proxy mã nguồn mở, bypass hoàn toàn IP block
-                    # Piped proxy stream qua server riêng nên YouTube không thấy IP Streamlit Cloud
-                    if not raw_audio_path and (
-                        "youtube.com" in url_to_download or "youtu.be" in url_to_download
-                    ):
-                        try:
-                            _safe_log(
-                                "[AudioEngineService] [FALLBACK] yt-dlp thất bại. Đang thử Piped API (YouTube proxy)..."
-                            )
-                            raw_audio_path, metadata = self._download_via_piped_api(
-                                url_to_download, track.id
-                            )
-                            if raw_audio_path:
-                                metadata["is_fallback_audio"] = True
-                                metadata["fallback_from_url"] = url_to_download
-                                metadata["fallback_platform"] = "piped_api"
-                        except Exception as piped_err:
-                            _safe_log(
-                                f"[AudioEngineService] [PIPED] Piped API fallback thất bại: {piped_err}"
-                            )
-
                     # Nhánh 2: Nếu chưa tải được (do YouTube bị chặn Datacenter/bot/format trên Cloud),
                     # Tự động Fallback sang SoundCloud (hoàn toàn mở, không bị bot block trên Cloud Datacenter)
                     if not raw_audio_path:
@@ -406,6 +384,9 @@ class AudioEngineService(IAudioEngine):
             ydl_opts["cookiefile"] = cookie_file
         if js_runtimes_cfg:
             ydl_opts["js_runtimes"] = js_runtimes_cfg
+        yt_proxy = get_youtube_proxy()
+        if yt_proxy:
+            ydl_opts["proxy"] = yt_proxy
 
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
@@ -573,6 +554,11 @@ class AudioEngineService(IAudioEngine):
                 strategies.extend(
                     [
                         {
+                            "name": f"tv_full_cookies{suffix}",
+                            "client": ["tv_embedded", "tv"],
+                            "cookie_file": str(c_path),
+                        },
+                        {
                             "name": f"web_full_cookies{suffix}",
                             "client": ["web_embedded", "web"],
                             "cookie_file": str(c_path),
@@ -588,7 +574,13 @@ class AudioEngineService(IAudioEngine):
             # 2. Các chiến lược không cookie / mobile app (chạy khi không có cookie hoặc fallback)
             strategies.extend(
                 [
-                    # 1. Android client KHÔNG cookie: Vượt qua rào cản PO token / SABR
+                    # 1. TV client KHÔNG cookie: Vượt qua rào cản bot guard trên Datacenter tốt nhất
+                    {
+                        "name": "tv_no_cookies",
+                        "client": ["tv_embedded", "tv"],
+                        "cookie_file": None,
+                    },
+                    # 2. Android client KHÔNG cookie: Vượt qua rào cản PO token / SABR
                     {
                         "name": "android_no_cookies",
                         "client": ["android"],
@@ -661,7 +653,8 @@ class AudioEngineService(IAudioEngine):
 
             ydl_opts: dict[str, Any] = {
                 # Format: bestaudio nếu có, hoặc muxed format (18) hoặc best video+audio để FFmpeg bóc tách MP3
-                "format": "bestaudio/bestaudio*/best/18",
+                # Format: Ưu tiên audio thuần túy; nếu YouTube giấu audio thì tự động hạ xuống video 144p/240p để FFmpeg bóc tách sang MP3
+                "format": "bestaudio/bestaudio*/ba/b/best/worstvideo+bestaudio/worst/all",
                 "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
@@ -695,11 +688,15 @@ class AudioEngineService(IAudioEngine):
 
             if is_youtube and client_pref:
                 ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
-                if client_pref in (["android"], ["ios"], ["android", "ios"]):
+                if any(c in client_pref for c in ("android", "ios", "tv")):
                     # Để yt-dlp tự động thiết lập User-Agent và headers chính chủ của mobile app
                     ydl_opts.pop("user_agent", None)
                     if "http_headers" in ydl_opts:
                         ydl_opts["http_headers"].pop("User-Agent", None)
+
+            yt_proxy = get_youtube_proxy()
+            if yt_proxy:
+                ydl_opts["proxy"] = yt_proxy
 
             if cookie_to_use and Path(cookie_to_use).exists():
                 ydl_opts["cookiefile"] = str(cookie_to_use)
@@ -759,158 +756,6 @@ class AudioEngineService(IAudioEngine):
             if match:
                 return match.group(1)
         return None
-
-    def _download_via_piped_api(self, url: str, track_id: str) -> tuple[Path, dict]:
-        """
-        Tải audio qua Piped API — YouTube proxy mã nguồn mở.
-        Piped proxy stream qua server riêng nên hoàn toàn bypass YouTube datacenter IP block.
-        Luồng: Streamlit Cloud → Piped Server → YouTube Server
-        YouTube chỉ thấy IP của Piped, không thấy IP datacenter của Streamlit Cloud.
-        """
-        video_id = self._extract_youtube_video_id(url)
-        if not video_id:
-            raise AudioProcessingException(f"Không trích xuất được YouTube Video ID từ: {url}")
-
-        # Danh sách Piped instances công khai đáng tin cậy (có proxy stream)
-        piped_instances = [
-            "https://pipedapi.kavin.rocks",
-            "https://pipedapi.adminforge.de",
-            "https://api.piped.projectsegfau.lt",
-            "https://pipedapi.in.projectsegfau.lt",
-            "https://pipedapi.leptons.xyz",
-        ]
-
-        last_err: Exception | None = None
-        for instance_url in piped_instances:
-            try:
-                api_endpoint = f"{instance_url}/streams/{video_id}"
-                _safe_log(f"[AudioEngineService] [PIPED] Đang thử {instance_url}...")
-
-                resp = req_lib.get(
-                    api_endpoint,
-                    timeout=PIPED_TIMEOUT_SECONDS,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    },
-                )
-
-                if resp.status_code != 200:
-                    _safe_log(
-                        f"[AudioEngineService] [PIPED] {instance_url} → HTTP {resp.status_code}"
-                    )
-                    continue
-
-                data = resp.json()
-
-                if data.get("error"):
-                    _safe_log(f"[AudioEngineService] [PIPED] {instance_url} lỗi: {data['error']}")
-                    continue
-
-                audio_streams = data.get("audioStreams", [])
-                if not audio_streams:
-                    _safe_log(f"[AudioEngineService] [PIPED] {instance_url} không có audio stream")
-                    continue
-
-                # Chọn stream audio chất lượng tốt nhất (ưu tiên M4A/MP4 > WebM/Opus)
-                m4a_streams = [
-                    s for s in audio_streams if "mp4" in (s.get("mimeType") or "").lower()
-                ]
-                webm_streams = [
-                    s for s in audio_streams if "webm" in (s.get("mimeType") or "").lower()
-                ]
-                candidates = m4a_streams or webm_streams or audio_streams
-                candidates.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
-
-                selected = candidates[0]
-                stream_url = selected.get("url")
-                if not stream_url:
-                    continue
-
-                # Tải stream audio qua proxy của Piped (URL đã được proxy sẵn)
-                raw_tmp_path = self.temp_dir / f"{track_id}_piped_raw.tmp"
-                audio_resp = req_lib.get(
-                    stream_url,
-                    timeout=min(20.0, PIPED_TIMEOUT_SECONDS * 5),
-                    stream=True,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    },
-                )
-                audio_resp.raise_for_status()
-
-                with open(raw_tmp_path, "wb") as f:
-                    for chunk in audio_resp.iter_content(chunk_size=16384):
-                        if chunk:
-                            f.write(chunk)
-
-                if not raw_tmp_path.exists() or raw_tmp_path.stat().st_size < 1024:
-                    if raw_tmp_path.exists():
-                        raw_tmp_path.unlink()
-                    continue
-
-                # Chuyển đổi sang MP3 bằng FFmpeg
-                out_path = self.temp_dir / f"{track_id}_raw.mp3"
-                cmd = [
-                    self.ffmpeg_path,
-                    "-y",
-                    "-i",
-                    str(raw_tmp_path),
-                    "-vn",
-                    "-acodec",
-                    "libmp3lame",
-                    "-ab",
-                    "192k",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    str(out_path),
-                ]
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
-                )
-
-                # Dọn file tạm
-                if raw_tmp_path.exists():
-                    raw_tmp_path.unlink()
-
-                if (
-                    result.returncode != 0
-                    or not out_path.exists()
-                    or out_path.stat().st_size < 1024
-                ):
-                    _safe_log(
-                        f"[AudioEngineService] [PIPED] FFmpeg conversion thất bại: {result.stderr[:200] if result.stderr else 'unknown'}"
-                    )
-                    continue
-
-                # Xây dựng metadata tương thích với yt-dlp output
-                piped_metadata: dict[str, Any] = {
-                    "id": video_id,
-                    "title": data.get("title", ""),
-                    "uploader": data.get("uploader", ""),
-                    "channel": data.get("uploaderName", data.get("uploader", "")),
-                    "duration": data.get("duration", 0),
-                    "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
-                    "url": f"https://www.youtube.com/watch?v={video_id}",
-                    "original_url": url,
-                    "_piped_instance": instance_url,
-                }
-
-                _safe_log(
-                    f"[AudioEngineService] [PIPED] ✓ Tải thành công '{data.get('title', video_id)}' "
-                    f"từ {instance_url} ({selected.get('bitrate', '?')} bps)"
-                )
-                return out_path, piped_metadata
-
-            except Exception as e:
-                last_err = e
-                _safe_log(f"[AudioEngineService] [PIPED] Thất bại {instance_url}: {e}")
-                continue
-
-        raise AudioProcessingException(
-            f"Piped API fallback thất bại trên tất cả instances: {last_err}"
-        )
 
     def _slice_multisegment_sample(
         self, input_audio: Path, track_id: str, total_duration: float | None = None

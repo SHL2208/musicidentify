@@ -54,7 +54,9 @@ def clean_music_search_queries(title: str, artist: str = "") -> list[str]:
     )
     # Tách theo các loại gạch nối unicode (–, —, ―) và phân cách thường gặp (| / :)
     # Dấu '-' chỉ tách khi có khoảng trắng xung quanh (ví dụ 'A - B') để bảo vệ tên ghép (M-TP, T-Ara)
-    segments = re.split(r"\s*[\u2013\u2014\u2015\|/:]\s*|\s+-\s+", t)
+    segments = re.split(
+        r"\s*[\u2013\u2014\u2015\|/:]\s*|\s+-\s+|\s+(?:ft\.?|feat\.?|featuring)\s+", t, flags=re.I
+    )
     segments = [" ".join(s.split()).strip() for s in segments if s.strip()]
 
     queries: list[str] = []
@@ -720,9 +722,10 @@ class AudioEngineService(IAudioEngine):
                     if "http_headers" in ydl_opts:
                         ydl_opts["http_headers"].pop("User-Agent", None)
 
-            yt_proxy = get_youtube_proxy()
-            if yt_proxy:
-                ydl_opts["proxy"] = yt_proxy
+            if is_youtube:
+                yt_proxy = get_youtube_proxy()
+                if yt_proxy:
+                    ydl_opts["proxy"] = yt_proxy
 
             if cookie_to_use and Path(cookie_to_use).exists():
                 ydl_opts["cookiefile"] = str(cookie_to_use)

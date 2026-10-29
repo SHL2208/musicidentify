@@ -318,6 +318,41 @@ class InputResolverService(IInputResolver):
                     if jaccard >= 0.60:
                         best_sub_sim = max(best_sub_sim, jaccard)
 
+            # e) Nghệ sĩ hợp tác phân tán giữa uploader và tiêu đề (VD: 'xuanpac yb rookie'
+            # với uploader 'xuanpacdontlie' và tiêu đề 'ft. @Yb.rookie'):
+            # Chỉ kích hoạt khi tiêu đề chứa từ khóa collab rõ ràng (ft., feat., x, &, with, @)
+            # để tránh nhầm lẫn với trường hợp tên ca sĩ đơn bị trùng lặp bộ phận.
+            collab_pattern = re.compile(
+                r"(?:(?:\s+ft\.?\s+)|\s+feat\.?\s+|\s+featuring\s+|\s+x\s+|\s+&\s+|\s+with\s+|@)(.+)",
+                re.IGNORECASE,
+            )
+            collab_match = collab_pattern.search(cand_title)
+            if collab_match:
+                collab_text = _normalize_text(collab_match.group(1))
+                artist_tokens = [w for w in clean_target_artist.split() if len(w) > 1]
+                if len(artist_tokens) >= 2:
+                    in_uploader = [
+                        tok
+                        for tok in artist_tokens
+                        if re.search(rf"\b{re.escape(tok)}\b", clean_cand_uploader)
+                        or (len(tok) >= 4 and tok in clean_cand_uploader)
+                    ]
+                    in_collab_title = [
+                        tok
+                        for tok in artist_tokens
+                        if re.search(rf"\b{re.escape(tok)}\b", collab_text)
+                        or (len(tok) >= 4 and tok in collab_text)
+                    ]
+                    if (
+                        in_uploader
+                        and in_collab_title
+                        and (set(in_uploader) != set(in_collab_title))
+                    ):
+                        matched_union = set(in_uploader) | set(in_collab_title)
+                        token_ratio = len(matched_union) / len(artist_tokens)
+                        if token_ratio >= 0.60:
+                            best_sub_sim = max(best_sub_sim, token_ratio * 0.95)
+
             artist_sim = best_sub_sim
 
             # Nếu có chỉ định ca sĩ mà ứng viên không đạt độ khớp nghệ sĩ:

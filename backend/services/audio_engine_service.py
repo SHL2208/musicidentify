@@ -365,7 +365,11 @@ class AudioEngineService(IAudioEngine):
         if not ENABLE_RANGE_STREAM_DOWNLOAD:
             return None
 
-        if not (isinstance(url, str) and url.startswith("http") and ("youtube.com" in url or "youtu.be" in url)):
+        if not (
+            isinstance(url, str)
+            and url.startswith("http")
+            and ("youtube.com" in url or "youtu.be" in url)
+        ):
             return None
 
         out_path = self.temp_dir / f"{track_id}_raw.mp3"
@@ -374,7 +378,7 @@ class AudioEngineService(IAudioEngine):
         cookie_file = str(full_cookie_paths[0]) if full_cookie_paths else None
 
         ydl_opts: dict[str, Any] = {
-            "format": "bestaudio/best",
+            "format": "bestaudio/ba/b[acodec!=none]/best[acodec!=none]",
             "quiet": True,
             "no_warnings": True,
             "socket_timeout": 8,
@@ -426,24 +430,28 @@ class AudioEngineService(IAudioEngine):
                         self.ffmpeg_path,
                         "-y",
                     ]
+                    if yt_proxy:
+                        cmd.extend(["-http_proxy", yt_proxy])
                     if ua:
                         cmd.extend(["-user_agent", ua])
-                    cmd.extend([
-                        "-i",
-                        str(stream_url),
-                        "-t",
-                        f"{dur:.2f}",
-                        "-vn",
-                        "-acodec",
-                        "libmp3lame",
-                        "-ab",
-                        "192k",
-                        "-ar",
-                        "44100",
-                        "-ac",
-                        "2",
-                        str(out_path),
-                    ])
+                    cmd.extend(
+                        [
+                            "-i",
+                            str(stream_url),
+                            "-t",
+                            f"{dur:.2f}",
+                            "-vn",
+                            "-acodec",
+                            "libmp3lame",
+                            "-ab",
+                            "192k",
+                            "-ar",
+                            "44100",
+                            "-ac",
+                            "2",
+                            str(out_path),
+                        ]
+                    )
                 else:
                     slice_dur = 15.0
                     start_1 = max(0.0, min(dur * 0.20 - slice_dur / 2, dur - slice_dur))
@@ -460,26 +468,30 @@ class AudioEngineService(IAudioEngine):
                         self.ffmpeg_path,
                         "-y",
                     ]
+                    if yt_proxy:
+                        cmd.extend(["-http_proxy", yt_proxy])
                     if ua:
                         cmd.extend(["-user_agent", ua])
-                    cmd.extend([
-                        "-i",
-                        str(stream_url),
-                        "-filter_complex",
-                        filter_complex,
-                        "-map",
-                        "[out]",
-                        "-vn",
-                        "-acodec",
-                        "libmp3lame",
-                        "-ab",
-                        "192k",
-                        "-ar",
-                        "44100",
-                        "-ac",
-                        "2",
-                        str(out_path),
-                    ])
+                    cmd.extend(
+                        [
+                            "-i",
+                            str(stream_url),
+                            "-filter_complex",
+                            filter_complex,
+                            "-map",
+                            "[out]",
+                            "-vn",
+                            "-acodec",
+                            "libmp3lame",
+                            "-ab",
+                            "192k",
+                            "-ar",
+                            "44100",
+                            "-ac",
+                            "2",
+                            str(out_path),
+                        ]
+                    )
 
                 _safe_log(
                     f"[AudioEngineService] [STREAM_SLICE] Thử stream slice trực tiếp 45s từ CDN ({url})..."
@@ -548,19 +560,24 @@ class AudioEngineService(IAudioEngine):
             strategies: list[dict[str, Any]] = []
 
             # 1. NẾU CÓ COOKIE TÀI KHOẢN (cookies.txt, cookies_master.txt...): ƯU TIÊN SỐ 1!
-            # Tải ngay bằng cookie tài khoản để bypass bot guard; tự động fallback qua từng file nếu có
+            # Tải ngay bằng cookie tài khoản để bypass bot guard qua web/creator clients hỗ trợ cookie
             for c_path in full_cookie_paths:
                 suffix = f"_{c_path.stem}" if len(full_cookie_paths) > 1 else ""
                 strategies.extend(
                     [
                         {
-                            "name": f"tv_full_cookies{suffix}",
-                            "client": ["tv_embedded", "tv"],
+                            "name": f"web_creator_full_cookies{suffix}",
+                            "client": ["web_creator"],
                             "cookie_file": str(c_path),
                         },
                         {
                             "name": f"web_full_cookies{suffix}",
                             "client": ["web_embedded", "web"],
+                            "cookie_file": str(c_path),
+                        },
+                        {
+                            "name": f"mweb_full_cookies{suffix}",
+                            "client": ["mweb"],
                             "cookie_file": str(c_path),
                         },
                         {
@@ -574,10 +591,10 @@ class AudioEngineService(IAudioEngine):
             # 2. Các chiến lược không cookie / mobile app (chạy khi không có cookie hoặc fallback)
             strategies.extend(
                 [
-                    # 1. TV client KHÔNG cookie: Vượt qua rào cản bot guard trên Datacenter tốt nhất
+                    # 1. TV client KHÔNG cookie: Vượt qua rào cản bot guard trên Datacenter tốt nhất (không truyền cookie vào TV client)
                     {
                         "name": "tv_no_cookies",
-                        "client": ["tv_embedded", "tv"],
+                        "client": ["tv"],
                         "cookie_file": None,
                     },
                     # 2. Android client KHÔNG cookie: Vượt qua rào cản PO token / SABR
@@ -651,10 +668,19 @@ class AudioEngineService(IAudioEngine):
             client_pref = strat.get("client")
             cookie_to_use = strat.get("cookie_file")
 
+            def _reject_non_audio(
+                info_dict: dict[str, Any], *, incomplete: bool = False
+            ) -> str | None:
+                if info_dict.get("ext") == "mhtml":
+                    return "Bỏ qua định dạng storyboard mhtml không có âm thanh"
+                if info_dict.get("acodec") == "none" and info_dict.get("vcodec") == "none":
+                    return "Bỏ qua định dạng không có audio và video"
+                return None
+
             ydl_opts: dict[str, Any] = {
-                # Format: bestaudio nếu có, hoặc muxed format (18) hoặc best video+audio để FFmpeg bóc tách MP3
-                # Format: Ưu tiên audio thuần túy; nếu YouTube giấu audio thì tự động hạ xuống video 144p/240p để FFmpeg bóc tách sang MP3
-                "format": "bestaudio/bestaudio*/ba/b/best/worstvideo+bestaudio/worst/all",
+                # Format: Ưu tiên audio thuần túy; nếu YouTube giấu audio thì tự động hạ xuống video 144p/240p có tiếng để FFmpeg bóc tách sang MP3
+                "format": "bestaudio/ba/b[acodec!=none]/best[acodec!=none]/worstvideo[acodec!=none]+bestaudio/worst[acodec!=none]",
+                "match_filter": _reject_non_audio,
                 "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,
                 "quiet": True,
@@ -728,8 +754,12 @@ class AudioEngineService(IAudioEngine):
                         elif url.startswith("http"):
                             info_dict["webpage_url"] = url
 
-                    # Tìm file kết quả (.mp3 do postprocessor tạo ra hoặc file gốc)
-                    candidates = list(self.temp_dir.glob(f"{track_id}_raw.*"))
+                    # Tìm file kết quả (.mp3 do postprocessor tạo ra hoặc file gốc hợp lệ, loại bỏ storyboard)
+                    candidates = [
+                        c
+                        for c in self.temp_dir.glob(f"{track_id}_raw.*")
+                        if c.suffix.lower() not in (".mhtml", ".part", ".ytdl")
+                    ]
                     if candidates:
                         mp3_cands = [c for c in candidates if c.suffix.lower() == ".mp3"]
                         raw_file = mp3_cands[0] if mp3_cands else candidates[0]

@@ -890,7 +890,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
             plt.tight_layout()
             plt.savefig(
-                str(out_image_path), dpi=SPECTROGRAM_DPI, facecolor=fig.get_facecolor(), edgecolor="none"
+                str(out_image_path),
+                dpi=SPECTROGRAM_DPI,
+                facecolor=fig.get_facecolor(),
+                edgecolor="none",
             )
             plt.close(fig)
             return out_image_path

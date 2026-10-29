@@ -771,13 +771,9 @@ def export_evaluation_excel(
         df_details.to_excel(writer, sheet_name="Audit Details", index=False)
 
         ai_model_correct = sum(1 for r in results if r.get("ai_model_is_correct") == "ĐÚNG")
-        ai_model_total = sum(
-            1 for r in results if r.get("ai_model_is_correct") in ("ĐÚNG", "SAI")
-        )
+        ai_model_total = sum(1 for r in results if r.get("ai_model_is_correct") in ("ĐÚNG", "SAI"))
         ai_model_acc_str = (
-            f"{(ai_model_correct / ai_model_total * 100):.2f}%"
-            if ai_model_total > 0
-            else "N/A"
+            f"{(ai_model_correct / ai_model_total * 100):.2f}%" if ai_model_total > 0 else "N/A"
         )
 
         summary_rows = [
@@ -866,7 +862,15 @@ def load_metrics_from_audit_report(
     pred_col = None
 
     # 1. Tìm cột Ground Truth (ưu tiên nhãn AI thực tế, tránh các cột tác phẩm như gt_work_type)
-    gt_exact = ["ground_truth", "ground_truth_ai", "gt_label", "nhãn thực tế", "thực tế", "gt_is_ai", "is_ai"]
+    gt_exact = [
+        "ground_truth",
+        "ground_truth_ai",
+        "gt_label",
+        "nhãn thực tế",
+        "thực tế",
+        "gt_is_ai",
+        "is_ai",
+    ]
     for cand in gt_exact:
         for col in df.columns:
             if str(col).strip().lower() == cand:
@@ -878,12 +882,22 @@ def load_metrics_from_audit_report(
     if gt_col is None:
         for col in df.columns:
             c_low = str(col).strip().lower()
-            if ("ground" in c_low or "thực tế" in c_low or c_low == "gt") and "work" not in c_low and "type" not in c_low:
+            if (
+                ("ground" in c_low or "thực tế" in c_low or c_low == "gt")
+                and "work" not in c_low
+                and "type" not in c_low
+            ):
                 gt_col = col
                 break
 
     # 2. Tìm cột Prediction (ưu tiên kết quả dự đoán AI/Human, tránh pred_work_type hay các cột is_correct)
-    pred_exact = ["prediction", "consensus_prediction", "ai_model_prediction", "dự đoán", "kết quả dự đoán"]
+    pred_exact = [
+        "prediction",
+        "consensus_prediction",
+        "ai_model_prediction",
+        "dự đoán",
+        "kết quả dự đoán",
+    ]
     for cand in pred_exact:
         for col in df.columns:
             if str(col).strip().lower() == cand:
@@ -895,7 +909,12 @@ def load_metrics_from_audit_report(
     if pred_col is None:
         for col in df.columns:
             c_low = str(col).strip().lower()
-            if ("prediction" in c_low or "dự đoán" in c_low or c_low == "pred") and "work" not in c_low and "type" not in c_low and "is_correct" not in c_low:
+            if (
+                ("prediction" in c_low or "dự đoán" in c_low or c_low == "pred")
+                and "work" not in c_low
+                and "type" not in c_low
+                and "is_correct" not in c_low
+            ):
                 pred_col = col
                 break
 
@@ -1097,10 +1116,34 @@ class TestConfusionMatrixEvaluation(unittest.TestCase):
     def test_load_metrics_from_audit_report_with_work_type_columns(self) -> None:
         """Kiểm tra đọc file audit có cả cột ground_truth và gt_work_type không bị nhận diện sai nhãn."""
         records = [
-            {"media_id": "1", "ground_truth": "AI", "gt_work_type": "ORIGINAL", "pred_work_type": "ORIGINAL", "prediction": "AI"},
-            {"media_id": "2", "ground_truth": "HUMAN", "gt_work_type": "COVER", "pred_work_type": "COVER", "prediction": "HUMAN"},
-            {"media_id": "3", "ground_truth": "AI", "gt_work_type": "REMIX", "pred_work_type": "REMIX", "prediction": "HUMAN"},
-            {"media_id": "4", "ground_truth": "HUMAN", "gt_work_type": "ORIGINAL", "pred_work_type": "ORIGINAL", "prediction": "AI"},
+            {
+                "media_id": "1",
+                "ground_truth": "AI",
+                "gt_work_type": "ORIGINAL",
+                "pred_work_type": "ORIGINAL",
+                "prediction": "AI",
+            },
+            {
+                "media_id": "2",
+                "ground_truth": "HUMAN",
+                "gt_work_type": "COVER",
+                "pred_work_type": "COVER",
+                "prediction": "HUMAN",
+            },
+            {
+                "media_id": "3",
+                "ground_truth": "AI",
+                "gt_work_type": "REMIX",
+                "pred_work_type": "REMIX",
+                "prediction": "HUMAN",
+            },
+            {
+                "media_id": "4",
+                "ground_truth": "HUMAN",
+                "gt_work_type": "ORIGINAL",
+                "pred_work_type": "ORIGINAL",
+                "prediction": "AI",
+            },
         ]
         temp_file = ROOT_DIR / "data" / "outputs" / "temp_test_audit.xlsx"
         try:
@@ -1117,7 +1160,6 @@ class TestConfusionMatrixEvaluation(unittest.TestCase):
         finally:
             if temp_file.exists():
                 temp_file.unlink()
-
 
 
 # ==============================================================================

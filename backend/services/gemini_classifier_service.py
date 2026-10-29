@@ -88,7 +88,9 @@ def should_require_deep_audio_inspection(
         return True
     if metadata:
         title_context = f"{metadata.get('title', '')} {metadata.get('target_title', '')} {metadata.get('raw_query', '')}".lower()
-        if re.search(r"\b(cover|ai|voice\s*clone|suno|udio|deepfake)\b", title_context, re.IGNORECASE):
+        if re.search(
+            r"\b(cover|ai|voice\s*clone|suno|udio|deepfake)\b", title_context, re.IGNORECASE
+        ):
             return True
 
     # 3. Chỉ số cao độ nằm trong dải chuyển tiếp / nghi vấn phẳng (Latent Rigidity)
@@ -492,7 +494,9 @@ class GeminiClassifierService(IAIClassifier):
 - Evaluate strictly the acoustic instrument authenticity, algorithmic loop repetitions, MIDI/sampler textures vs neural diffusion smearing, and acoustic soundstage depth.
 """
 
-        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        is_en = (
+            str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        )
         if is_en:
             lang_directive = """
 🌐 MANDATORY OUTPUT LANGUAGE REQUIREMENT:
@@ -563,7 +567,9 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
     ) -> DetectionResult:
         candidate_models = self._resolve_model_chain(model_override)
         prompt = self._build_forensic_prompt(track_id, metrics, metadata, language=language)
-        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        is_en = (
+            str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        )
         chosen_schema = GeminiResponseSchemaEn if is_en else GeminiResponseSchemaVi
 
         candidate_keys = [k.strip() for k in self.api_keys if k and k.strip()]
@@ -646,7 +652,9 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                         )
                     )
                 except Exception as upload_err:  # noqa: BLE001
-                    print(f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}")
+                    print(
+                        f"[GeminiClassifierService] Không thể đính kèm audio sample: {upload_err}"
+                    )
                 finally:
                     if compressed_audio and compressed_audio.exists():
                         compressed_audio.unlink(missing_ok=True)
@@ -673,10 +681,7 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         # Xếp thứ tự khóa bắt đầu từ Sticky Key đang hoạt động (_active_key_index)
         with GeminiClassifierService._key_lock:
             start_k = GeminiClassifierService._active_key_index
-        ordered_key_indices = [
-            ((start_k - 1 + offset) % n_keys) + 1
-            for offset in range(n_keys)
-        ]
+        ordered_key_indices = [((start_k - 1 + offset) % n_keys) + 1 for offset in range(n_keys)]
 
         # Failover 2 tầng: Mô hình (Gemini 3.8 Flash -> 3.7 Flash -> 3.6 Flash) x Khóa API (Bắt đầu từ Active Key)
         for model_idx, model in enumerate(candidate_models, 1):
@@ -858,7 +863,10 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         if not reasons and not detailed_explanation:
             return reasons, detailed_explanation
 
-        is_en = str(target_lang).strip().lower().startswith("en") or "anh" in str(target_lang).strip().lower()
+        is_en = (
+            str(target_lang).strip().lower().startswith("en")
+            or "anh" in str(target_lang).strip().lower()
+        )
         target_name = "ENGLISH" if is_en else "VIETNAMESE (Tiếng Việt)"
 
         # Kiểm tra xem văn bản hiện tại đã thuộc ngôn ngữ đích chưa
@@ -886,7 +894,9 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
 
         class TranslationSchema(BaseModel):
             reasons: list[str] = Field(description=f"Translated reasons in {target_name}")
-            detailed_explanation: str = Field(description=f"Translated detailed forensic report in {target_name}")
+            detailed_explanation: str = Field(
+                description=f"Translated detailed forensic report in {target_name}"
+            )
 
         prompt = f"""
 Translate the following forensic audio audit report into {target_name}.
@@ -902,7 +912,7 @@ Original reasons:
 {json.dumps(reasons or [], ensure_ascii=False)}
 
 Original detailed explanation:
-{detailed_explanation or ''}
+{detailed_explanation or ""}
 """
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -917,9 +927,7 @@ Original detailed explanation:
                 client = self._get_client(key)
                 if not client:
                     continue
-                resp = client.models.generate_content(
-                    model=model, contents=[prompt], config=config
-                )
+                resp = client.models.generate_content(model=model, contents=[prompt], config=config)
                 if resp.text:
                     parsed = json.loads(resp.text)
                     t_reasons = parsed.get("reasons") or reasons

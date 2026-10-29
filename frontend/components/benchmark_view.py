@@ -244,7 +244,9 @@ def render_benchmark_view():
                     bm2.metric("Đúng (TP + TN)", tp + tn)
                     bm3.metric("Sai (FP + FN)", fp + fn)
                     eval_so_far = tp + tn + fp + fn
-                    curr_acc = f"{(tp + tn) / eval_so_far * 100:.1f}%" if eval_so_far > 0 else "0.0%"
+                    curr_acc = (
+                        f"{(tp + tn) / eval_so_far * 100:.1f}%" if eval_so_far > 0 else "0.0%"
+                    )
                     bm4.metric("Accuracy tạm tính", curr_acc)
 
                 # Cập nhật Data Table trực tiếp theo thời gian thực (Incremental Stream Table)

@@ -258,12 +258,16 @@ def main():
             col_reasons, col_detail = st.columns([1, 1])
             is_en_lang = st.session_state.get("reason_language", "vi") == "en"
             with col_reasons:
-                st.subheader("📌 Key Forensic Reasons" if is_en_lang else "📌 Luận cứ Giám định Chính")
+                st.subheader(
+                    "📌 Key Forensic Reasons" if is_en_lang else "📌 Luận cứ Giám định Chính"
+                )
                 for r in res.reasons:
                     st.markdown(f"- **{r}**")
 
             with col_detail:
-                st.subheader("📝 Detailed Forensic Report" if is_en_lang else "📝 Báo cáo Thẩm âm Chi tiết")
+                st.subheader(
+                    "📝 Detailed Forensic Report" if is_en_lang else "📝 Báo cáo Thẩm âm Chi tiết"
+                )
                 st.info(res.detailed_explanation)
 
     # TAB 2: BATCH SCAN

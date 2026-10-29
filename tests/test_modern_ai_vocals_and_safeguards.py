@@ -441,7 +441,9 @@ class TestModernAIVocalsAndSafeguards(unittest.TestCase):
             verdict_label="HYBRID / AI-ASSISTED (Bán nhân tạo)",
             confidence_score=0.95,
             suspected_engine="Suno/Beat",
-            reasons=["[HYBRID AI]: Thành phần Vocal là AI | Thành phần Beat/Hòa âm là AI sinh tự động"],
+            reasons=[
+                "[HYBRID AI]: Thành phần Vocal là AI | Thành phần Beat/Hòa âm là AI sinh tự động"
+            ],
             detailed_explanation="Forensic check",
             acoustic_metrics=metrics,
         )
@@ -449,7 +451,10 @@ class TestModernAIVocalsAndSafeguards(unittest.TestCase):
         final_res = self.detection_service._apply_cross_validation_safeguard(
             result=gemini_result,
             track=track,
-            metadata={"artist": "Ducth Music, TLong", "title": "Xin Đừng Thương Hại Anh (Tuấn Siêu x Tón Remix)"},
+            metadata={
+                "artist": "Ducth Music, TLong",
+                "title": "Xin Đừng Thương Hại Anh (Tuấn Siêu x Tón Remix)",
+            },
             metrics=metrics,
         )
 
@@ -506,7 +511,9 @@ class TestModernAIVocalsAndSafeguards(unittest.TestCase):
             verdict_label="AI-GENERATED (Nhạc AI tạo)",
             confidence_score=0.98,
             suspected_engine="AI Project/Batch",
-            reasons=["Phát hiện định dạng phát hành hàng loạt đặc trưng của dự án nhạc AI: 'bài số 82/100'."],
+            reasons=[
+                "Phát hiện định dạng phát hành hàng loạt đặc trưng của dự án nhạc AI: 'bài số 82/100'."
+            ],
             detailed_explanation="Heuristic detection",
             acoustic_metrics=metrics,
         )
@@ -527,4 +534,3 @@ class TestModernAIVocalsAndSafeguards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -24,7 +24,9 @@ class InMemoryTrackRepository(ITrackRepository):
                 track.release_date = existing.release_date
             if not track.artist and existing.artist:
                 track.artist = existing.artist
-            if (not track.track_title or track.track_title == track.raw_query) and existing.track_title:
+            if (
+                not track.track_title or track.track_title == track.raw_query
+            ) and existing.track_title:
                 track.track_title = existing.track_title
             if existing.status == "COMPLETED" and track.status == "PROCESSING":
                 track.status = "COMPLETED"
@@ -63,6 +65,7 @@ class InMemoryTrackRepository(ITrackRepository):
         self, query: str, resolved_url: str | None = None, track_id: str | None = None
     ) -> DetectionResult | None:
         import re
+
         if track_id and track_id in self._results:
             return self._results[track_id]
 
@@ -80,7 +83,9 @@ class InMemoryTrackRepository(ITrackRepository):
             t_query = (track.raw_query or "").strip().lower()
             t_url = (track.resolved_url or "").strip().lower()
             t_title = (track.track_title or "").strip().lower()
-            yt_match = yt_id and (yt_id in t_url or yt_id in t_query or t_id.lower() == f"yt_{yt_id}")
+            yt_match = yt_id and (
+                yt_id in t_url or yt_id in t_query or t_id.lower() == f"yt_{yt_id}"
+            )
             if (
                 yt_match
                 or (clean_u and (clean_u == t_url or clean_u == t_query))

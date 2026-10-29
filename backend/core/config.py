@@ -90,8 +90,7 @@ GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 # Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
 DEFAULT_GEMINI_MODEL = (
-    os.getenv("DEFAULT_GEMINI_MODEL",
-              "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
+    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
 ).strip()
 
 # Thứ tự mô hình dự phòng tự động khi cạn Quota hoặc lỗi (Multi-tier Model Failover)
@@ -103,8 +102,7 @@ DEFAULT_FALLBACK_MODELS = [
 
 _env_fallback = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
 if _env_fallback:
-    GEMINI_FALLBACK_MODELS = [m.strip()
-                              for m in _env_fallback.split(",") if m.strip()]
+    GEMINI_FALLBACK_MODELS = [m.strip() for m in _env_fallback.split(",") if m.strip()]
 else:
     GEMINI_FALLBACK_MODELS = DEFAULT_FALLBACK_MODELS
 
@@ -130,8 +128,14 @@ BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "1.0"))
 # Performance Optimization Configuration
 PIPED_TIMEOUT_SECONDS = float(os.getenv("PIPED_TIMEOUT_SECONDS", "4.0"))
 SPECTROGRAM_DPI = int(os.getenv("SPECTROGRAM_DPI", "80"))
-ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").strip().lower() in ("true", "1", "yes")
-ENABLE_RANGE_STREAM_DOWNLOAD = os.getenv("ENABLE_RANGE_STREAM_DOWNLOAD", "false").strip().lower() in ("true", "1", "yes")
+ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ENABLE_RANGE_STREAM_DOWNLOAD = os.getenv(
+    "ENABLE_RANGE_STREAM_DOWNLOAD", "false"
+).strip().lower() in ("true", "1", "yes")
 
 # Media Cloud Storage Configuration
 CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = os.getenv(
@@ -159,56 +163,163 @@ def get_ffmpeg_binary() -> str:
         return "ffmpeg"
 
 
+def _download_standalone_deno() -> Path | None:
+    """
+    Tự động tải bản phân phối Deno standalone chính thức từ GitHub releases
+    nếu môi trường chưa có JavaScript runtime (Deno, Node >= 22, Bun, QuickJS).
+    Deno là runtime JavaScript được yt-dlp khuyến nghị chính thức (enabled by default)
+    để giải quyết triệt để YouTube n challenge / cipher signatures trên Cloud Datacenter.
+    """
+    import platform
+    import urllib.request
+    import zipfile
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if "linux" in system:
+        asset = (
+            "deno-aarch64-unknown-linux-gnu.zip"
+            if ("aarch64" in machine or "arm64" in machine)
+            else "deno-x86_64-unknown-linux-gnu.zip"
+        )
+    elif "darwin" in system:
+        asset = (
+            "deno-aarch64-apple-darwin.zip"
+            if ("arm64" in machine or "aarch64" in machine)
+            else "deno-x86_64-apple-darwin.zip"
+        )
+    elif "windows" in system or os.name == "nt":
+        asset = "deno-x86_64-pc-windows-msvc.zip"
+    else:
+        return None
+
+    bin_dir = TEMP_DIR / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    exe_name = "deno.exe" if os.name == "nt" else "deno"
+    target_exe = bin_dir / exe_name
+
+    if target_exe.exists() and (os.name == "nt" or os.access(target_exe, os.X_OK)):
+        return target_exe
+
+    url = f"https://github.com/denoland/deno/releases/latest/download/{asset}"
+    zip_dest = bin_dir / f"deno_tmp_{os.getpid()}.zip"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+            with open(zip_dest, "wb") as f:
+                f.write(content)
+
+        with zipfile.ZipFile(zip_dest, "r") as z:
+            z.extractall(bin_dir)
+
+        if target_exe.exists():
+            if os.name != "nt":
+                current_mode = os.stat(target_exe).st_mode
+                os.chmod(target_exe, current_mode | 0o755)
+            return target_exe
+    except Exception:
+        pass
+    finally:
+        if zip_dest.exists():
+            zip_dest.unlink(missing_ok=True)
+
+    return None
+
+
+def _ensure_in_path(d: Path) -> None:
+    """Đảm bảo thư mục binary nằm trong PATH môi trường."""
+    d_str = str(d.resolve())
+    curr_path = os.environ.get("PATH", "")
+    paths = curr_path.split(os.pathsep)
+    if d_str not in paths:
+        os.environ["PATH"] = f"{d_str}{os.pathsep}{curr_path}"
+
+
 def get_js_runtimes_config() -> dict[str, Any]:
     """
-    Tự động phát hiện và cấu hình JavaScript Runtime cho yt-dlp (Node.js, Deno, Bun)
-    hỗ trợ đầy đủ cả Windows và môi trường Linux / Debian của Streamlit Cloud.
-    Gói 'nodejs' trên Debian cài binary tại /usr/bin/nodejs. Hàm này sẽ trỏ đúng binary
-    và tự động tạo symlink 'node' vào thư mục PATH nếu cần.
+    Tự động phát hiện, xác minh và cấu hình JavaScript Runtime tương thích (Deno, Node.js >= 22, Bun, QuickJS)
+    cho yt-dlp để giải mã JavaScript challenge (n challenge, cipher signature).
+    Nếu trên môi trường Cloud (Linux) không có JS runtime hợp lệ hoặc Node.js < 22,
+    hàm sẽ tự động tải và kích hoạt binary Deno standalone chính thức từ GitHub releases.
     """
-    node_exe = (
-        shutil.which("node")
-        or shutil.which("nodejs")
-        or (Path("/usr/bin/nodejs") if Path("/usr/bin/nodejs").exists() else None)
-        or (Path("/usr/bin/node") if Path("/usr/bin/node").exists() else None)
-        or (
-            Path(r"C:\Program Files\nodejs\node.exe")
-            if Path(r"C:\Program Files\nodejs\node.exe").exists()
-            else None
-        )
-    )
-
-    if node_exe:
-        node_str = str(node_exe)
-        # Trên Linux nếu chỉ có nodejs mà không có lệnh node, tự động tạo symlink trợ giúp
-        if os.name != "nt" and not shutil.which("node"):
+    # 1. Kiểm tra Deno có sẵn trên hệ thống hoặc trong thư mục bin cục bộ
+    cached_deno = TEMP_DIR / "bin" / ("deno.exe" if os.name == "nt" else "deno")
+    deno_candidates = [
+        shutil.which("deno"),
+        str(cached_deno) if cached_deno.exists() else None,
+        "/usr/bin/deno",
+        str(Path.home() / ".deno" / "bin" / "deno"),
+    ]
+    for cand in deno_candidates:
+        if cand and Path(cand).exists():
             try:
-                tmp_bin = TEMP_DIR / "bin"
-                tmp_bin.mkdir(parents=True, exist_ok=True)
-                node_sym = tmp_bin / "node"
-                if not node_sym.exists():
-                    node_sym.symlink_to(node_str)
-                if str(tmp_bin) not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = f"{tmp_bin}:{os.environ.get('PATH', '')}"
+                from yt_dlp.utils._jsruntime import DenoJsRuntime
+
+                rt = DenoJsRuntime(cand)
+                if rt.info and rt.info.supported:
+                    _ensure_in_path(Path(cand).parent)
+                    return {"deno": {"path": str(cand)}}
             except Exception:
                 pass
-        return {"node": {"path": node_str}}
 
-    deno_exe = (
-        shutil.which("deno")
-        or (Path("/usr/bin/deno") if Path("/usr/bin/deno").exists() else None)
-        or (
-            Path.home() / ".deno" / "bin" / "deno"
-            if (Path.home() / ".deno" / "bin" / "deno").exists()
-            else None
-        )
-    )
-    if deno_exe:
-        return {"deno": {"path": str(deno_exe)}}
+    # 2. Kiểm tra Node.js (phải đạt version >= 22 theo yêu cầu của yt-dlp để dùng permission model)
+    node_candidates = [
+        shutil.which("node"),
+        shutil.which("nodejs"),
+        "/usr/bin/node",
+        "/usr/bin/nodejs",
+        r"C:\Program Files\nodejs\node.exe",
+    ]
+    for cand in node_candidates:
+        if cand and Path(cand).exists():
+            try:
+                from yt_dlp.utils._jsruntime import NodeJsRuntime
 
-    bun_exe = shutil.which("bun")
-    if bun_exe:
-        return {"bun": {"path": str(bun_exe)}}
+                rt = NodeJsRuntime(cand)
+                if rt.info and rt.info.supported:
+                    _ensure_in_path(Path(cand).parent)
+                    return {"node": {"path": str(cand)}}
+            except Exception:
+                pass
+
+    # 3. Kiểm tra Bun
+    bun_cand = shutil.which("bun")
+    if bun_cand and Path(bun_cand).exists():
+        try:
+            from yt_dlp.utils._jsruntime import BunJsRuntime
+
+            rt = BunJsRuntime(bun_cand)
+            if rt.info and rt.info.supported:
+                return {"bun": {"path": str(bun_cand)}}
+        except Exception:
+            pass
+
+    # 4. Kiểm tra QuickJS
+    qjs_cand = shutil.which("qjs") or shutil.which("quickjs")
+    if qjs_cand and Path(qjs_cand).exists():
+        try:
+            from yt_dlp.utils._jsruntime import QuickJsRuntime
+
+            rt = QuickJsRuntime(qjs_cand)
+            if rt.info and rt.info.supported:
+                return {"quickjs": {"path": str(qjs_cand)}}
+        except Exception:
+            pass
+
+    # 5. Nếu chưa có JS runtime nào đạt chuẩn yt-dlp, tự động tải Deno standalone binary
+    downloaded_deno = _download_standalone_deno()
+    if downloaded_deno and downloaded_deno.exists():
+        try:
+            from yt_dlp.utils._jsruntime import DenoJsRuntime
+
+            rt = DenoJsRuntime(str(downloaded_deno))
+            if rt.info and rt.info.supported:
+                _ensure_in_path(downloaded_deno.parent)
+                return {"deno": {"path": str(downloaded_deno)}}
+        except Exception:
+            pass
 
     return {}
 
@@ -232,7 +343,7 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
     # Bóc tách dấu ngoặc kép nếu người dùng dán cả ngoặc
     for q in ['"""', "'''"]:
         if content.startswith(q) and content.endswith(q):
-            content = content[len(q): -len(q)].strip()
+            content = content[len(q) : -len(q)].strip()
 
     # Hỗ trợ tiền tố base64: hoặc tự động nhận diện Base64
     if content.startswith("base64:"):
@@ -240,8 +351,7 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
 
     if "\t" not in content and "\n" not in content[:200] and len(content) > 50:
         try:
-            decoded = base64.b64decode(content, validate=True).decode(
-                "utf-8", errors="replace")
+            decoded = base64.b64decode(content, validate=True).decode("utf-8", errors="replace")
             if any(
                 k in decoded.lower()
                 for k in ["youtube", "netscape", "domain", "true", "false", "sid"]
@@ -333,18 +443,15 @@ def normalize_netscape_cookies(raw_text: str) -> tuple[str, str, int, int]:
 
             # Lọc cookie khách: chỉ giữ token khách an toàn, bỏ token session cá nhân
             if name in guest_safe_names or (
-                name not in account_session_names and not name.startswith(
-                    ("__Secure-", "SID"))
+                name not in account_session_names and not name.startswith(("__Secure-", "SID"))
             ):
                 guest_cookies_dict[cookie_key] = cookie_line
 
     header = "# Netscape HTTP Cookie File\n# This file is generated for yt-dlp.\n\n"
     full_cookies = list(full_cookies_dict.values())
     guest_cookies = list(guest_cookies_dict.values())
-    full_content = (header + "\n".join(full_cookies) +
-                    "\n") if full_cookies else ""
-    guest_content = (header + "\n".join(guest_cookies) +
-                     "\n") if guest_cookies else ""
+    full_content = (header + "\n".join(full_cookies) + "\n") if full_cookies else ""
+    guest_content = (header + "\n".join(guest_cookies) + "\n") if guest_cookies else ""
 
     return full_content, guest_content, len(full_cookies), len(guest_cookies)
 
@@ -416,8 +523,7 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
     # 1. Từ Secrets hoặc biến môi trường nếu có
     raw_content = find_cookie_content_from_secrets_or_env()
     if raw_content:
-        full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(
-            raw_content)
+        full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(raw_content)
         target_c = guest_c if mode == "guest" else full_c
         target_cnt = guest_cnt if mode == "guest" else full_cnt
         if target_c and target_cnt > 0:
@@ -441,8 +547,7 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
         if cand.exists() and cand.stat().st_size > 0:
             try:
                 content = cand.read_text(encoding="utf-8", errors="replace")
-                full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(
-                    content)
+                full_c, guest_c, full_cnt, guest_cnt = normalize_netscape_cookies(content)
                 target_c = guest_c if mode == "guest" else full_c
                 target_cnt = guest_cnt if mode == "guest" else full_cnt
                 if target_c and target_cnt > 0:
@@ -450,8 +555,7 @@ def get_all_cookie_file_paths(mode: str = "full") -> list[Path]:
                     if c_hash not in seen_hashes:
                         seen_hashes.add(c_hash)
                         stem = cand.stem
-                        out_path = TEMP_DIR / \
-                            f"cookie_{stem}_{mode}_runtime.txt"
+                        out_path = TEMP_DIR / f"cookie_{stem}_{mode}_runtime.txt"
                         out_path.write_text(target_c, encoding="utf-8")
                         results.append(out_path)
             except Exception:
@@ -486,8 +590,7 @@ def get_cookie_status() -> tuple[bool, int, str]:
 
     try:
         content = active_path.read_text(encoding="utf-8", errors="replace")
-        lines = [line for line in content.splitlines() if line.strip()
-                 and not line.startswith("#")]
+        lines = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
         mode_label = "Chế độ Cloud-Safe" if active_path == guest_path else "Chế độ Toàn phần"
         return True, len(lines), f"Đã nạp {len(lines)} cookies YouTube thành công ({mode_label})"
     except Exception as e:

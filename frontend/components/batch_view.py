@@ -125,15 +125,16 @@ def render_batch_view(client: BackendClient):
     queue_snapshots = client.get_batch_queue_snapshots()
 
     is_running = bool(active_snapshot and active_snapshot.status == JobStatus.RUNNING)
-    is_paused = bool(active_snapshot and active_snapshot.status == JobStatus.PAUSED)
-    is_stopped = bool(active_snapshot and active_snapshot.status == JobStatus.STOPPED)
-    is_completed = bool(active_snapshot and active_snapshot.status == JobStatus.COMPLETED)
     has_results = bool(active_snapshot and active_snapshot.live_rows)
 
     # 3. Hiển thị Panel Hàng Đợi (Queue Drawer / Panel) nếu có task đang chờ
     if queue_snapshots:
-        with st.expander(f"📬 Hàng Đợi Đang Chờ ({len(queue_snapshots)} lô bài hát)", expanded=True):
-            st.info("Hệ thống xử lý tuần tự từng lô để đảm bảo CPU/RAM ổn định và tránh bị YouTube chặn IP.")
+        with st.expander(
+            f"📬 Hàng Đợi Đang Chờ ({len(queue_snapshots)} lô bài hát)", expanded=True
+        ):
+            st.info(
+                "Hệ thống xử lý tuần tự từng lô để đảm bảo CPU/RAM ổn định và tránh bị YouTube chặn IP."
+            )
             for q_idx, q_job in enumerate(queue_snapshots):
                 qc1, qc2, qc3, qc4 = st.columns([1, 4, 2, 2])
                 with qc1:
@@ -143,7 +144,9 @@ def render_batch_view(client: BackendClient):
                 with qc3:
                     st.caption(f"Chế độ: `{q_job.scan_mode}`")
                 with qc4:
-                    if st.button("❌ Hủy yêu cầu", key=f"cancel_q_{q_job.job_id}", use_container_width=True):
+                    if st.button(
+                        "❌ Hủy yêu cầu", key=f"cancel_q_{q_job.job_id}", use_container_width=True
+                    ):
                         if client.cancel_queued_batch_job(q_job.job_id):
                             st.toast(f"Đã hủy lô '{q_job.job_name}' khỏi hàng đợi!", icon="🗑️")
                             st.rerun()
@@ -162,7 +165,9 @@ def render_batch_view(client: BackendClient):
 
         if upload_mode == "Tải lên tệp (.txt, .csv, .xlsx)":
             uploaded_file = st.file_uploader(
-                "Chọn tệp danh sách bài hát:", type=["txt", "csv", "xlsx", "xls"], key="batch_file_uploader"
+                "Chọn tệp danh sách bài hát:",
+                type=["txt", "csv", "xlsx", "xls"],
+                key="batch_file_uploader",
             )
             if uploaded_file:
                 temp_path = TEMP_DIR / uploaded_file.name
@@ -207,13 +212,19 @@ def render_batch_view(client: BackendClient):
 
         col_submit, col_hint = st.columns([2, 3])
         with col_submit:
-            start_btn_label = "🚀 Bắt đầu Quét Hàng Loạt" if not is_running else "➕ Xếp Vào Hàng Đợi (Đang Quét)"
+            start_btn_label = (
+                "🚀 Bắt đầu Quét Hàng Loạt" if not is_running else "➕ Xếp Vào Hàng Đợi (Đang Quét)"
+            )
             btn_type = "primary" if not is_running else "secondary"
-            if st.button(start_btn_label, type=btn_type, use_container_width=True, key="btn_start_batch"):
+            if st.button(
+                start_btn_label, type=btn_type, use_container_width=True, key="btn_start_batch"
+            ):
                 target_file = file_path
                 target_queries = tracks_to_process
                 if not target_file and not target_queries:
-                    st.warning("Vui lòng tải lên tệp (.xlsx, .csv) hoặc nhập danh sách bài hát trước!")
+                    st.warning(
+                        "Vui lòng tải lên tệp (.xlsx, .csv) hoặc nhập danh sách bài hát trước!"
+                    )
                 else:
                     success, msg, job = client.enqueue_batch_job(
                         file_path=target_file,
@@ -229,9 +240,13 @@ def render_batch_view(client: BackendClient):
                         st.error(msg)
         with col_hint:
             if is_running:
-                st.caption("⏳ Hệ thống đang chạy 1 lô. Lô mới sẽ tự động vào hàng đợi và chạy tiếp khi xong.")
+                st.caption(
+                    "⏳ Hệ thống đang chạy 1 lô. Lô mới sẽ tự động vào hàng đợi và chạy tiếp khi xong."
+                )
             else:
-                st.caption("🚀 Quá trình quét chạy trên luồng ngầm độc lập. Bạn có thể chuyển tab thoải mái.")
+                st.caption(
+                    "🚀 Quá trình quét chạy trên luồng ngầm độc lập. Bạn có thể chuyển tab thoải mái."
+                )
 
     st.divider()
 
@@ -288,7 +303,9 @@ def render_batch_view(client: BackendClient):
             )
             # Phát âm thanh & Notification nếu vừa hoàn thành
             last_notified = st.session_state.get("batch_last_notified_job_id")
-            if last_notified != curr_snap.job_id and st.session_state.get("batch_enable_notifications", True):
+            if last_notified != curr_snap.job_id and st.session_state.get(
+                "batch_enable_notifications", True
+            ):
                 st.session_state.batch_last_notified_job_id = curr_snap.job_id
                 trigger_completion_alert(curr_snap.job_name, curr_snap.total_tracks)
 
@@ -307,7 +324,12 @@ def render_batch_view(client: BackendClient):
 
         with act_c1:
             if c_running:
-                if st.button("🛑 Dừng Quét (Lưu kết quả)", type="primary", use_container_width=True, key="btn_stop_job"):
+                if st.button(
+                    "🛑 Dừng Quét (Lưu kết quả)",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_stop_job",
+                ):
                     if client.stop_batch_job():
                         st.toast("🛑 Đang dừng quét an toàn sau bài hiện tại...", icon="🛑")
                         st.rerun()
@@ -379,15 +401,20 @@ def render_batch_view(client: BackendClient):
                 df_rows = df_rows[cols]
             st.dataframe(df_rows, hide_index=True, **get_width_kwargs(st.dataframe))
         else:
-            st.dataframe(pd.DataFrame(curr_snap.live_rows), hide_index=True, **get_width_kwargs(st.dataframe))
+            st.dataframe(
+                pd.DataFrame(curr_snap.live_rows), hide_index=True, **get_width_kwargs(st.dataframe)
+            )
 
         # Can thiệp nhanh từng bài khi không đang chạy
         if not c_running and curr_snap.live_results:
-            with st.expander("✍️ Can thiệp & Đính chính nhanh từng bài trong danh sách", expanded=False):
+            with st.expander(
+                "✍️ Can thiệp & Đính chính nhanh từng bài trong danh sách", expanded=False
+            ):
                 st.caption("Chọn bài hát để đính chính kết quả hoặc quét lại độc lập:")
                 live_res_list = curr_snap.live_results
                 track_labels = [
-                    f"{idx + 1}. {r.track_title} [{r.verdict_label}]" for idx, r in enumerate(live_res_list)
+                    f"{idx + 1}. {r.track_title} [{r.verdict_label}]"
+                    for idx, r in enumerate(live_res_list)
                 ]
                 selected_idx = st.selectbox(
                     "Chọn bài cần can thiệp:",
@@ -413,8 +440,13 @@ def render_batch_view(client: BackendClient):
                                     note="Đính chính từ bảng danh sách hàng loạt",
                                 )
                                 live_res_list[selected_idx] = updated
-                                curr_snap.live_rows[selected_idx] = format_detection_row(updated, stt=selected_idx + 1)
-                                st.toast(f"✅ Đã đính chính '{updated.track_title}' thành Người thật!", icon="🧑‍🎤")
+                                curr_snap.live_rows[selected_idx] = format_detection_row(
+                                    updated, stt=selected_idx + 1
+                                )
+                                st.toast(
+                                    f"✅ Đã đính chính '{updated.track_title}' thành Người thật!",
+                                    icon="🧑‍🎤",
+                                )
                                 st.rerun()
                             except Exception as err:
                                 st.error(f"Lỗi: {err}")
@@ -433,8 +465,13 @@ def render_batch_view(client: BackendClient):
                                     note="Đính chính từ bảng danh sách hàng loạt",
                                 )
                                 live_res_list[selected_idx] = updated
-                                curr_snap.live_rows[selected_idx] = format_detection_row(updated, stt=selected_idx + 1)
-                                st.toast(f"🤖 Đã đính chính '{updated.track_title}' thành Nhạc AI!", icon="🤖")
+                                curr_snap.live_rows[selected_idx] = format_detection_row(
+                                    updated, stt=selected_idx + 1
+                                )
+                                st.toast(
+                                    f"🤖 Đã đính chính '{updated.track_title}' thành Nhạc AI!",
+                                    icon="🤖",
+                                )
                                 st.rerun()
                             except Exception as err:
                                 st.error(f"Lỗi: {err}")
@@ -453,7 +490,9 @@ def render_batch_view(client: BackendClient):
                                         or ""
                                     )
                                     if not rescan_q:
-                                        st.error("Không tìm thấy thông tin query của bài hát để quét lại.")
+                                        st.error(
+                                            "Không tìm thấy thông tin query của bài hát để quét lại."
+                                        )
                                         return
                                     fresh = client.detect_single_track(
                                         query=rescan_q,
@@ -462,8 +501,12 @@ def render_batch_view(client: BackendClient):
                                         force_rescan=True,
                                     )
                                     live_res_list[selected_idx] = fresh
-                                    curr_snap.live_rows[selected_idx] = format_detection_row(fresh, stt=selected_idx + 1)
-                                    st.toast(f"🎉 Đã quét lại xong '{fresh.track_title}'!", icon="✅")
+                                    curr_snap.live_rows[selected_idx] = format_detection_row(
+                                        fresh, stt=selected_idx + 1
+                                    )
+                                    st.toast(
+                                        f"🎉 Đã quét lại xong '{fresh.track_title}'!", icon="✅"
+                                    )
                                     st.rerun()
                                 except Exception as err:
                                     st.error(f"Lỗi: {err}")

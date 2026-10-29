@@ -797,5 +797,7 @@ class DatabaseTrackRepository(ITrackRepository):
             song_type=tm.song_type if tm else None,
             distributor=tm.distributor if tm else None,
             release_date=tm.release_date if tm else None,
-            duration_sec=tm.duration_sec if (tm and tm.duration_sec is not None) else (metrics_obj.duration_sec if metrics_obj else None),
+            duration_sec=tm.duration_sec
+            if (tm and tm.duration_sec is not None)
+            else (metrics_obj.duration_sec if metrics_obj else None),
         )

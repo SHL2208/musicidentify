@@ -299,7 +299,7 @@ def test_rescan_updates_db_without_adding_duplicate(tmp_path):
         resolved_url="https://www.youtube.com/watch?v=12345678901",
         track_title="Bài hát thử nghiệm",
     )
-    res1 = service.detect_single(track1, force_rescan=False)
+    service.detect_single(track1, force_rescan=False)
     assert len(repo.list_results()) == 1
     assert repo.get_result("trk_initial123").is_ai is False
 
@@ -353,4 +353,3 @@ def test_rescan_updates_db_without_adding_duplicate(tmp_path):
     assert resp.success is True
     assert resp.data.track_id == "trk_initial123"
     assert len(repo.list_results()) == 1
-

@@ -177,8 +177,12 @@ class TestPerformanceOptimizations(unittest.TestCase):
 
         # 2 bài URL: phải gọi sleep 1s giữa bài 1 và bài 2
         remote_tracks = [
-            TrackItem(id="3", raw_query="https://youtube.com/watch?v=aaa", input_type=InputType.URL),
-            TrackItem(id="4", raw_query="https://youtube.com/watch?v=bbb", input_type=InputType.URL),
+            TrackItem(
+                id="3", raw_query="https://youtube.com/watch?v=aaa", input_type=InputType.URL
+            ),
+            TrackItem(
+                id="4", raw_query="https://youtube.com/watch?v=bbb", input_type=InputType.URL
+            ),
         ]
 
         with patch("time.sleep") as mock_sleep:

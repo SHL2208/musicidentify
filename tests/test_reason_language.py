@@ -1,6 +1,7 @@
 """
 Unit tests for reason language selection and UI cleanup (removal of test tab).
 """
+
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,6 @@ from backend.services.gemini_classifier_service import GeminiClassifierService
 
 
 class TestReasonLanguage(unittest.TestCase):
-
     def test_dtos_language_field(self):
         """Test that DTOs accept language and default to 'vi'."""
         req_default = TrackDetectRequest(query="https://youtube.com/watch?v=123")
@@ -105,7 +105,9 @@ class TestReasonLanguage(unittest.TestCase):
             detailed_explanation="Giải thích chuyên sâu tiếng Việt",
         )
 
-        with patch("backend.services.signal_analyzer_service.is_verified_human_artist", return_value=True):
+        with patch(
+            "backend.services.signal_analyzer_service.is_verified_human_artist", return_value=True
+        ):
             res_en = service._apply_cross_validation_safeguard(
                 result=res_base.model_copy(deep=True),
                 track=track,
@@ -132,7 +134,7 @@ class TestReasonLanguage(unittest.TestCase):
         mock_classifier = MagicMock()
         mock_classifier.translate_forensic_text.return_value = (
             ["Translated reason 1", "Translated reason 2"],
-            "Translated explanation"
+            "Translated explanation",
         )
         service.classifier = mock_classifier
         service.track_repo = MagicMock()

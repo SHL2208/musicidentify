@@ -68,7 +68,7 @@ class TestRescanUpdateDb(unittest.TestCase):
             resolved_url="https://www.youtube.com/watch?v=12345678901",
             track_title="Bài hát thử nghiệm",
         )
-        res1 = self.service.detect_single(track1, force_rescan=False)
+        self.service.detect_single(track1, force_rescan=False)
         self.assertEqual(len(self.repo.list_results()), 1)
         self.assertFalse(self.repo.get_result("trk_initial123").is_ai)
 
@@ -102,7 +102,9 @@ class TestRescanUpdateDb(unittest.TestCase):
         # ID của kết quả được đồng bộ đè lên bản ghi cũ
         self.assertEqual(res2.track_id, "trk_initial123")
         self.assertTrue(self.repo.get_result("trk_initial123").is_ai)
-        self.assertEqual(self.repo.get_result("trk_initial123").verdict_type, VerdictType.AI_GENERATED)
+        self.assertEqual(
+            self.repo.get_result("trk_initial123").verdict_type, VerdictType.AI_GENERATED
+        )
 
     def test_controller_detect_track_with_track_id_param(self):
         """Kiểm tra TrackController tiếp nhận track_id để quét lại và cập nhật đè chính xác."""
@@ -167,7 +169,9 @@ class TestRescanUpdateDb(unittest.TestCase):
             finally:
                 session.close()
 
-        with unittest.mock.patch("backend.repositories.database_track_repository.get_db_session", mock_get_db_session):
+        with unittest.mock.patch(
+            "backend.repositories.database_track_repository.get_db_session", mock_get_db_session
+        ):
             repo = DatabaseTrackRepository()
 
             # 1. Lưu kết quả lần đầu

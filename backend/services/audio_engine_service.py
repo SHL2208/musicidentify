@@ -568,13 +568,13 @@ class AudioEngineService(IAudioEngine):
                 strategies.extend(
                     [
                         {
-                            "name": f"web_creator_full_cookies{suffix}",
-                            "client": ["web_creator"],
+                            "name": f"web_full_cookies{suffix}",
+                            "client": ["web_embedded", "web"],
                             "cookie_file": str(c_path),
                         },
                         {
-                            "name": f"web_full_cookies{suffix}",
-                            "client": ["web_embedded", "web"],
+                            "name": f"web_creator_full_cookies{suffix}",
+                            "client": ["web_creator"],
                             "cookie_file": str(c_path),
                         },
                         {
@@ -675,13 +675,17 @@ class AudioEngineService(IAudioEngine):
             ) -> str | None:
                 if info_dict.get("ext") == "mhtml":
                     return "Bỏ qua định dạng storyboard mhtml không có âm thanh"
-                if info_dict.get("acodec") == "none" and info_dict.get("vcodec") == "none":
+                if (
+                    not incomplete
+                    and info_dict.get("acodec") == "none"
+                    and info_dict.get("vcodec") == "none"
+                ):
                     return "Bỏ qua định dạng không có audio và video"
                 return None
 
             ydl_opts: dict[str, Any] = {
-                # Format: Ưu tiên audio thuần túy; nếu YouTube giấu audio thì tự động hạ xuống video 144p/240p có tiếng để FFmpeg bóc tách sang MP3
-                "format": "bestaudio/ba/b[acodec!=none]/best[acodec!=none]/worstvideo[acodec!=none]+bestaudio/worst[acodec!=none]",
+                # Format: Ưu tiên audio thuần túy; nếu YouTube giấu audio thì tự động hạ xuống video có tiếng để FFmpeg bóc tách sang MP3
+                "format": "bestaudio/ba/b/best",
                 "match_filter": _reject_non_audio,
                 "max_filesize": 150 * 1024 * 1024,
                 "outtmpl": out_template,

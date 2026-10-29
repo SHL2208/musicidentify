@@ -172,7 +172,9 @@ class BatchService(IBatchService):
                         pass
 
             if i < total - 1 and not was_cached:
-                sleep_time = 0.0 if track.input_type == InputType.LOCAL_FILE else self.sleep_interval
+                sleep_time = (
+                    0.0 if track.input_type == InputType.LOCAL_FILE else self.sleep_interval
+                )
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 

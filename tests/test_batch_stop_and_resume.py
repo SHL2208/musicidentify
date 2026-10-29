@@ -45,13 +45,20 @@ class TestBatchStopAndResume(unittest.TestCase):
         dummy_wav.parent.mkdir(parents=True, exist_ok=True)
         import numpy as np
         import soundfile as sf
+
         sf.write(str(dummy_wav), np.zeros((44100 * 2, 2)), 44100)
-        self.container.audio_engine.process_track_audio = (
-            lambda track: (dummy_wav, {"upload_date": "20240101", "title": track.track_title})
+        self.container.audio_engine.process_track_audio = lambda track: (
+            dummy_wav,
+            {"upload_date": "20240101", "title": track.track_title},
         )
 
         self.tracks = [
-            TrackItem(id=f"t_{i}", raw_query=f"Song {i}", input_type=InputType.SONG_NAME, track_title=f"Song {i}")
+            TrackItem(
+                id=f"t_{i}",
+                raw_query=f"Song {i}",
+                input_type=InputType.SONG_NAME,
+                track_title=f"Song {i}",
+            )
             for i in range(1, 7)
         ]
 

@@ -64,21 +64,23 @@ def format_detection_row(r: DetectionResult, stt: int | None = None) -> dict:
     res_dict = {}
     if stt is not None:
         res_dict["STT"] = stt
-    res_dict.update({
-        "Tên bài hát": r.track_title,
-        "Thời lượng": dur_str,
-        "Loại tác phẩm": song_type_val,
-        "Nhà phân phối": distributor_val,
-        "Ngày phát hành": release_date_val,
-        "Đánh giá Model AI": ai_model_col,
-        "Kết luận Tổng hợp": consensus_col,
-        "Nguồn gốc": origin_tag,
-        "Đính chính": corr_tag,
-        "Độ tin cậy": conf_str,
-        "Mô hình nghi vấn": r.suspected_engine or "N/A",
-        "Luận cứ": " | ".join(reasons[:2]) if reasons else "N/A",
-        "Nguồn link": r.source_url or "N/A",
-    })
+    res_dict.update(
+        {
+            "Tên bài hát": r.track_title,
+            "Thời lượng": dur_str,
+            "Loại tác phẩm": song_type_val,
+            "Nhà phân phối": distributor_val,
+            "Ngày phát hành": release_date_val,
+            "Đánh giá Model AI": ai_model_col,
+            "Kết luận Tổng hợp": consensus_col,
+            "Nguồn gốc": origin_tag,
+            "Đính chính": corr_tag,
+            "Độ tin cậy": conf_str,
+            "Mô hình nghi vấn": r.suspected_engine or "N/A",
+            "Luận cứ": " | ".join(reasons[:2]) if reasons else "N/A",
+            "Nguồn link": r.source_url or "N/A",
+        }
+    )
     return res_dict
 
 
@@ -324,7 +326,12 @@ class BatchJobManager:
             # Đưa vào hàng đợi
             self._queue.append(new_job)
             queue_pos = len(self._queue)
-            logger.info("Đã tiếp nhận Job [%s - '%s'] vào hàng đợi (Vị trí #%d)", job_id, job_name, queue_pos)
+            logger.info(
+                "Đã tiếp nhận Job [%s - '%s'] vào hàng đợi (Vị trí #%d)",
+                job_id,
+                job_name,
+                queue_pos,
+            )
 
             # Kích hoạt worker nếu hiện tại chưa có job nào chạy
             self._ensure_worker_running()
@@ -438,6 +445,7 @@ class BatchJobManager:
 
             logger.info("Worker bắt đầu thực thi Job [%s - '%s']", job.job_id, job.job_name)
 
+            should_break = False
             try:
                 self._execute_job(job)
             except Exception as e:
@@ -458,7 +466,7 @@ class BatchJobManager:
                         )
                         self._save_state_to_disk(job)
                         self._worker_thread = None
-                        break
+                        should_break = True
 
                     # Nếu job dừng do người dùng
                     if job.status == JobStatus.STOPPED:
@@ -473,7 +481,10 @@ class BatchJobManager:
                     # Bàn giao việc tiếp theo
                     if not self._queue:
                         self._worker_thread = None
-                        break
+                        should_break = True
+
+            if should_break:
+                break
 
     def _execute_job(self, job: BatchJob):
         """Tiến hành phân tích danh sách bài hát của Job thông qua BatchService."""
@@ -496,7 +507,9 @@ class BatchJobManager:
                         id=item_id,
                         raw_query=clean_q,
                         input_type=input_t,
-                        track_title=Path(clean_q).stem if input_t.value == "LOCAL_FILE" else clean_q,
+                        track_title=Path(clean_q).stem
+                        if input_t.value == "LOCAL_FILE"
+                        else clean_q,
                         resolved_url=resolved_u,
                     )
                 )
@@ -512,7 +525,9 @@ class BatchJobManager:
 
                 current_stt = len(job.live_rows) + 1
                 if res:
-                    job.current_track_title = res.track_title or track.track_title or track.raw_query
+                    job.current_track_title = (
+                        res.track_title or track.track_title or track.raw_query
+                    )
                     row = format_detection_row(res, stt=current_stt)
                     v_type = getattr(res, "verdict_type", None)
 
@@ -584,6 +599,7 @@ class BatchJobManager:
             "initial_results": job.live_results,
         }
         import inspect
+
         if "language" in inspect.signature(self.batch_service.process_batch).parameters:
             batch_kwargs["language"] = getattr(job, "language", "vi") or "vi"
 
@@ -690,7 +706,9 @@ class BatchJobManager:
             if job.status == JobStatus.PAUSED:
                 self._active_job = job
 
-            logger.info("Đã khôi phục thành công trạng thái Job từ đĩa: %d bài hát", len(job.live_rows))
+            logger.info(
+                "Đã khôi phục thành công trạng thái Job từ đĩa: %d bài hát", len(job.live_rows)
+            )
         except Exception as e:
             logger.warning(f"Không thể khôi phục trạng thái từ đĩa: {e}")
 

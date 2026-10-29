@@ -142,7 +142,9 @@ class ReportService(IReportService):
                         "STT": idx + 1,
                         "Tên bài hát": display_title,
                         "Thời lượng": dur_display,
-                        "Loại tác phẩm (Song Type)": song_type_display if song_type_display != "N/A" else "ERROR",
+                        "Loại tác phẩm (Song Type)": song_type_display
+                        if song_type_display != "N/A"
+                        else "ERROR",
                         "Nhà phân phối": r.distributor or "N/A",
                         "Ngày phát hành": r.release_date or "N/A",
                         "Đánh giá Model AI": ai_eval,

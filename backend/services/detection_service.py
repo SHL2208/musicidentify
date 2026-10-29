@@ -110,9 +110,15 @@ class DetectionService(IDetectionService):
                     track.resolved_url = existing_result.source_url
 
                 # Nếu cả 2 đều chưa có resolved_url, tiến hành phân giải ngay để không bị miss link
-                if not track.resolved_url and not getattr(existing_result, "source_url", None) and track.input_type not in (InputType.LOCAL_FILE,):
+                if (
+                    not track.resolved_url
+                    and not getattr(existing_result, "source_url", None)
+                    and track.input_type not in (InputType.LOCAL_FILE,)
+                ):
                     try:
-                        resolved_cand = self.resolver.resolve_track(track.raw_query, artist=track.artist or "")
+                        resolved_cand = self.resolver.resolve_track(
+                            track.raw_query, artist=track.artist or ""
+                        )
                         if resolved_cand and resolved_cand.resolved_url:
                             track.resolved_url = resolved_cand.resolved_url
                             existing_result.source_url = resolved_cand.resolved_url
@@ -122,20 +128,38 @@ class DetectionService(IDetectionService):
                         pass
 
                 # 2. Tiêu đề & Ca sĩ
-                if track.track_title and (not existing_result.track_title or existing_result.track_title == "N/A" or existing_result.track_title == existing_result.raw_query):
+                if track.track_title and (
+                    not existing_result.track_title
+                    or existing_result.track_title == "N/A"
+                    or existing_result.track_title == existing_result.raw_query
+                ):
                     existing_result.track_title = track.track_title
-                elif getattr(existing_result, "track_title", None) and existing_result.track_title != "N/A" and not track.track_title:
+                elif (
+                    getattr(existing_result, "track_title", None)
+                    and existing_result.track_title != "N/A"
+                    and not track.track_title
+                ):
                     track.track_title = existing_result.track_title
 
                 if getattr(existing_result, "cover_performer", None) and not track.artist:
                     track.artist = existing_result.cover_performer
 
                 # 3. Thời lượng
-                if track.duration_sec is not None and getattr(existing_result, "duration_sec", None) is None:
+                if (
+                    track.duration_sec is not None
+                    and getattr(existing_result, "duration_sec", None) is None
+                ):
                     existing_result.duration_sec = track.duration_sec
-                elif getattr(existing_result, "duration_sec", None) is not None and track.duration_sec is None:
+                elif (
+                    getattr(existing_result, "duration_sec", None) is not None
+                    and track.duration_sec is None
+                ):
                     track.duration_sec = existing_result.duration_sec
-                elif existing_result.acoustic_metrics and existing_result.acoustic_metrics.duration_sec and track.duration_sec is None:
+                elif (
+                    existing_result.acoustic_metrics
+                    and existing_result.acoustic_metrics.duration_sec
+                    and track.duration_sec is None
+                ):
                     track.duration_sec = existing_result.acoustic_metrics.duration_sec
                     existing_result.duration_sec = existing_result.acoustic_metrics.duration_sec
 
@@ -144,7 +168,9 @@ class DetectionService(IDetectionService):
                     existing_result.song_type = track.song_type
                 elif getattr(existing_result, "song_type", None) and not track.song_type:
                     track.song_type = existing_result.song_type
-                elif not getattr(existing_result, "song_type", None) and getattr(existing_result, "work_label", None):
+                elif not getattr(existing_result, "song_type", None) and getattr(
+                    existing_result, "work_label", None
+                ):
                     existing_result.song_type = existing_result.work_label
                     track.song_type = existing_result.work_label
 
@@ -233,19 +259,29 @@ class DetectionService(IDetectionService):
                     # Sau khi phân giải ra URL chính thức:
                     if force_rescan:
                         existing_after_resolve = self.track_repo.find_result_by_query_or_url(
-                            query=track.raw_query, resolved_url=track.resolved_url, track_id=track.id
+                            query=track.raw_query,
+                            resolved_url=track.resolved_url,
+                            track_id=track.id,
                         )
                         if existing_after_resolve:
                             track.id = existing_after_resolve.track_id
-                            if not track.song_type and getattr(existing_after_resolve, "song_type", None):
+                            if not track.song_type and getattr(
+                                existing_after_resolve, "song_type", None
+                            ):
                                 track.song_type = existing_after_resolve.song_type
-                            if not track.distributor and getattr(existing_after_resolve, "distributor", None):
+                            if not track.distributor and getattr(
+                                existing_after_resolve, "distributor", None
+                            ):
                                 track.distributor = existing_after_resolve.distributor
-                            if not track.release_date and getattr(existing_after_resolve, "release_date", None):
+                            if not track.release_date and getattr(
+                                existing_after_resolve, "release_date", None
+                            ):
                                 track.release_date = existing_after_resolve.release_date
                     elif track.resolved_url:
                         existing_after_resolve = self.track_repo.find_result_by_query_or_url(
-                            query=track.raw_query, resolved_url=track.resolved_url, track_id=track.id
+                            query=track.raw_query,
+                            resolved_url=track.resolved_url,
+                            track_id=track.id,
                         )
                         if (
                             existing_after_resolve
@@ -309,40 +345,85 @@ class DetectionService(IDetectionService):
                                 except Exception:  # noqa: BLE001, S110
                                     pass
                             # Đồng bộ 2 chiều các trường metadata giữa track và existing_after_resolve:
-                            if track.resolved_url and not getattr(existing_after_resolve, "source_url", None):
+                            if track.resolved_url and not getattr(
+                                existing_after_resolve, "source_url", None
+                            ):
                                 existing_after_resolve.source_url = track.resolved_url
-                            elif getattr(existing_after_resolve, "source_url", None) and not track.resolved_url:
+                            elif (
+                                getattr(existing_after_resolve, "source_url", None)
+                                and not track.resolved_url
+                            ):
                                 track.resolved_url = existing_after_resolve.source_url
 
-                            if track.track_title and (not existing_after_resolve.track_title or existing_after_resolve.track_title == "N/A" or existing_after_resolve.track_title == existing_after_resolve.raw_query):
+                            if track.track_title and (
+                                not existing_after_resolve.track_title
+                                or existing_after_resolve.track_title == "N/A"
+                                or existing_after_resolve.track_title
+                                == existing_after_resolve.raw_query
+                            ):
                                 existing_after_resolve.track_title = track.track_title
-                            elif getattr(existing_after_resolve, "track_title", None) and existing_after_resolve.track_title != "N/A" and not track.track_title:
+                            elif (
+                                getattr(existing_after_resolve, "track_title", None)
+                                and existing_after_resolve.track_title != "N/A"
+                                and not track.track_title
+                            ):
                                 track.track_title = existing_after_resolve.track_title
 
-                            if track.duration_sec is not None and getattr(existing_after_resolve, "duration_sec", None) is None:
+                            if (
+                                track.duration_sec is not None
+                                and getattr(existing_after_resolve, "duration_sec", None) is None
+                            ):
                                 existing_after_resolve.duration_sec = track.duration_sec
-                            elif getattr(existing_after_resolve, "duration_sec", None) is not None and track.duration_sec is None:
+                            elif (
+                                getattr(existing_after_resolve, "duration_sec", None) is not None
+                                and track.duration_sec is None
+                            ):
                                 track.duration_sec = existing_after_resolve.duration_sec
-                            elif existing_after_resolve.acoustic_metrics and existing_after_resolve.acoustic_metrics.duration_sec and track.duration_sec is None:
-                                track.duration_sec = existing_after_resolve.acoustic_metrics.duration_sec
-                                existing_after_resolve.duration_sec = existing_after_resolve.acoustic_metrics.duration_sec
+                            elif (
+                                existing_after_resolve.acoustic_metrics
+                                and existing_after_resolve.acoustic_metrics.duration_sec
+                                and track.duration_sec is None
+                            ):
+                                track.duration_sec = (
+                                    existing_after_resolve.acoustic_metrics.duration_sec
+                                )
+                                existing_after_resolve.duration_sec = (
+                                    existing_after_resolve.acoustic_metrics.duration_sec
+                                )
 
-                            if track.song_type and not getattr(existing_after_resolve, "song_type", None):
+                            if track.song_type and not getattr(
+                                existing_after_resolve, "song_type", None
+                            ):
                                 existing_after_resolve.song_type = track.song_type
-                            elif getattr(existing_after_resolve, "song_type", None) and not track.song_type:
+                            elif (
+                                getattr(existing_after_resolve, "song_type", None)
+                                and not track.song_type
+                            ):
                                 track.song_type = existing_after_resolve.song_type
-                            elif not getattr(existing_after_resolve, "song_type", None) and getattr(existing_after_resolve, "work_label", None):
+                            elif not getattr(existing_after_resolve, "song_type", None) and getattr(
+                                existing_after_resolve, "work_label", None
+                            ):
                                 existing_after_resolve.song_type = existing_after_resolve.work_label
                                 track.song_type = existing_after_resolve.work_label
 
-                            if track.distributor and not getattr(existing_after_resolve, "distributor", None):
+                            if track.distributor and not getattr(
+                                existing_after_resolve, "distributor", None
+                            ):
                                 existing_after_resolve.distributor = track.distributor
-                            elif getattr(existing_after_resolve, "distributor", None) and not track.distributor:
+                            elif (
+                                getattr(existing_after_resolve, "distributor", None)
+                                and not track.distributor
+                            ):
                                 track.distributor = existing_after_resolve.distributor
 
-                            if track.release_date and not getattr(existing_after_resolve, "release_date", None):
+                            if track.release_date and not getattr(
+                                existing_after_resolve, "release_date", None
+                            ):
                                 existing_after_resolve.release_date = track.release_date
-                            elif getattr(existing_after_resolve, "release_date", None) and not track.release_date:
+                            elif (
+                                getattr(existing_after_resolve, "release_date", None)
+                                and not track.release_date
+                            ):
                                 track.release_date = existing_after_resolve.release_date
 
                             track.status = "COMPLETED"
@@ -358,7 +439,9 @@ class DetectionService(IDetectionService):
                             )
                             existing_after_resolve.is_cached = True
                             existing_after_resolve = self._adapt_result_language(
-                                existing_after_resolve, language=language, model_override=model_override
+                                existing_after_resolve,
+                                language=language,
+                                model_override=model_override,
                             )
                             return existing_after_resolve
             except Exception as resolve_err:
@@ -525,7 +608,10 @@ class DetectionService(IDetectionService):
                 track.song_type = w_type.value
                 self.track_repo.save_track(track)
 
-            is_en_lang = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+            is_en_lang = (
+                str(language).strip().lower().startswith("en")
+                or "anh" in str(language).strip().lower()
+            )
             h_reason = heuristics_result["reason"]
             if is_en_lang:
                 if "năm" in h_reason and "trước" in h_reason:
@@ -537,7 +623,9 @@ class DetectionService(IDetectionService):
                 elif "Udio" in h_reason:
                     h_reason = "Detected Udio AI authoring confirmation tags in metadata / title."
                 elif "hàng loạt" in h_reason:
-                    h_reason = "Detected serial batch release pattern characteristic of AI music project."
+                    h_reason = (
+                        "Detected serial batch release pattern characteristic of AI music project."
+                    )
                 h_detail = f"Verified via source metadata: {h_reason}"
             else:
                 h_detail = f"Xác thực qua siêu dữ liệu nguồn: {heuristics_result['reason']}"
@@ -566,7 +654,8 @@ class DetectionService(IDetectionService):
                 is_cover=is_cov,
                 original_artist=orig_a,
                 original_song_title=orig_t,
-                song_type=track.song_type or (w_type.value if w_type != WorkType.UNCERTAIN else None),
+                song_type=track.song_type
+                or (w_type.value if w_type != WorkType.UNCERTAIN else None),
                 distributor=track.distributor,
                 release_date=track.release_date,
             )
@@ -672,8 +761,12 @@ class DetectionService(IDetectionService):
         """Đảm bảo reasons và detailed_explanation của kết quả khớp với ngôn ngữ được yêu cầu."""
         if not result or not result.reasons:
             return result
-        is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
-        combined_text = " ".join((result.reasons or []) + [result.detailed_explanation or ""]).lower()
+        is_en = (
+            str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        )
+        combined_text = " ".join(
+            (result.reasons or []) + [result.detailed_explanation or ""]
+        ).lower()
         vi_chars = set("àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ")
         has_vi = any(c in vi_chars for c in combined_text)
 
@@ -755,7 +848,10 @@ class DetectionService(IDetectionService):
         if result.is_ai:
             first_reason = (result.reasons[0] if result.reasons else "").lower()
 
-            is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+            is_en = (
+                str(language).strip().lower().startswith("en")
+                or "anh" in str(language).strip().lower()
+            )
             # 1a. Bảo vệ ca sĩ người thật đã xác thực hoặc hãng đĩa lớn độc quyền
             if is_human_artist or is_major_exclusive_label:
                 stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
@@ -892,7 +988,10 @@ class DetectionService(IDetectionService):
             should_override_to_ai = False
             override_reason = ""
 
-            is_en = str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+            is_en = (
+                str(language).strip().lower().startswith("en")
+                or "anh" in str(language).strip().lower()
+            )
             if not is_human_artist:
                 if is_ai_dist:
                     should_override_to_ai = True

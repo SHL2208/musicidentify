@@ -27,11 +27,18 @@ class MockResolver(IInputResolver):
         return InputType.SONG_NAME
 
     def resolve_track(self, query: str, artist: str = "", force_rescan: bool = False) -> TrackItem:
-        return TrackItem(id="t_mock", raw_query=query, input_type=InputType.SONG_NAME, track_title=query)
+        return TrackItem(
+            id="t_mock", raw_query=query, input_type=InputType.SONG_NAME, track_title=query
+        )
 
     def parse_batch_file(self, file_path: Path) -> list[TrackItem]:
         return [
-            TrackItem(id=f"t_{i}", raw_query=f"Track {i}", input_type=InputType.SONG_NAME, track_title=f"Track {i}")
+            TrackItem(
+                id=f"t_{i}",
+                raw_query=f"Track {i}",
+                input_type=InputType.SONG_NAME,
+                track_title=f"Track {i}",
+            )
             for i in range(1, 6)
         ]
 
@@ -256,7 +263,7 @@ class TestBatchJobManager(unittest.TestCase):
         self.assertIsNotNone(snap)
         assert snap is not None
         self.assertEqual(snap.status, JobStatus.STOPPED)
-        first_count = len(snap.live_results)
+        _ = len(snap.live_results)
 
         # Bấm tiếp tục quét
         succ, msg = self.manager.resume_active_job()
@@ -297,7 +304,9 @@ class TestBatchJobManager(unittest.TestCase):
         self.batch_service.delay_per_track = 0.01
         self.batch_service.fail_all = False
 
-        succ, msg, job_id = self.manager.enqueue_job(queries=["Track 1", "Track 2"], job_name="Test STT Job")
+        succ, msg, job_id = self.manager.enqueue_job(
+            queries=["Track 1", "Track 2"], job_name="Test STT Job"
+        )
         self.assertTrue(succ)
         timeout = 5.0
         start_t = time.time()

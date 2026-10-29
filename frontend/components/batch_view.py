@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,17 @@ from frontend.components.ui_compat import get_width_kwargs
 from frontend.services.backend_client import BackendClient
 
 logger = logging.getLogger(__name__)
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_report_bytes(
+    _client: BackendClient, job_id: str, count: int, fmt: str = "xlsx"
+) -> bytes | None:
+    """Tạo dữ liệu file báo cáo in-memory từ RAM có caching theo job_id và số lượng bản ghi."""
+    snap = _client.get_batch_job_snapshot()
+    if not snap or not snap.live_results:
+        return None
+    return _client.export_report_bytes(snap.live_results, format=fmt)
 
 
 def render_notification_script(enable: bool = True):
@@ -321,25 +333,37 @@ def render_batch_view(client: BackendClient):
                     st.toast("Đã đặt lại trạng thái!", icon="🔄")
                     st.rerun()
 
-        # Nút tải Excel
-        excel_path = curr_snap.report_file_path or curr_snap.partial_excel_path
-        if not excel_path and curr_snap.live_results:
-            try:
-                excel_path = client.export_custom_results(curr_snap.live_results, format="xlsx")
-                curr_snap.partial_excel_path = excel_path
-            except Exception:
-                pass
+        # Nút tải Excel & CSV (On-demand in-memory, 0 MB dung lượng ổ đĩa)
+        if curr_snap.live_results:
+            clean_job_name = Path(curr_snap.job_name or "batch").stem
+            clean_job_name = re.sub(r"[^\w\-_]", "_", clean_job_name) or "batch"
 
-        if excel_path and Path(excel_path).exists():
-            with act_c3:
-                with open(excel_path, "rb") as f:
+            xlsx_bytes = get_cached_report_bytes(
+                client, curr_snap.job_id, len(curr_snap.live_results), fmt="xlsx"
+            )
+            if xlsx_bytes:
+                with act_c3:
                     st.download_button(
                         label=f"📥 Tải Excel ({len(curr_snap.live_rows)} bài)",
-                        data=f.read(),
-                        file_name=Path(excel_path).name,
+                        data=xlsx_bytes,
+                        file_name=f"Bao_cao_{clean_job_name}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key="btn_download_excel",
+                    )
+
+            csv_bytes = get_cached_report_bytes(
+                client, curr_snap.job_id, len(curr_snap.live_results), fmt="csv"
+            )
+            if csv_bytes:
+                with act_c4:
+                    st.download_button(
+                        label=f"📄 Tải CSV ({len(curr_snap.live_rows)} bài)",
+                        data=csv_bytes,
+                        file_name=f"Bao_cao_{clean_job_name}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key="btn_download_csv",
                     )
 
         # Bảng dữ liệu chi tiết

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend.core.config import TEMP_DIR
 from backend.core.interfaces.services.batch_service_interface import IBatchService
+from backend.core.interfaces.services.report_service_interface import IReportService
 from backend.core.interfaces.services.resolver_interface import IInputResolver
 from backend.core.models.entities import BatchReport, DetectionResult, TrackItem, VerdictType
 
@@ -244,9 +245,17 @@ class BatchJobManager:
     _instance: "BatchJobManager | None" = None
     _singleton_lock = threading.Lock()
 
-    def __init__(self, batch_service: IBatchService, resolver: IInputResolver):
+    def __init__(
+        self,
+        batch_service: IBatchService,
+        resolver: IInputResolver,
+        report_service: IReportService | None = None,
+    ):
         self.batch_service = batch_service
         self.resolver = resolver
+        self.report_service: IReportService | None = report_service or getattr(
+            batch_service, "report_service", None
+        )
         self._lock = threading.RLock()
         self._queue: deque[BatchJob] = deque()
         self._active_job: BatchJob | None = None
@@ -258,14 +267,23 @@ class BatchJobManager:
 
     @classmethod
     def get_instance(
-        cls, batch_service: IBatchService | None = None, resolver: IInputResolver | None = None
+        cls,
+        batch_service: IBatchService | None = None,
+        resolver: IInputResolver | None = None,
+        report_service: IReportService | None = None,
     ) -> "BatchJobManager":
         """Lấy singleton instance của BatchJobManager."""
         with cls._singleton_lock:
             if cls._instance is None:
                 if batch_service is None or resolver is None:
                     raise RuntimeError("BatchJobManager chưa được khởi tạo với dependencies!")
-                cls._instance = cls(batch_service=batch_service, resolver=resolver)
+                cls._instance = cls(
+                    batch_service=batch_service,
+                    resolver=resolver,
+                    report_service=report_service,
+                )
+            elif report_service is not None and cls._instance.report_service is None:
+                cls._instance.report_service = report_service
             return cls._instance
 
     def enqueue_job(
@@ -578,8 +596,27 @@ class BatchJobManager:
 
             if job.circuit_breaker_triggered:
                 job.status = JobStatus.PAUSED
+                # Lỗi hệ thống: Đảm bảo có 1 bản báo cáo cứu hộ trên đĩa
+                if not job.report_file_path and job.live_results and self.report_service:
+                    try:
+                        rescue_p = self.report_service.export_report(
+                            job.live_results, format="xlsx"
+                        )
+                        if rescue_p:
+                            job.report_file_path = str(rescue_p)
+                    except Exception as err:
+                        logger.error("Không thể xuất file cứu hộ: %s", err)
             elif job.user_stop_requested:
                 job.status = JobStatus.STOPPED
+                # Người dùng chủ động bấm dừng: KHÔNG lưu file đĩa (chỉ tải On-Demand khi cần)
+                if job.report_file_path:
+                    try:
+                        p = Path(job.report_file_path)
+                        if p.exists() and p.is_file():
+                            p.unlink()
+                    except Exception:
+                        pass
+                job.report_file_path = None
             else:
                 job.status = JobStatus.COMPLETED
 
@@ -659,7 +696,11 @@ class BatchJobManager:
 
 
 def get_batch_job_manager(
-    batch_service: IBatchService | None = None, resolver: IInputResolver | None = None
+    batch_service: IBatchService | None = None,
+    resolver: IInputResolver | None = None,
+    report_service: IReportService | None = None,
 ) -> BatchJobManager:
     """Helper lấy hoặc khởi tạo BatchJobManager singleton."""
-    return BatchJobManager.get_instance(batch_service=batch_service, resolver=resolver)
+    return BatchJobManager.get_instance(
+        batch_service=batch_service, resolver=resolver, report_service=report_service
+    )

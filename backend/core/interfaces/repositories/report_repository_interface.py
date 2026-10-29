@@ -15,3 +15,13 @@ class IReportRepository(ABC):
     def get_report_file(self, filename: str) -> Path | None:
         """Truy xuất đường dẫn tệp báo cáo theo tên file."""
         pass
+
+    @abstractmethod
+    def export_report_bytes(self, records: list[dict[str, Any]], format: str = "xlsx") -> bytes:
+        """Xuất danh sách bản ghi ra mảng bytes trong bộ nhớ RAM (không ghi đĩa)."""
+        pass
+
+    @abstractmethod
+    def prune_old_reports(self, max_keep: int = 10) -> int:
+        """Dọn dẹp các tệp báo cáo cũ trong thư mục, chỉ giữ lại tối đa max_keep tệp mới nhất."""
+        pass

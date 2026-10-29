@@ -116,7 +116,9 @@ class AppContainer:
         from ..services.batch_job_manager import get_batch_job_manager
 
         self.batch_job_manager = get_batch_job_manager(
-            batch_service=self.batch_service, resolver=self.resolver
+            batch_service=self.batch_service,
+            resolver=self.resolver,
+            report_service=self.report_service,
         )
 
 

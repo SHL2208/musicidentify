@@ -11,3 +11,10 @@ class IReportService(ABC):
     def export_report(self, results: list[DetectionResult], format: str = "xlsx") -> Path | None:
         """Xuất danh sách kết quả ra file Excel hoặc CSV."""
         pass
+
+    @abstractmethod
+    def export_report_bytes(
+        self, results: list[DetectionResult], format: str = "xlsx"
+    ) -> bytes | None:
+        """Xuất danh sách kết quả ra mảng bytes trong RAM (Excel hoặc CSV)."""
+        pass

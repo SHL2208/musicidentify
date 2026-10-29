@@ -87,11 +87,8 @@ class ReportService(IReportService):
     def __init__(self, report_repo: IReportRepository):
         self.report_repo = report_repo
 
-    def export_report(self, results: list[DetectionResult], format: str = "xlsx") -> Path | None:
-        """Xuất danh sách kết quả ra file Excel hoặc CSV."""
-        if not results:
-            return None
-
+    def build_report_records(self, results: list[DetectionResult]) -> list[dict[str, Any]]:
+        """Xây dựng danh sách bản ghi chuẩn hóa từ danh sách DetectionResult."""
         records: list[dict[str, Any]] = []
         for idx, r in enumerate(results):
             display_title = format_display_title(r)
@@ -218,4 +215,20 @@ class ReportService(IReportService):
                     }
                 )
 
+        return records
+
+    def export_report(self, results: list[DetectionResult], format: str = "xlsx") -> Path | None:
+        """Xuất danh sách kết quả ra file Excel hoặc CSV."""
+        if not results:
+            return None
+        records = self.build_report_records(results)
         return self.report_repo.save_report_file(records, format=format)
+
+    def export_report_bytes(
+        self, results: list[DetectionResult], format: str = "xlsx"
+    ) -> bytes | None:
+        """Xuất danh sách kết quả ra mảng bytes trong RAM (Excel hoặc CSV)."""
+        if not results:
+            return None
+        records = self.build_report_records(results)
+        return self.report_repo.export_report_bytes(records, format=format)

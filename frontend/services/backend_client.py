@@ -137,6 +137,14 @@ class BackendClient:
         res_file = self.container.report_service.export_report(results, format=format)
         return str(res_file) if res_file else None
 
+    def export_report_bytes(
+        self, results: list[DetectionResult], format: str = "xlsx"
+    ) -> bytes | None:
+        """Xuất danh sách kết quả bất kỳ ra mảng bytes trong RAM (không ghi đĩa)."""
+        if not results:
+            return None
+        return self.container.report_service.export_report_bytes(results, format=format)
+
     def get_history(self) -> list[DetectionResult]:
         """Truy xuất lịch sử giám định."""
         resp = self.report_controller.get_history()

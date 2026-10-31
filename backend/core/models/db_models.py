@@ -161,6 +161,35 @@ class AIArtistProjectModel(Base):
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 
+class VerifiedHumanArtistModel(Base):
+    """Bảng danh mục nghệ sĩ người thật đã được xác thực."""
+
+    __tablename__ = "verified_human_artists"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    artist_name = Column(String(255), unique=True, nullable=False, index=True)
+    aliases = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+
+class SongTypeCatalogModel(Base):
+    """Bảng danh mục tác phẩm và kênh phục vụ phân loại tác phẩm (Cover/Remix/Channel)."""
+
+    __tablename__ = "song_type_catalog"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entry_type = Column(
+        String(50), nullable=False, index=True
+    )  # 'COVER_SONG', 'REMIX_SONG', 'COVER_CHANNEL'
+    name = Column(String(255), nullable=False, index=True)
+    original_artist = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+
 class BenchmarkRunModel(Base):
     """Bảng lưu trữ các đợt chạy Benchmark chấm điểm."""
 

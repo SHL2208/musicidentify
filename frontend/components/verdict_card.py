@@ -190,3 +190,89 @@ def render_verdict_card(result: DetectionResult):
         """,
         unsafe_allow_html=True,
     )
+
+    # 4. Phản hồi con người & Gắn nhãn nhanh vào Database
+    candidate_artist = ""
+    if getattr(result, "cover_performer", None):
+        candidate_artist = str(result.cover_performer).strip()
+    elif getattr(result, "original_artist", None):
+        candidate_artist = str(result.original_artist).strip()
+    elif " - " in (result.track_title or ""):
+        parts = result.track_title.split(" - ")
+        candidate_artist = parts[0].strip()
+
+    st.markdown("---")
+    st.markdown("##### ⚡ Phản Hồi & Gắn Nhãn Nhanh Vào Database")
+    col_act1, col_act2 = st.columns(2)
+
+    with col_act1:
+        with st.popover("👤 Đánh dấu Ca sĩ Người Thật", use_container_width=True):
+            st.markdown("**Thêm vào bảng `verified_human_artists`**")
+            artist_input = st.text_input(
+                "Tên ca sĩ / nghệ sĩ:",
+                value=candidate_artist,
+                key=f"input_human_{result.track_id}",
+            )
+            aliases_input = st.text_input(
+                "Bí danh / Aliases (phân cách dấu phẩy, tùy chọn):",
+                placeholder="vd: Tùng Núi, Sơn Tùng",
+                key=f"input_alias_{result.track_id}",
+            )
+            if st.button(
+                "Lưu Ca sĩ Người Thật",
+                key=f"btn_save_human_{result.track_id}",
+                use_container_width=True,
+            ):
+                if not artist_input.strip():
+                    st.warning("Vui lòng nhập tên ca sĩ!")
+                else:
+                    try:
+                        from frontend.services.backend_client import BackendClient
+
+                        client = BackendClient()
+                        ok = client.add_verified_human_artist(
+                            name=artist_input.strip(),
+                            aliases=aliases_input.strip() or None,
+                        )
+                        if ok:
+                            st.success(f"Đã lưu ca sĩ '{artist_input}' vào DB & cập nhật cache!")
+                        else:
+                            st.error("Không thể lưu (DB offline hoặc lỗi kết nối).")
+                    except Exception as e:
+                        st.error(f"Lỗi: {e}")
+
+    with col_act2:
+        with st.popover("🤖 Đánh dấu Dự án AI", use_container_width=True):
+            st.markdown("**Thêm vào bảng `ai_artist_projects`**")
+            ai_input = st.text_input(
+                "Tên dự án AI / Ca sĩ ảo:",
+                value=candidate_artist,
+                key=f"input_ai_{result.track_id}",
+            )
+            regex_input = st.text_input(
+                "Regex nhận diện (tùy chọn):",
+                placeholder=r"\b(tên_ca_sĩ)\b",
+                key=f"input_regex_{result.track_id}",
+            )
+            if st.button(
+                "Lưu Dự án AI",
+                key=f"btn_save_ai_{result.track_id}",
+                use_container_width=True,
+            ):
+                if not ai_input.strip():
+                    st.warning("Vui lòng nhập tên dự án AI!")
+                else:
+                    try:
+                        from frontend.services.backend_client import BackendClient
+
+                        client = BackendClient()
+                        ok = client.add_ai_artist_project(
+                            name=ai_input.strip(),
+                            regex_pattern=regex_input.strip() or None,
+                        )
+                        if ok:
+                            st.success(f"Đã lưu dự án AI '{ai_input}' vào DB & cập nhật cache!")
+                        else:
+                            st.error("Không thể lưu (DB offline hoặc lỗi kết nối).")
+                    except Exception as e:
+                        st.error(f"Lỗi: {e}")

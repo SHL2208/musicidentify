@@ -73,6 +73,18 @@ if DATABASE_URL:
         SessionLocal = None
 
 
+def init_db() -> None:
+    """Tự động kiểm tra và tạo các bảng mới trong Database nếu chưa tồn tại."""
+    if engine is not None:
+        try:
+            from .models import db_models  # noqa: F401
+
+            Base.metadata.create_all(bind=engine, checkfirst=True)
+            logger.info("Đã đồng bộ schema CSDL thành công qua SQLAlchemy metadata.")
+        except Exception as e:
+            logger.warning(f"Không thể tự động đồng bộ schema CSDL: {e}")
+
+
 @contextmanager
 def get_db_session() -> Generator:
     """Context manager cung cấp Database Session an toàn tự động commit/rollback/close."""

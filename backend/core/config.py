@@ -39,6 +39,9 @@ OUTPUT_DIR = BASE_DIR / "data" / "outputs"
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CATALOG_SNAPSHOT_DIR = BASE_DIR / "data" / "catalogs"
+CATALOG_SNAPSHOT_PATH = CATALOG_SNAPSHOT_DIR / "catalog_snapshot.json"
+CATALOG_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_configured_gemini_api_keys() -> list[str]:
@@ -120,12 +123,16 @@ AVAILABLE_MODELS = list(
     )
 )
 
-# Audio Processing Configuration
-AUDIO_SAMPLE_DURATION = int(os.getenv("AUDIO_SAMPLE_DURATION", "30"))
+# ==============================================================================
+# SECTION 3: AUDIO ENGINE CONFIGURATION
+# ==============================================================================
+AUDIO_SAMPLE_DURATION = int(os.getenv("AUDIO_SAMPLE_DURATION", "45"))
 AUDIO_SAMPLE_OFFSET = int(os.getenv("AUDIO_SAMPLE_OFFSET", "45"))
-BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "1.0"))
-
-# Performance Optimization Configuration
+AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "44100"))
+AUDIO_CHANNELS = int(os.getenv("AUDIO_CHANNELS", "2"))
+MULTI_SEGMENT_SLICE_DURATION = float(os.getenv("MULTI_SEGMENT_SLICE_DURATION", "15.0"))
+MULTI_SEGMENT_POSITIONS = (0.20, 0.50, 0.75)
+BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "0.5"))
 PIPED_TIMEOUT_SECONDS = float(os.getenv("PIPED_TIMEOUT_SECONDS", "4.0"))
 SPECTROGRAM_DPI = int(os.getenv("SPECTROGRAM_DPI", "80"))
 ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").strip().lower() in (
@@ -134,10 +141,135 @@ ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").str
     "yes",
 )
 ENABLE_RANGE_STREAM_DOWNLOAD = os.getenv(
-    "ENABLE_RANGE_STREAM_DOWNLOAD", "false"
+    "ENABLE_RANGE_STREAM_DOWNLOAD", "true"
 ).strip().lower() in ("true", "1", "yes")
 
-# Media Cloud Storage Configuration
+# ==============================================================================
+# SECTION 4: ACOUSTIC ANALYSIS CONFIGURATION (THRESHOLDS & PARAMETERS)
+# ==============================================================================
+# 4.1. Pitch Micro-Jitter & Rigidity Analysis
+PITCH_TARGET_SR = int(os.getenv("PITCH_TARGET_SR", "8000"))
+PITCH_WINDOW_SEC = float(os.getenv("PITCH_WINDOW_SEC", "20.0"))
+PITCH_FMIN = float(os.getenv("PITCH_FMIN", "80.0"))
+PITCH_FMAX = float(os.getenv("PITCH_FMAX", "550.0"))
+PITCH_VOICED_F0_MIN = float(os.getenv("PITCH_VOICED_F0_MIN", "85.0"))
+PITCH_VOICED_F0_MAX = float(os.getenv("PITCH_VOICED_F0_MAX", "500.0"))
+PITCH_MIN_VOICED_FRAMES = int(os.getenv("PITCH_MIN_VOICED_FRAMES", "30"))
+PITCH_FRAME_LENGTH = int(os.getenv("PITCH_FRAME_LENGTH", "512"))
+PITCH_HOP_LENGTH = int(os.getenv("PITCH_HOP_LENGTH", "128"))
+PITCH_RIGID_DIFF_THRESHOLD = float(os.getenv("PITCH_RIGID_DIFF_THRESHOLD", "0.8"))
+PITCH_STUDIO_AUTOTUNE_RIGIDITY = float(os.getenv("PITCH_STUDIO_AUTOTUNE_RIGIDITY", "0.35"))
+PITCH_STUDIO_AUTOTUNE_JITTER_MAX = float(os.getenv("PITCH_STUDIO_AUTOTUNE_JITTER_MAX", "0.015"))
+PITCH_STUDIO_AUTOTUNE_FORMANT_MIN = float(os.getenv("PITCH_STUDIO_AUTOTUNE_FORMANT_MIN", "300.0"))
+PITCH_ANOMALY_RIGIDITY_THRESHOLD = float(os.getenv("PITCH_ANOMALY_RIGIDITY_THRESHOLD", "0.40"))
+PITCH_ANOMALY_JITTER_THRESHOLD = float(os.getenv("PITCH_ANOMALY_JITTER_THRESHOLD", "0.015"))
+PITCH_ANOMALY_RIGIDITY_SECONDARY = float(os.getenv("PITCH_ANOMALY_RIGIDITY_SECONDARY", "0.32"))
+PITCH_MILD_AUTOTUNE_RIGIDITY = float(os.getenv("PITCH_MILD_AUTOTUNE_RIGIDITY", "0.25"))
+
+# 4.2. Stem Bleed Analysis
+STEM_BLEED_WINDOW_SEC = float(os.getenv("STEM_BLEED_WINDOW_SEC", "20.0"))
+STEM_BLEED_HOP_LENGTH = int(os.getenv("STEM_BLEED_HOP_LENGTH", "512"))
+STEM_BLEED_THRESHOLD = float(os.getenv("STEM_BLEED_THRESHOLD", "0.40"))
+
+# 4.3. Spectral STFT & Ultrasonic Shelf Cutoff
+SPECTRAL_STFT_N_FFT = int(os.getenv("SPECTRAL_STFT_N_FFT", "2048"))
+SPECTRAL_STFT_HOP_LENGTH = int(os.getenv("SPECTRAL_STFT_HOP_LENGTH", "512"))
+SPECTRAL_ROLLOFF_PERCENT_HIGH = float(os.getenv("SPECTRAL_ROLLOFF_PERCENT_HIGH", "0.95"))
+SPECTRAL_ROLLOFF_PERCENT_MID = float(os.getenv("SPECTRAL_ROLLOFF_PERCENT_MID", "0.85"))
+ULTRASONIC_SHELF_DROP_DB_THRESHOLD = float(os.getenv("ULTRASONIC_SHELF_DROP_DB_THRESHOLD", "35.0"))
+ULTRASONIC_ROLLOFF_CUTOFF_HZ = float(os.getenv("ULTRASONIC_ROLLOFF_CUTOFF_HZ", "13500.0"))
+ULTRASONIC_HIGH_FREQ_RATIO_MAX = float(os.getenv("ULTRASONIC_HIGH_FREQ_RATIO_MAX", "0.0002"))
+
+# 4.4. Vocal Separation & Instrumental Detection
+VOCAL_BAND_FREQ_MIN = float(os.getenv("VOCAL_BAND_FREQ_MIN", "300.0"))
+VOCAL_BAND_FREQ_MAX = float(os.getenv("VOCAL_BAND_FREQ_MAX", "3400.0"))
+INSTRUMENTAL_VOCAL_ENERGY_MAX = float(os.getenv("INSTRUMENTAL_VOCAL_ENERGY_MAX", "0.20"))
+
+# 4.5. Modern AI Vocal Suspect Thresholds
+MODERN_AI_ROLLOFF_MAX = float(os.getenv("MODERN_AI_ROLLOFF_MAX", "11800.0"))
+MODERN_AI_RIGIDITY_MIN = float(os.getenv("MODERN_AI_RIGIDITY_MIN", "0.47"))
+MODERN_AI_HARMONIC_MIN = float(os.getenv("MODERN_AI_HARMONIC_MIN", "0.80"))
+MODERN_AI_FAKEPRINT_MIN = float(os.getenv("MODERN_AI_FAKEPRINT_MIN", "0.35"))
+MODERN_AI_STEM_BLEED_MIN = float(os.getenv("MODERN_AI_STEM_BLEED_MIN", "0.32"))
+MODERN_AI_ULTRASONIC_RIGIDITY_MIN = float(os.getenv("MODERN_AI_ULTRASONIC_RIGIDITY_MIN", "0.55"))
+
+# 4.6. Compression Source Classification
+COMPRESSION_LOSSY_ROLLOFF_MAX = float(os.getenv("COMPRESSION_LOSSY_ROLLOFF_MAX", "17500.0"))
+COMPRESSION_STUDIO_ROLLOFF_MIN = float(os.getenv("COMPRESSION_STUDIO_ROLLOFF_MIN", "19000.0"))
+
+# 4.7. Safeguard Physical Thresholds (dùng chung cho DetectionService & SignalAnalyzer)
+SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH = float(os.getenv("SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH", "0.85"))
+SAFEGUARD_STEM_BLEED_OVERRIDE_HIGH = float(os.getenv("SAFEGUARD_STEM_BLEED_OVERRIDE_HIGH", "0.50"))
+SAFEGUARD_FAKEPRINT_MODERATE = float(os.getenv("SAFEGUARD_FAKEPRINT_MODERATE", "0.50"))
+SAFEGUARD_STEM_BLEED_MODERATE = float(os.getenv("SAFEGUARD_STEM_BLEED_MODERATE", "0.35"))
+SAFEGUARD_FAKEPRINT_STRONG = float(os.getenv("SAFEGUARD_FAKEPRINT_STRONG", "0.65"))
+SAFEGUARD_STEM_BLEED_STRONG = float(os.getenv("SAFEGUARD_STEM_BLEED_STRONG", "0.30"))
+SAFEGUARD_FAKEPRINT_RELIABLE = float(os.getenv("SAFEGUARD_FAKEPRINT_RELIABLE", "0.60"))
+SAFEGUARD_HUMAN_FAKEPRINT_MAX = float(os.getenv("SAFEGUARD_HUMAN_FAKEPRINT_MAX", "0.25"))
+SAFEGUARD_HUMAN_STEM_BLEED_MAX = float(os.getenv("SAFEGUARD_HUMAN_STEM_BLEED_MAX", "0.25"))
+
+# ==============================================================================
+# SECTION 5: HEURISTICS & RULES CONFIGURATION
+# ==============================================================================
+PRE_AI_CUTOFF_YEAR = int(os.getenv("PRE_AI_CUTOFF_YEAR", "2022"))
+PRE_AI_CUTOFF_MONTH = int(os.getenv("PRE_AI_CUTOFF_MONTH", "11"))
+PRE_AI_MATCH_SCORE_MIN = float(os.getenv("PRE_AI_MATCH_SCORE_MIN", "0.75"))
+PRE_AI_RECENT_TARGET_YEAR = int(os.getenv("PRE_AI_RECENT_TARGET_YEAR", "2023"))
+
+SUNO_EXPLICIT_KEYWORDS = (
+    "created with suno",
+    "#suno",
+    "suno ai",
+    "suno.com",
+)
+UDIO_EXPLICIT_KEYWORDS = (
+    "created with udio",
+    "#udio",
+    "udio ai",
+    "udio.com",
+)
+DERIVATIVE_KEYWORDS = (
+    "cover",
+    "remake",
+    "remix",
+    "ai cover",
+)
+GENERIC_ANONYMOUS_ARTISTS = {
+    "",
+    "unknown",
+    "various artists",
+    "nghệ sĩ ẩn danh",
+    "ca sĩ ẩn danh",
+    "ẩn danh",
+    "anonymous",
+    "nhiều nghệ sĩ",
+    "nhiều ca sĩ",
+    "ai channel",
+    "ai music",
+    "va",
+    "none",
+    "null",
+}
+
+AI_CONTEXT_PATTERN = r"\b(?:suno|udio)\b|ai\s+music|ai\s+cover|tạo bằng ai|mô hình ai|prompt:|style:"
+SUNO_PROMPT_TAGS_PATTERN = (
+    r"\[\s*(?:verse\s*\d*|chorus|bridge|outro|intro|pre-chorus|hook|vocal chop|sub-?bass)[^\]]*\]"
+)
+BATCH_AI_NUMBER_PATTERN = r"bài\s*(?:số\s*)?\d+\s*/\s*\d+"
+BATCH_AI_KEYWORDS_PATTERN = (
+    r"\b(?:suno|udio|ai)\b|ai\s+music|ai\s+cover|#ai|tạo bằng ai|sinh bằng ai|dự án\s+(?:sáng tác|nhạc|ai)"
+)
+NATIONAL_ARTIST_HONORIFICS_PATTERN = r"\b(nsnd|nsưt|nsut)\b"
+COLLABORATOR_SPLIT_PATTERN = r"[,/&;+]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)"
+PRODUCER_PREFIX_PATTERN = r"^prod\.?\s*"
+
+# Cache TTL cho danh mục Database (giây)
+CATALOG_CACHE_TTL_SECONDS = int(os.getenv("CATALOG_CACHE_TTL_SECONDS", "300"))
+MAJOR_EXCLUSIVE_LABELS = ("sony", "universal", "umg", "vieent", "loops", "bmz")
+
+# ==============================================================================
+# SECTION 6: MEDIA CLOUD STORAGE & SERVER CONFIGURATION
+# ==============================================================================
 CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD = os.getenv(
     "CLEANUP_LOCAL_MEDIA_AFTER_UPLOAD", "true"
 ).strip().lower() in ("true", "1", "yes")
@@ -145,7 +277,6 @@ UPLOAD_AUDIO_SAMPLES_TO_CLOUD = os.getenv(
     "UPLOAD_AUDIO_SAMPLES_TO_CLOUD", "false"
 ).strip().lower() in ("true", "1", "yes")
 
-# Server / API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 
@@ -598,14 +729,16 @@ def get_cookie_status() -> tuple[bool, int, str]:
 
 
 def _normalize_proxy_url(proxy_url: str) -> str:
-    """Tự động chuẩn hóa URL proxy (ví dụ Webshare backbone cần thêm -rotate nếu thiếu)."""
+    """
+    Chuẩn hóa URL proxy.
+    LƯU Ý: Tuyệt đối không dùng '-rotate' đối với YouTube vì YouTube CDN (googlevideo)
+    ràng buộc chặt chẽ IP ban đầu với link stream. Xoay IP liên tục giữa các chunk sẽ gây
+    lỗi HTTP 403 Forbidden và kích hoạt hàng loạt retry/request lỗi lãng phí.
+    """
     raw = proxy_url.strip()
-    if "@p.webshare.io" in raw:
-        m = re.match(r"^(https?://)([^:@]+)(:[^@]+@p\.webshare\.io.*)$", raw)
-        if m:
-            proto, user, rest = m.groups()
-            if "-" not in user:
-                return f"{proto}{user}-rotate{rest}"
+    if "@p.webshare.io" in raw and "-rotate" in raw:
+        # Tự động gỡ bỏ đuôi -rotate để giữ kết nối sticky/nhất quán IP
+        raw = raw.replace("-rotate", "")
     return raw
 
 

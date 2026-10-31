@@ -43,3 +43,27 @@ def render_sidebar():
         - **Thuật toán phổ vân:** Deezer Research ISMIR 2025
         - **Tốc độ làm mượt:** 50ms Crossfade chống giật
         """)
+
+        st.divider()
+        st.subheader("🗄️ Danh mục & Bộ nhớ đệm")
+        from backend.core.database import is_database_available
+
+        db_online = is_database_available()
+        if db_online:
+            st.success("🟢 Database: Supabase Online")
+        else:
+            st.warning("🟠 Chế độ: Offline Snapshot")
+
+        if st.button(
+            "🔄 Làm mới Cache Danh mục",
+            use_container_width=True,
+            help="Tải lại danh mục Ca sĩ, Dự án AI, Bài hát Cover/Remix từ Supabase",
+        ):
+            try:
+                from frontend.services.backend_client import BackendClient
+
+                client = BackendClient()
+                client.refresh_catalog_cache()
+                st.toast("✅ Đã làm mới bộ nhớ đệm danh mục thành công!", icon="🚀")
+            except Exception as e:
+                st.error(f"Lỗi khi làm mới cache: {e}")

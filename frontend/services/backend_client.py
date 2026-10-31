@@ -198,3 +198,28 @@ class BackendClient:
     def reset_batch_job(self):
         """Xóa sạch trạng thái quét và hàng đợi để bắt đầu mới."""
         self.batch_job_manager.reset_job()
+
+    def refresh_catalog_cache(self) -> None:
+        """Làm mới bộ nhớ đệm danh mục (Artists, AI projects, Song Types)."""
+        if hasattr(self.container, "catalog_repository"):
+            self.container.catalog_repository.refresh_cache()
+
+    def add_verified_human_artist(
+        self, name: str, aliases: str | None = None, notes: str | None = None
+    ) -> bool:
+        """Thêm ca sĩ người thật vào Database và làm mới cache."""
+        if hasattr(self.container, "catalog_repository"):
+            return self.container.catalog_repository.add_verified_human_artist(
+                name, aliases=aliases, notes=notes
+            )
+        return False
+
+    def add_ai_artist_project(
+        self, name: str, regex_pattern: str | None = None, notes: str | None = None
+    ) -> bool:
+        """Thêm dự án nghệ sĩ ảo AI vào Database và làm mới cache."""
+        if hasattr(self.container, "catalog_repository"):
+            return self.container.catalog_repository.add_ai_artist_project(
+                name, regex_pattern=regex_pattern, notes=notes
+            )
+        return False

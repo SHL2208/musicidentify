@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from backend.core.models.entities import InputType, TrackItem, VerdictType
 from backend.services.signal_analyzer_service import SignalAnalyzerService
-from tests.test_confusion_matrix import load_testcase_dataset
+from benchmark_evaluator import load_testcase_dataset
 
 
 class TestFixEvalRegression(unittest.TestCase):
@@ -22,20 +22,20 @@ class TestFixEvalRegression(unittest.TestCase):
             storage_repo=self.mock_storage,
         )
 
-    def test_test_confusion_matrix_loads_distributor(self) -> None:
-        """Kiểm tra load_testcase_dataset trong test_confusion_matrix.py nạp đúng cột distributor."""
+    def test_load_testcase_dataset_loads_distributor(self) -> None:
+        """Kiểm tra load_testcase_dataset nạp đúng cột distributor."""
         dataset = load_testcase_dataset(file_path="testcase.xlsx")
         self.assertGreater(len(dataset), 0)
 
         # Kiểm tra các mục cụ thể có distributor
         incom_items = [d for d in dataset if d.get("distributor") == "INCOM"]
         self.assertGreater(
-            len(incom_items), 0, "test_confusion_matrix.py phải nạp được bài có distributor INCOM"
+            len(incom_items), 0, "load_testcase_dataset phải nạp được bài có distributor INCOM"
         )
 
         sony_items = [d for d in dataset if d.get("distributor") == "Sony"]
         self.assertGreater(
-            len(sony_items), 0, "test_confusion_matrix.py phải nạp được bài có distributor Sony"
+            len(sony_items), 0, "load_testcase_dataset phải nạp được bài có distributor Sony"
         )
 
     def test_ai_distributor_blacklist_flags_incom_and_tte(self) -> None:

@@ -214,18 +214,23 @@ class TestLayeredArchitecture(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         from backend.api.app import app
+        from backend.api.routers.reports import get_report_controller
 
-        client = TestClient(app)
-        # 1. Health check
-        res = client.get("/health")
-        self.assertEqual(res.status_code, 200)
-        data = res.json()
-        self.assertEqual(data["status"], "healthy")
+        app.dependency_overrides[get_report_controller] = lambda: self.report_controller
+        try:
+            client = TestClient(app)
+            # 1. Health check
+            res = client.get("/health")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data["status"], "healthy")
 
-        # 2. History check
-        res_hist = client.get("/api/v1/reports/history")
-        self.assertEqual(res_hist.status_code, 200)
-        self.assertTrue(res_hist.json()["success"])
+            # 2. History check
+            res_hist = client.get("/api/v1/reports/history")
+            self.assertEqual(res_hist.status_code, 200)
+            self.assertTrue(res_hist.json()["success"])
+        finally:
+            app.dependency_overrides.clear()
 
 
 if __name__ == "__main__":

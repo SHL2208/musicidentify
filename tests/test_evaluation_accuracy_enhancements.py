@@ -31,7 +31,7 @@ from backend.services.signal_analyzer_service import (
     SignalAnalyzerService,
     get_dynamic_catalog,
 )
-from tests.test_confusion_matrix import (
+from benchmark_evaluator import (
     ConfusionMetrics,
     export_evaluation_excel,
 )

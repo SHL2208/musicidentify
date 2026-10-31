@@ -1,5 +1,4 @@
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +10,63 @@ import soundfile as sf
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from ..core.config import SPECTROGRAM_DPI
+from ..core.config import (
+    AI_CONTEXT_PATTERN,
+    BATCH_AI_KEYWORDS_PATTERN,
+    BATCH_AI_NUMBER_PATTERN,
+    COMPRESSION_LOSSY_ROLLOFF_MAX,
+    COMPRESSION_STUDIO_ROLLOFF_MIN,
+    DERIVATIVE_KEYWORDS,
+    GENERIC_ANONYMOUS_ARTISTS,
+    INSTRUMENTAL_VOCAL_ENERGY_MAX,
+    MODERN_AI_FAKEPRINT_MIN,
+    MODERN_AI_HARMONIC_MIN,
+    MODERN_AI_RIGIDITY_MIN,
+    MODERN_AI_ROLLOFF_MAX,
+    MODERN_AI_STEM_BLEED_MIN,
+    MODERN_AI_ULTRASONIC_RIGIDITY_MIN,
+    PITCH_ANOMALY_JITTER_THRESHOLD,
+    PITCH_ANOMALY_RIGIDITY_SECONDARY,
+    PITCH_ANOMALY_RIGIDITY_THRESHOLD,
+    PITCH_FMAX,
+    PITCH_FMIN,
+    PITCH_FRAME_LENGTH,
+    PITCH_HOP_LENGTH,
+    PITCH_MILD_AUTOTUNE_RIGIDITY,
+    PITCH_MIN_VOICED_FRAMES,
+    PITCH_RIGID_DIFF_THRESHOLD,
+    PITCH_STUDIO_AUTOTUNE_FORMANT_MIN,
+    PITCH_STUDIO_AUTOTUNE_JITTER_MAX,
+    PITCH_STUDIO_AUTOTUNE_RIGIDITY,
+    PITCH_TARGET_SR,
+    PITCH_VOICED_F0_MAX,
+    PITCH_VOICED_F0_MIN,
+    PITCH_WINDOW_SEC,
+    PRE_AI_CUTOFF_MONTH,
+    PRE_AI_CUTOFF_YEAR,
+    PRE_AI_MATCH_SCORE_MIN,
+    PRE_AI_RECENT_TARGET_YEAR,
+    SPECTRAL_ROLLOFF_PERCENT_HIGH,
+    SPECTRAL_ROLLOFF_PERCENT_MID,
+    SPECTRAL_STFT_HOP_LENGTH,
+    SPECTRAL_STFT_N_FFT,
+    SPECTROGRAM_DPI,
+    STEM_BLEED_HOP_LENGTH,
+    STEM_BLEED_THRESHOLD,
+    STEM_BLEED_WINDOW_SEC,
+    SUNO_EXPLICIT_KEYWORDS,
+    SUNO_PROMPT_TAGS_PATTERN,
+    UDIO_EXPLICIT_KEYWORDS,
+    ULTRASONIC_HIGH_FREQ_RATIO_MAX,
+    ULTRASONIC_ROLLOFF_CUTOFF_HZ,
+    ULTRASONIC_SHELF_DROP_DB_THRESHOLD,
+    VOCAL_BAND_FREQ_MAX,
+    VOCAL_BAND_FREQ_MIN,
+)
 from ..core.exceptions import AudioProcessingException
+from ..core.interfaces.repositories.catalog_repository_interface import (
+    ICatalogRepository,
+)
 from ..core.interfaces.repositories.storage_repository_interface import (
     IStorageRepository,
 )
@@ -20,134 +74,18 @@ from ..core.interfaces.services.fakeprint_detector_interface import IFakeprintDe
 from ..core.interfaces.services.signal_analyzer_interface import ISignalAnalyzer
 from ..core.models.entities import AcousticMetrics, VerdictType
 from ..core.utils import normalize_vietnamese_text
+from ..repositories.database_catalog_repository import DatabaseCatalogRepository
 
-_DEFAULT_HUMAN_WHITELIST = [
-    "sony",
-    "bmz",
-    "vieent",
-    "believe",
-    "loops",
-]
+# Singleton Catalog Repository phục vụ tra cứu động từ Database (kèm cache)
+_default_catalog_repo: ICatalogRepository | None = None
 
-# Loại bỏ logic gán nhãn AI cứng theo nhà phân phối để tránh False Positives và False Negatives.
-# Nhà phân phối sẽ chỉ được đưa vào prompt làm ngữ cảnh mềm cho mô hình thẩm định.
-_DEFAULT_PURE_AI_DISTRIBUTORS: list[str] = []
 
-_DEFAULT_AI_ARTIST_REGEXES = [
-    (r"\bd&c\b", "D&C"),
-    (r"\bathena\b", "Athena"),
-    (r"\bkha mộc lan\b", "Kha Mộc Lan"),
-    (r"\bkhói xanh\b", "Khói Xanh"),
-    (r"\btrầm ca\b", "Trầm Ca"),
-    (r"\bhương my bông\b", "Hương My Bông"),
-    (r"\bmercy worship\b", "Mercy Worship"),
-    (r"\bastrís\b", "Astrís"),
-    (r"\bwbm christmas\b", "WBM Christmas"),
-    (r"\btienyinmen\b", "TienYinMen"),
-    (r"\byi xian sun\b", "Yi Xian Sun"),
-    (r"\bshadow phonk\b", "Shadow Phonk"),
-    (r"\bfirelight records\b", "Firelight Records"),
-    (r"\beira romi\b", "Eira Romi"),
-    (r"\bwish records\b", "Wish Records"),
-    (r"\bcowboy bebop\b", "Cowboy Bebop"),
-    (r"\bbt2k relax\b", "BT2K Relax"),
-    (r"\bivory rain\b", "Ivory Rain"),
-    (r"\blofi quê hương\b", "Lofi Quê Hương"),
-    (r"\bhanzen\b", "HanZen"),
-    (r"\ban deep\b", "An Deep"),
-    (r"\bgmhd\b", "GMHD"),
-    (r"\bsinbadai\b", "SinbadAI"),
-    (r"\bđặng bảo trung\b", "Đặng Bảo Trung"),
-    (r"\btiểu mai tử\b", "Tiểu Mai Tử"),
-    (r"\btiểu di\b", "Tiểu Di"),
-    (r"\bf47\b", "F47"),
-    (r"\bhoàng k\b", "Hoàng K"),
-    (r"\bhlc\b", "HLC"),
-    (r"\blý nguyên tiêu\b", "Lý Nguyên Tiêu"),
-    (r"\bhuyền tranng\b", "Huyền Tranng"),
-    (r"\btrịnh nguyên bình\b", "Trịnh Nguyên Bình"),
-    (r"\banh vũ\b", "Anh Vũ"),
-    (r"\bfantasy medieval journey\b", "Fantasy Medieval Journey"),
-    (r"\bather soaking\b", "Ather Soaking"),
-    (r"\bather word\b", "Ather Word"),
-    (r"\b36 kingdom\b", "36 KINGDOM"),
-    (r"\bgomaxr\b", "GomaxR"),
-    (r"\bnova skye\b", "Nova Skye"),
-    (r"\b5seconddecider\b", "5SecondDecider"),
-    (r"\bqtd music\b", "QTD Music"),
-    (r"\bkvltx\b", "KVLTX"),
-    (r"\bmano\b", "Mano"),
-    (r"\bfrozen horizon\b", "Frozen Horizon"),
-    (r"\bmontagem\b", "Montagem Phonk"),
-    (r"\b(?:trạm nhạc mới|tram nhac moi)\b", "Trạm Nhạc Mới"),
-]
-
-_VERIFIED_HUMAN_ARTISTS = {
-    "đinh tùng huy",
-    "minh sang",
-    "tlong",
-    "phương dung socola",
-    "chấn hào",
-    "dytins nguyễn",
-    "phạm quỳnh anh",
-    "minh tuyết",
-    "nguyên hà",
-    "dj mie",
-    "phan duy anh",
-    "rayo",
-    "jaykii",
-    "sara lưu",
-    "giang hồng ngọc",
-    "tuấn phi",
-    "âu hoàng",
-    "arson",
-    "khánh hòa",
-    "như ý",
-    "toharmony",
-    "vicky nhung",
-    "chu thúy quỳnh",
-    "the masked singer",
-    "trung quân",
-    "tùng dương",
-    "thanh duy",
-    "anh trai vượt ngàn chông gai",
-    "buitruonglinh",
-    "hurrykng",
-    "jsol",
-    "congb",
-    "đỗ lê hồng nhung",
-    "nguyễn ngọc hải",
-    "nguyễn kiều oanh",
-    "trương khải minh",
-    "hieubi",
-    "hoàng khang",
-    "prod. tachi",
-    "đức phúc",
-    "erik",
-    "hòa minzy",
-    "sơn tùng m-tp",
-    "vũ",
-    "hoàng dũng",
-    "soobin",
-    "mono",
-    "quân a.p",
-    "jack",
-    "k-icm",
-    "bảo anh",
-    "hương tràm",
-    "lệ quyên",
-    "đàm vĩnh hưng",
-    "mỹ tâm",
-    "hà anh tuấn",
-    "noo phước thịnh",
-    "đông nhi",
-    "nsnd thúy hường",
-    "thúy hường",
-    "hùng thanh",
-    "thùy chi",
-    "dc tâm",
-    "hoàng ly",
-}
+def _get_catalog_repo() -> ICatalogRepository:
+    """Khởi tạo và trả về singleton Catalog Repository."""
+    global _default_catalog_repo
+    if _default_catalog_repo is None:
+        _default_catalog_repo = DatabaseCatalogRepository()
+    return _default_catalog_repo
 
 
 def remove_vietnamese_accents(text: str) -> str:
@@ -155,152 +93,44 @@ def remove_vietnamese_accents(text: str) -> str:
     return normalize_vietnamese_text(text).lower()
 
 
-_VERIFIED_HUMAN_ARTISTS_UNACCENTED = {
-    remove_vietnamese_accents(name) for name in _VERIFIED_HUMAN_ARTISTS
-}
-
-
 def is_verified_human_artist(artist_str: str, title_str: str = "") -> bool:
-    """Xác thực xem nghệ sĩ hoặc tiêu đề có thuộc danh sách nghệ sĩ người thật đã được xác thực không."""
-    a_low = (artist_str or "").lower().strip()
-    t_low = (title_str or "").lower().strip()
-    a_unacc = remove_vietnamese_accents(a_low)
-    t_unacc = remove_vietnamese_accents(t_low)
-
-    # 1. Tuyệt đối không xác thực nếu thuộc danh sách các dự án nghệ sĩ ảo AI đã biết
-    for pat, _ in _DEFAULT_AI_ARTIST_REGEXES:
-        if re.search(pat, a_low) or re.search(pat, t_low):
-            return False
-
-    # 1b. Danh hiệu nghệ sĩ Quốc gia (NSND, NSƯT / NSUT) -> Nghệ sĩ người thật
-    if (
-        re.search(r"\b(nsnd|nsưt|nsut)\b", a_low)
-        or re.search(r"\b(nsnd|nsưt|nsut)\b", a_unacc)
-        or re.search(r"\b(nsnd|nsưt|nsut)\b", t_low)
-        or re.search(r"\b(nsnd|nsưt|nsut)\b", t_unacc)
-    ):
-        return True
-
-    # 2. Tách các nghệ sĩ theo dấu phân cách hợp tác (tránh nhầm lẫn 'Anh Vũ' với 'Vũ')
-    tokens = [
-        tok.strip().rstrip(".")
-        for tok in re.split(r"[,/&;+]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)", a_low)
-        if tok.strip()
-    ]
-
-    for tok in tokens:
-        clean_tok = re.sub(r"^prod\.?\s*", "", tok).strip()
-        clean_tok_unacc = remove_vietnamese_accents(clean_tok)
-        if (
-            clean_tok in _VERIFIED_HUMAN_ARTISTS
-            or clean_tok_unacc in _VERIFIED_HUMAN_ARTISTS_UNACCENTED
-            or tok in _VERIFIED_HUMAN_ARTISTS
-            or remove_vietnamese_accents(tok) in _VERIFIED_HUMAN_ARTISTS_UNACCENTED
-        ):
-            return True
-
-    # 3. Khớp các cụm từ nghệ sĩ / chương trình dài (VD: 'anh trai vượt ngàn chông gai', 'the masked singer')
-    for kn in _VERIFIED_HUMAN_ARTISTS:
-        kn_unacc = remove_vietnamese_accents(kn)
-        if len(kn.split()) > 1:
-            if kn in a_low or kn in t_low or kn_unacc in a_unacc or kn_unacc in t_unacc:
-                return True
-        else:
-            # Nghệ sĩ đơn từ (VD: 'toharmony', 'arson')
-            if kn == a_low or kn_unacc == a_unacc:
-                return True
-
-    return False
-
-
-_GENERIC_ANONYMOUS_ARTISTS = {
-    "",
-    "unknown",
-    "various artists",
-    "nghệ sĩ ẩn danh",
-    "ca sĩ ẩn danh",
-    "ẩn danh",
-    "anonymous",
-    "nhiều nghệ sĩ",
-    "nhiều ca sĩ",
-    "ai channel",
-    "ai music",
-    "va",
-    "none",
-    "null",
-}
-
-_catalog_cache: dict[str, Any] = {
-    "timestamp": 0.0,
-    "whitelist": list(_DEFAULT_HUMAN_WHITELIST),
-    "ai_distributors": list(_DEFAULT_PURE_AI_DISTRIBUTORS),
-    "ai_artists": list(_DEFAULT_AI_ARTIST_REGEXES),
-}
+    """Xác thực xem nghệ sĩ hoặc tiêu đề có thuộc danh sách nghệ sĩ người thật từ CSDL động không."""
+    return _get_catalog_repo().is_verified_human_artist(artist_str, title_str)
 
 
 def get_dynamic_catalog() -> tuple[list[str], list[str], list[tuple[str, str]]]:
-    """Lấy danh mục nhà phân phối AI, Whitelist và nghệ sĩ ảo động từ CSDL (kèm cache 5 phút)."""
-    global _catalog_cache
-    now = time.time()
-    if now - _catalog_cache["timestamp"] < 300:
-        return (
-            _catalog_cache["whitelist"],
-            _catalog_cache["ai_distributors"],
-            _catalog_cache["ai_artists"],
-        )
-
-    try:
-        from sqlalchemy import select
-
-        from ..core.database import get_db_session, is_database_available
-        from ..core.models.db_models import AIArtistProjectModel, DistributorCatalogModel
-
-        if is_database_available():
-            with get_db_session() as session:
-                dist_records = session.scalars(
-                    select(DistributorCatalogModel).where(
-                        DistributorCatalogModel.is_active.is_(True)
-                    )
-                ).all()
-                artist_records = session.scalars(
-                    select(AIArtistProjectModel).where(AIArtistProjectModel.is_active.is_(True))
-                ).all()
-
-                whitelist = [
-                    d.name.lower() for d in dist_records if d.catalog_type == "HUMAN_WHITELIST"
-                ]
-                ai_dist = [
-                    d.name.lower() for d in dist_records if d.catalog_type == "AI_DISTRIBUTOR"
-                ]
-                ai_artists = [(a.regex_pattern, a.project_name) for a in artist_records]
-
-                merged_wl = list(dict.fromkeys(_DEFAULT_HUMAN_WHITELIST + whitelist))
-                merged_ai = list(dict.fromkeys(_DEFAULT_PURE_AI_DISTRIBUTORS + ai_dist))
-                merged_artists = list(dict.fromkeys(_DEFAULT_AI_ARTIST_REGEXES + ai_artists))
-
-                _catalog_cache["whitelist"] = merged_wl
-                _catalog_cache["ai_distributors"] = merged_ai
-                _catalog_cache["ai_artists"] = merged_artists
-                _catalog_cache["timestamp"] = now
-    except Exception:
-        pass
-
+    """Lấy danh mục nhà phân phối AI, Whitelist và nghệ sĩ động từ CSDL (kèm cache 5 phút)."""
+    cat = _get_catalog_repo().get_catalog_data()
     return (
-        _catalog_cache["whitelist"],
-        _catalog_cache["ai_distributors"],
-        _catalog_cache["ai_artists"],
+        cat.get("whitelist", []),
+        cat.get("ai_distributors", []),
+        cat.get("ai_artists", []),
     )
+
+
+# Biến tương thích ngược cho các unit test cũ
+_DEFAULT_HUMAN_WHITELIST = ["sony", "bmz", "vieent", "believe", "loops"]
+_DEFAULT_PURE_AI_DISTRIBUTORS: list[str] = []
+_DEFAULT_AI_ARTIST_REGEXES: list[tuple[str, str]] = []
+_DEFAULT_SEED_HUMAN_ARTISTS: list[str] = []
+_GENERIC_ANONYMOUS_ARTISTS = GENERIC_ANONYMOUS_ARTISTS
 
 
 class SignalAnalyzerService(ISignalAnalyzer):
     """
     Hiện thực phân tích âm học và biểu đồ quang phổ 2 tầng.
-    Tuân thủ interface ISignalAnalyzer và nhận IFakeprintDetector qua Dependency Injection.
+    Tuân thủ interface ISignalAnalyzer và nhận IFakeprintDetector, ICatalogRepository qua DI.
     """
 
-    def __init__(self, fakeprint_detector: IFakeprintDetector, storage_repo: IStorageRepository):
+    def __init__(
+        self,
+        fakeprint_detector: IFakeprintDetector,
+        storage_repo: IStorageRepository,
+        catalog_repo: ICatalogRepository | None = None,
+    ):
         self.fakeprint_detector = fakeprint_detector
         self.storage_repo = storage_repo
+        self.catalog_repo = catalog_repo or _get_catalog_repo()
         self.temp_dir = self.storage_repo.get_temp_dir()
 
     def check_heuristics(self, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -316,27 +146,18 @@ class SignalAnalyzerService(ISignalAnalyzer):
         # a) Nguồn âm thanh PHẢI được xác thực chính xác với bài hát & nghệ sĩ mục tiêu (is_verified_match is True)
         # b) Không phải nguồn fallback âm thanh unverified (is_unverified_fallback is not True)
         # c) Điểm khớp nguồn phải cao (match_score >= 0.75)
-        # d) TUYỆT ĐỐI KHÔNG ÁP DỤNG cho các bài hát COVER, REMAKE, REMIX, hoặc phiên bản phái sinh:
-        #    Vì bản cover ra mắt gần đây (2023-2026) có thể hoàn toàn được tạo bằng AI dù bài hát gốc phát hành từ năm 2014-2020!
-        # e) TUYỆT ĐỐI KHÔNG ÁP DỤNG nếu thông tin mục tiêu có năm phát hành thực tế >= 2023 (hoặc năm 2026)
+        # d) TUYỆT ĐỐI KHÔNG ÁP DỤNG cho các bài hát COVER, REMAKE, REMIX, hoặc phiên bản phái sinh
+        # e) TUYỆT ĐỐI KHÔNG ÁP DỤNG nếu thông tin mục tiêu có năm phát hành thực tế >= 2023
         is_verified = metadata.get("is_verified_match") is not False
         is_fallback = metadata.get("is_unverified_fallback") is True
         match_score = float(metadata.get("match_score", 1.0) or 0.0)
 
-        # Phát hiện bài hát Cover/Remake/Phái sinh
+        # Phát hiện bài hát Cover/Remake/Phái sinh từ config
         song_type = str(metadata.get("song_type") or "").lower()
         title_text = f"{metadata.get('title', '')} {metadata.get('target_title', '')}".lower()
         query_text = str(metadata.get("raw_query") or "").lower()
-        is_cover_or_derivative = (
-            "cover" in song_type
-            or "remake" in song_type
-            or "remix" in song_type
-            or "cover" in title_text
-            or "cover" in query_text
-            or "remake" in title_text
-            or "remix" in title_text
-            or "ai cover" in title_text
-            or "ai cover" in query_text
+        is_cover_or_derivative = any(
+            k in song_type or k in title_text or k in query_text for k in DERIVATIVE_KEYWORDS
         )
 
         target_rel_date = str(metadata.get("target_release_date") or "")
@@ -344,7 +165,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         if target_rel_date and len(target_rel_date) >= 4:
             try:
                 target_year = int(target_rel_date[:4])
-                if target_year >= 2023:
+                if target_year >= PRE_AI_RECENT_TARGET_YEAR:
                     is_recent_target = True
             except ValueError:
                 pass
@@ -352,7 +173,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         if (
             is_verified
             and not is_fallback
-            and match_score >= 0.75
+            and match_score >= PRE_AI_MATCH_SCORE_MIN
             and not is_cover_or_derivative
             and not is_recent_target
         ):
@@ -360,7 +181,9 @@ class SignalAnalyzerService(ISignalAnalyzer):
             release_year = metadata.get("release_year")
             if upload_date and len(upload_date) >= 4:
                 year = int(upload_date[:4])
-                if year < 2022 or (year == 2022 and int(upload_date[4:6]) < 11):
+                if year < PRE_AI_CUTOFF_YEAR or (
+                    year == PRE_AI_CUTOFF_YEAR and int(upload_date[4:6]) < PRE_AI_CUTOFF_MONTH
+                ):
                     return {
                         "is_ai": False,
                         "verdict_type": VerdictType.CONFIRMED_HUMAN,
@@ -368,7 +191,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
                         "engine": "None",
                         "reason": f"Bản phát hành chính thức năm {year} (trước khi các mô hình sinh nhạc AI Suno/Udio ra đời).",
                     }
-            elif release_year and int(release_year) < 2022:
+            elif release_year and int(release_year) < PRE_AI_CUTOFF_YEAR:
                 return {
                     "is_ai": False,
                     "verdict_type": VerdictType.CONFIRMED_HUMAN,
@@ -385,12 +208,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         tags = [str(t).lower() for t in metadata.get("tags") or []]
         combined_text = f"{title} {description} {uploader} {channel} {' '.join(tags)}"
 
-        if (
-            "created with suno" in combined_text
-            or "#suno" in combined_text
-            or "suno ai" in combined_text
-            or "suno.com" in combined_text
-        ):
+        if any(k in combined_text for k in SUNO_EXPLICIT_KEYWORDS):
             return {
                 "is_ai": True,
                 "verdict_type": VerdictType.AI_GENERATED,
@@ -398,12 +216,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 "engine": "Suno",
                 "reason": "Phát hiện nhãn xác nhận sáng tác bằng Suno AI trong phần mô tả / tiêu đề.",
             }
-        if (
-            "created with udio" in combined_text
-            or "#udio" in combined_text
-            or "udio ai" in combined_text
-            or "udio.com" in combined_text
-        ):
+        if any(k in combined_text for k in UDIO_EXPLICIT_KEYWORDS):
             return {
                 "is_ai": True,
                 "verdict_type": VerdictType.AI_GENERATED,
@@ -413,17 +226,8 @@ class SignalAnalyzerService(ISignalAnalyzer):
             }
 
         # 2b. Kiểm tra các thẻ lệnh điều khiển cấu trúc AI sinh nhạc
-        # Chỉ kích hoạt khi có bối cảnh từ khóa AI đi kèm (dùng word boundary để tránh nhận diện nhầm 'audio' thành 'udio')
-        ai_context_pattern = re.compile(
-            r"\b(?:suno|udio)\b|ai\s+music|ai\s+cover|tạo bằng ai|mô hình ai|prompt:|style:",
-            re.IGNORECASE,
-        )
-        if ai_context_pattern.search(combined_text):
-            suno_prompt_pattern = re.compile(
-                r"\[\s*(?:verse\s*\d*|chorus|bridge|outro|intro|pre-chorus|hook|vocal chop|sub-?bass)[^\]]*\]",
-                re.IGNORECASE,
-            )
-            ai_prompt_tags = suno_prompt_pattern.findall(description)
+        if re.search(AI_CONTEXT_PATTERN, combined_text, re.IGNORECASE):
+            ai_prompt_tags = re.findall(SUNO_PROMPT_TAGS_PATTERN, description, re.IGNORECASE)
             if ai_prompt_tags:
                 return {
                     "is_ai": True,
@@ -434,13 +238,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 }
 
         # 2c. Kiểm tra định dạng đánh số chuỗi bài sản xuất hàng loạt bằng AI (VD: "Bài số 83/100")
-        batch_ai_pattern = re.compile(r"bài\s*(?:số\s*)?\d+\s*/\s*\d+", re.IGNORECASE)
-        match_batch = batch_ai_pattern.search(title) or batch_ai_pattern.search(description)
-        ai_batch_pattern = re.compile(
-            r"\b(?:suno|udio|ai)\b|ai\s+music|ai\s+cover|#ai|tạo bằng ai|sinh bằng ai|dự án\s+(?:sáng tác|nhạc|ai)",
-            re.IGNORECASE,
+        match_batch = re.search(BATCH_AI_NUMBER_PATTERN, title, re.IGNORECASE) or re.search(
+            BATCH_AI_NUMBER_PATTERN, description, re.IGNORECASE
         )
-        if match_batch and ai_batch_pattern.search(combined_text):
+        if match_batch and re.search(BATCH_AI_KEYWORDS_PATTERN, combined_text, re.IGNORECASE):
             return {
                 "is_ai": True,
                 "verdict_type": VerdictType.AI_GENERATED,
@@ -456,27 +257,28 @@ class SignalAnalyzerService(ISignalAnalyzer):
             or ""
         ).lower()
 
-        _, _, ai_artist_regexes = get_dynamic_catalog()
+        # 3. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được nạp 100% từ Database
+        catalog_data = self.catalog_repo.get_catalog_data()
+        ai_artist_regexes = catalog_data.get("ai_artists") or []
 
-        # 1. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được xác thực 100% qua catalog
         for pat, proj_name in ai_artist_regexes:
-            if re.search(pat, artist_lower):
-                return {
-                    "is_ai": True,
-                    "verdict_type": VerdictType.AI_GENERATED,
-                    "confidence": 0.98,
-                    "engine": "AI Virtual Project",
-                    "reason": f"Dự án âm nhạc '{proj_name}' là sản phẩm phát hành hàng loạt từ mô hình sinh nhạc AI.",
-                }
-
-        # 2. Nhà phân phối: Không gán nhãn AI cứng tại Tầng Heuristics.
-        # Nhà phân phối được đưa vào Metadata làm ngữ cảnh mềm cho mô hình thẩm định chuyên sâu.
+            try:
+                if re.search(pat, artist_lower):
+                    return {
+                        "is_ai": True,
+                        "verdict_type": VerdictType.AI_GENERATED,
+                        "confidence": 0.98,
+                        "engine": "AI Virtual Project",
+                        "reason": f"Dự án âm nhạc '{proj_name}' là sản phẩm phát hành hàng loạt từ mô hình sinh nhạc AI.",
+                    }
+            except Exception:
+                continue
 
         return None
 
     def is_verified_human_artist(self, artist_str: str, title_str: str = "") -> bool:
-        """Xác thực nghệ sĩ người thật (ủy quyền cho hàm is_verified_human_artist)."""
-        return is_verified_human_artist(artist_str, title_str)
+        """Xác thực nghệ sĩ người thật (ủy quyền cho Catalog Repository)."""
+        return self.catalog_repo.is_verified_human_artist(artist_str, title_str)
 
     def _compute_pitch_jitter(self, mono_harm: np.ndarray, sr: int = 44100) -> dict[str, Any]:
         """
@@ -484,12 +286,12 @@ class SignalAnalyzerService(ISignalAnalyzer):
         Phát hiện dấu hiệu giọng hát sinh bởi AI (Suno/Udio) do thiếu micro-tremors cơ học của dây thanh đới.
         """
         try:
-            target_sr = 8000
-            # Chọn phân đoạn 15-20s tiêu biểu ở giữa để tối ưu tốc độ CPU trước khi resample
+            target_sr = PITCH_TARGET_SR
             total_len = len(mono_harm)
-            if total_len > sr * 20:
-                start = (total_len - sr * 20) // 2
-                raw_seg = mono_harm[start : start + sr * 20]
+            window_len = int(sr * PITCH_WINDOW_SEC)
+            if total_len > window_len:
+                start = (total_len - window_len) // 2
+                raw_seg = mono_harm[start : start + window_len]
             else:
                 raw_seg = mono_harm
 
@@ -498,15 +300,18 @@ class SignalAnalyzerService(ISignalAnalyzer):
             else:
                 y_vocal = raw_seg
 
-            # Ở 8kHz (Nyquist = 4000Hz, thừa chuẩn bắt dải giọng hát 80-500Hz),
-            # frame 512 = 64ms, hop 128 = 16ms (tương đương 1024/256 ở 16kHz)
             f0 = librosa.yin(
-                y_vocal, fmin=80, fmax=550, sr=target_sr, frame_length=512, hop_length=128
+                y_vocal,
+                fmin=PITCH_FMIN,
+                fmax=PITCH_FMAX,
+                sr=target_sr,
+                frame_length=PITCH_FRAME_LENGTH,
+                hop_length=PITCH_HOP_LENGTH,
             )
-            voiced_mask = (f0 >= 85) & (f0 <= 500)
+            voiced_mask = (f0 >= PITCH_VOICED_F0_MIN) & (f0 <= PITCH_VOICED_F0_MAX)
             voiced_f0 = f0[voiced_mask]
 
-            if len(voiced_f0) < 30:
+            if len(voiced_f0) < PITCH_MIN_VOICED_FRAMES:
                 return {
                     "pitch_jitter": 0.0,
                     "pitch_rigidity_ratio": 0.0,
@@ -516,31 +321,39 @@ class SignalAnalyzerService(ISignalAnalyzer):
                     "is_studio_autotune": False,
                 }
 
-            # Phân tích biến thiên Formant trong dải thanh âm (1000 - 4000 Hz)
-            # nhằm bóc tách Auto-Tune người thật với Lưới Latent nhân tạo của AI
+            # Phân tích biến thiên Formant trong dải thanh âm
             centroids = librosa.feature.spectral_centroid(
-                y=y_vocal, sr=target_sr, n_fft=512, hop_length=128
+                y=y_vocal,
+                sr=target_sr,
+                n_fft=PITCH_FRAME_LENGTH,
+                hop_length=PITCH_HOP_LENGTH,
             )
             formant_var = float(np.var(centroids)) if centroids.shape[1] > 1 else 0.0
 
             diffs = np.abs(np.diff(voiced_f0))
             mean_f0 = float(np.mean(voiced_f0))
             jitter = float(np.mean(diffs) / (mean_f0 + 1e-6))
-            rigid_frames = np.sum(diffs < 0.8)
+            rigid_frames = np.sum(diffs < PITCH_RIGID_DIFF_THRESHOLD)
             rigidity_ratio = float(rigid_frames / (len(diffs) + 1e-6))
 
-            # Nếu cao độ phẳng (rigidity >= 0.35 hoặc jitter < 0.015) nhưng Formant chuyển động
-            # linh hoạt (formant_var >= 300.0) do khẩu hình phát âm tự nhiên -> Auto-Tune phòng thu của người
-            is_studio_autotune = (rigidity_ratio >= 0.35 or jitter < 0.015) and formant_var >= 300.0
+            is_studio_autotune = (
+                rigidity_ratio >= PITCH_STUDIO_AUTOTUNE_RIGIDITY
+                or jitter < PITCH_STUDIO_AUTOTUNE_JITTER_MAX
+            ) and formant_var >= PITCH_STUDIO_AUTOTUNE_FORMANT_MIN
+
             is_anomaly = (
-                rigidity_ratio >= 0.40 or (jitter < 0.015 and rigidity_ratio > 0.32)
+                rigidity_ratio >= PITCH_ANOMALY_RIGIDITY_THRESHOLD
+                or (
+                    jitter < PITCH_ANOMALY_JITTER_THRESHOLD
+                    and rigidity_ratio > PITCH_ANOMALY_RIGIDITY_SECONDARY
+                )
             ) and not is_studio_autotune
 
             if is_anomaly:
                 label = "Synthetic / Quantized Latent Grid"
             elif is_studio_autotune:
                 label = "Studio Auto-Tuned (Natural Vocal Tract)"
-            elif rigidity_ratio > 0.25:
+            elif rigidity_ratio > PITCH_MILD_AUTOTUNE_RIGIDITY:
                 label = "Studio Auto-Tuned"
             else:
                 label = "Natural Biological"
@@ -569,14 +382,12 @@ class SignalAnalyzerService(ISignalAnalyzer):
         """
         Phát hiện hiện tượng rò rỉ âm học đa kênh (Stem Bleed / Intermodulation Distortion)
         đặc trưng của mô hình sinh nhạc nguyên khối End-to-End Latent Diffusion (Suno/Udio).
-        So sánh tương quan giữa năng lượng xung bộ gõ (perc) và độ biến điệu biên độ
-        dải vocal harmonic (harm).
         """
         try:
             if mono_harm is None or mono_perc is None or len(mono_harm) == 0 or len(mono_perc) == 0:
                 return {"stem_bleed_score": 0.0, "stem_bleed_detected": False}
 
-            max_len = sr * 20
+            max_len = int(sr * STEM_BLEED_WINDOW_SEC)
             if len(mono_harm) > max_len:
                 start = (len(mono_harm) - max_len) // 2
                 h_seg = mono_harm[start : start + max_len]
@@ -585,9 +396,8 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 h_seg = mono_harm
                 p_seg = mono_perc
 
-            hop = 512
-            rms_perc = librosa.feature.rms(y=p_seg, hop_length=hop)[0]
-            rms_harm = librosa.feature.rms(y=h_seg, hop_length=hop)[0]
+            rms_perc = librosa.feature.rms(y=p_seg, hop_length=STEM_BLEED_HOP_LENGTH)[0]
+            rms_harm = librosa.feature.rms(y=h_seg, hop_length=STEM_BLEED_HOP_LENGTH)[0]
 
             std_p = float(np.std(rms_perc))
             std_h = float(np.std(rms_harm))
@@ -598,7 +408,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             corr = float(corr_matrix[0, 1])
             bleed_score = float(max(0.0, corr)) if not np.isnan(corr) else 0.0
 
-            is_bleed = bleed_score >= 0.40
+            is_bleed = bleed_score >= STEM_BLEED_THRESHOLD
             return {
                 "stem_bleed_score": round(bleed_score, 3),
                 "stem_bleed_detected": is_bleed,
@@ -637,16 +447,24 @@ class SignalAnalyzerService(ISignalAnalyzer):
             else:
                 stereo_corr = 1.0
 
-            # 2. Phân tích phổ tần STFT và Spectral Rolloff (1-Pass STFT)
-            D = librosa.stft(mono_y, n_fft=2048, hop_length=512)
+            # 2. Phân tích phổ tần STFT và Spectral Rolloff
+            D = librosa.stft(mono_y, n_fft=SPECTRAL_STFT_N_FFT, hop_length=SPECTRAL_STFT_HOP_LENGTH)
             stft = np.abs(D)
-            freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+            freqs = librosa.fft_frequencies(sr=sr, n_fft=SPECTRAL_STFT_N_FFT)
 
             rolloff_95 = float(
-                np.mean(librosa.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.95))
+                np.mean(
+                    librosa.feature.spectral_rolloff(
+                        S=stft, sr=sr, roll_percent=SPECTRAL_ROLLOFF_PERCENT_HIGH
+                    )
+                )
             )
             rolloff_85 = float(
-                np.mean(librosa.feature.spectral_rolloff(S=stft, sr=sr, roll_percent=0.85))
+                np.mean(
+                    librosa.feature.spectral_rolloff(
+                        S=stft, sr=sr, roll_percent=SPECTRAL_ROLLOFF_PERCENT_MID
+                    )
+                )
             )
 
             # 3. Tỷ lệ năng lượng dải siêu cao tần > 16kHz
@@ -665,25 +483,26 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 float(np.mean(stft[mask_ultra, :] ** 2)) if np.any(mask_ultra) else 0.0
             ) + 1e-12
             shelf_drop_db = float(10 * np.log10(power_mid_high / power_ultra))
-            # Vết ngắt tần siêu âm thực sự do mô hình AI nơ-ron (24kHz/32kHz sampling rate nội suy)
-            # Tránh nhầm lẫn với nén Opus/AAC trên YouTube làm suy giảm tự nhiên > 16kHz
+
             ultrasonic_cutoff = (
-                shelf_drop_db >= 35.0 and rolloff_95 < 13500.0 and high_freq_ratio < 0.0002
+                shelf_drop_db >= ULTRASONIC_SHELF_DROP_DB_THRESHOLD
+                and rolloff_95 < ULTRASONIC_ROLLOFF_CUTOFF_HZ
+                and high_freq_ratio < ULTRASONIC_HIGH_FREQ_RATIO_MAX
             )
             high_freq_slope = round(float(shelf_drop_db), 2)
 
-            # 4. Phân tích thành phần sóng hài toàn bài (HPSS Harmonic-Percussive Sound Separation)
+            # 4. Phân tích thành phần sóng hài toàn bài (HPSS)
             H, P = librosa.decompose.hpss(D)
             harm_power = float(np.sum(np.abs(H) ** 2)) + 1e-12
             perc_power = float(np.sum(np.abs(P) ** 2)) + 1e-12
             harmonic_ratio = float(harm_power / (harm_power + perc_power))
-            mono_harm = librosa.istft(H, hop_length=512, length=len(mono_y))
-            mono_perc = librosa.istft(P, hop_length=512, length=len(mono_y))
+            mono_harm = librosa.istft(H, hop_length=SPECTRAL_STFT_HOP_LENGTH, length=len(mono_y))
+            mono_perc = librosa.istft(P, hop_length=SPECTRAL_STFT_HOP_LENGTH, length=len(mono_y))
 
-            # 4b. Phân tích vi biến thiên cao độ thanh âm (Pitch Micro-Jitter & Latent Rigidity)
+            # 4b. Phân tích vi biến thiên cao độ thanh âm
             pitch_res = self._compute_pitch_jitter(mono_harm, sr=sr)
 
-            # 4c. Phân tích hiện tượng rò rỉ âm học đa kênh (Stem Bleed / Intermodulation Distortion)
+            # 4c. Phân tích hiện tượng rò rỉ âm học đa kênh
             stem_bleed_res = self._compute_stem_bleed(mono_harm, mono_perc, sr=sr)
 
             # 5. Phân tích vết vân Fourier qua Interface IFakeprintDetector
@@ -691,8 +510,8 @@ class SignalAnalyzerService(ISignalAnalyzer):
             fakeprint_score = fakeprint_res["fakeprint_score"]
             fakeprint_detected = fakeprint_res["fakeprint_detected"]
 
-            # 5b. Nhận diện Nhạc không lời (Instrumental / Ambient / BGM)
-            vocal_band_mask = (freqs >= 300) & (freqs <= 3400)
+            # 5b. Nhận diện Nhạc không lời
+            vocal_band_mask = (freqs >= VOCAL_BAND_FREQ_MIN) & (freqs <= VOCAL_BAND_FREQ_MAX)
             vocal_band_harm_power = (
                 float(np.sum(np.abs(H[vocal_band_mask, :]) ** 2))
                 if np.any(vocal_band_mask)
@@ -702,26 +521,29 @@ class SignalAnalyzerService(ISignalAnalyzer):
 
             pitch_label = str(pitch_res.get("pitch_stability_label", "")).lower()
             is_instrumental = (
-                vocal_energy_ratio < 0.20
+                vocal_energy_ratio < INSTRUMENTAL_VOCAL_ENERGY_MAX
                 or "instrumental" in pitch_label
                 or pitch_res.get("pitch_rigidity_ratio", 0.0) == 0.0
             )
 
-            # 5c. Cờ nhận diện AI Vocals đời mới (Modern AI Vocal Suspect)
+            # 5c. Cờ nhận diện AI Vocals đời mới
             rigidity = float(pitch_res.get("pitch_rigidity_ratio", 0.0) or 0.0)
             stem_bleed = float(stem_bleed_res.get("stem_bleed_score", 0.0) or 0.0)
             modern_ai_vocal_suspect = (
-                rolloff_95 < 11800.0
-                and rigidity >= 0.47
-                and harmonic_ratio >= 0.80
-                and (fakeprint_score >= 0.35 or stem_bleed >= 0.32)
-            ) or (ultrasonic_cutoff and rigidity >= 0.55)
+                rolloff_95 < MODERN_AI_ROLLOFF_MAX
+                and rigidity >= MODERN_AI_RIGIDITY_MIN
+                and harmonic_ratio >= MODERN_AI_HARMONIC_MIN
+                and (
+                    fakeprint_score >= MODERN_AI_FAKEPRINT_MIN
+                    or stem_bleed >= MODERN_AI_STEM_BLEED_MIN
+                )
+            ) or (ultrasonic_cutoff and rigidity >= MODERN_AI_ULTRASONIC_RIGIDITY_MIN)
 
             # 6. Đánh giá nén truyền tải và vết ngắt tần
-            has_cutoff = rolloff_95 < 17500.0
+            has_cutoff = rolloff_95 < COMPRESSION_LOSSY_ROLLOFF_MAX
             if has_cutoff and not fakeprint_detected:
                 compression_source = "Opus/AAC (YouTube/Web Streaming Lossy)"
-            elif rolloff_95 >= 19000.0:
+            elif rolloff_95 >= COMPRESSION_STUDIO_ROLLOFF_MIN:
                 compression_source = "Studio Master / Wide-Bandwidth"
             else:
                 compression_source = "Standard Digital Audio (44.1kHz)"
@@ -753,7 +575,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 modern_ai_vocal_suspect=modern_ai_vocal_suspect,
             )
 
-            # 7. Vẽ biểu đồ Forensic 3 tầng (Full Mix + Harmonic Vocal HPSS + Fourier Fakeprint)
+            # 7. Vẽ biểu đồ Forensic 3 tầng
             image_path = self._generate_forensic_plot(
                 mono_y=mono_y,
                 mono_harm=mono_harm,
@@ -773,11 +595,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             ) from e
 
     def _get_tier3_spectrogram_title(self, metrics: AcousticMetrics) -> str:
-        """
-        Trả về tiêu đề trung tính khoa học cho Subplot 3 của ảnh phổ.
-        Xóa bỏ toàn bộ từ ngữ định kiến ('PHỔ ĐỒ TỰ NHIÊN', 'RĂNG LƯỢC') và điểm phần trăm
-        để tránh việc Gemini OCR đọc lén và bị thiên kiến xác nhận.
-        """
+        """Trả về tiêu đề trung tính khoa học cho Subplot 3 của ảnh phổ."""
         return "TẦNG 3: PHỔ DƯ SAI FOURIER (FOURIER RESIDUAL DECONVOLUTION SPECTRUM)"
 
     def _generate_forensic_plot(
@@ -791,7 +609,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
         stft_mag: np.ndarray | None = None,
         harm_stft_mag: np.ndarray | None = None,
     ) -> Path | None:
-        """Tạo biểu đồ phổ hình 3 tầng chuyên nghiệp chống hiện tượng che mờ âm học (Acoustic Masking)."""
+        """Tạo biểu đồ phổ hình 3 tầng chuyên nghiệp chống hiện tượng che mờ âm học."""
         out_image_path = self.temp_dir / f"{audio_stem}_forensic.png"
         try:
             out_image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -823,7 +641,7 @@ class SignalAnalyzerService(ISignalAnalyzer):
             cbar1 = fig.colorbar(img1, ax=ax1, format="%+2.0f dB", pad=0.02)
             cbar1.ax.tick_params(colors="#94A3B8")
 
-            # TẦNG 2: Mel-Spectrogram sóng hài (Harmonic Vocal - Đã khử trống lân/bộ gõ qua HPSS)
+            # TẦNG 2: Mel-Spectrogram sóng hài
             if harm_stft_mag is not None:
                 S_harm = librosa.feature.melspectrogram(
                     S=harm_stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2

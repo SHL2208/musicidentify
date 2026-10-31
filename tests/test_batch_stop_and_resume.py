@@ -38,7 +38,16 @@ class TestBatchStopAndResume(unittest.TestCase):
     def setUp(self):
         self.container = get_container(custom_classifier=MockClassifier(), force_new=True)
         self.container.track_repository.find_result_by_query_or_url = lambda *args, **kwargs: None
+        self.container.signal_analyzer.analyze_audio = lambda *args, **kwargs: (None, None)
+        self.container.signal_analyzer.check_heuristics = lambda *args, **kwargs: None
+        self.container.resolver.search_youtube = lambda *args, **kwargs: (
+            "https://youtube.com/watch?v=mock",
+            "Mock Title",
+            180.0,
+        )
+        self.container.resolver.validate_match = lambda *args, **kwargs: (True, 0.95)
         self.batch_service = self.container.batch_service
+        self.batch_service.sleep_interval = 0.0
 
         # Mock audio engine to avoid network calls
         dummy_wav = Path(root_dir / "data" / "temp" / "dummy_test_sr.wav")
@@ -58,6 +67,7 @@ class TestBatchStopAndResume(unittest.TestCase):
                 raw_query=f"Song {i}",
                 input_type=InputType.SONG_NAME,
                 track_title=f"Song {i}",
+                resolved_url=f"https://youtube.com/watch?v=mock_{i}",
             )
             for i in range(1, 7)
         ]

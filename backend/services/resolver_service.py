@@ -792,8 +792,8 @@ class InputResolverService(IInputResolver):
         if clean_title and clean_title not in candidate_queries:
             candidate_queries.append(clean_title)
 
-        for query_str in candidate_queries:
-            search_query = f"ytsearch5:{query_str}"
+        for query_str in candidate_queries[:2]:
+            search_query = f"ytsearch2:{query_str}"
             try:
                 with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
                     info = ydl.extract_info(search_query, download=False)
@@ -841,7 +841,7 @@ class InputResolverService(IInputResolver):
         # Fallback cuối cùng nếu cả các Pass đều không tìm thấy verified match:
         try:
             with yt_dlp.YoutubeDL(cast(Any, ydl_opts)) as ydl:
-                info = ydl.extract_info(f"ytsearch3:{clean_title or base_search}", download=False)
+                info = ydl.extract_info(f"ytsearch2:{clean_title or base_search}", download=False)
                 if isinstance(info, dict) and "entries" in info:
                     entries = [
                         cast(dict[str, Any], e)

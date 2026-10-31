@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..core.interfaces.repositories.catalog_repository_interface import ICatalogRepository
 
 from ..core.models.entities import WorkType
 from ..core.utils import normalize_vietnamese_text
@@ -47,46 +50,9 @@ LIVE_ORIGINAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# 4. Danh sách các bài hát kinh điển / hit nổi tiếng thường xuyên được Cover
-# Giúp nhận diện Cover ngay cả khi người tải không ghi chữ 'Cover' trong tiêu đề
-_FAMOUS_COVER_CATALOG: dict[str, str] = {
-    "ngày mai người ta lấy chồng": "Thành Đạt",
-    "chuyện tình không dĩ vãng": "Trúc Phương",
-    "tình nghĩa đôi ta chỉ thế thôi": "Tuấn Vũ, Sơn Tuyền",
-    "nỗi đau từ một người đến sau": "Trịnh Đình Quang",
-    "cỏ dại và hoa dành dành": "Phúc Lộc",
-    "cơm người": "Dân gian",
-    "tửu âm": "Xesi",
-    "đêm trắng": "Khắc Việt",
-    "em yêu anh như câu hò ví dặm": "Thu Hiền",
-    "tiếng hát giữa rừng pác bó": "Thu Hiền",
-    "thím hai lúa": "Thanh Ngân",
-    "bông cỏ may": "Trúc Phương",
-    "chiều cuối tuần": "Trúc Phương",
-    "chút kỷ niệm buồn": "Thanh Sơn",
-    "lòng vẫn đợi chờ": "Dân ca Quan họ",
-    "ai yêu bác hồ chí minh": "Phong Nhã",
-    "đội ca": "Phong Nhã",
-    "dâu hào môn": "Bảo Vân",
-    "mùa đông nhớ cố nhân": "Khánh Ly",
-    "đảo không người": "Hải Lai A Mộc",
-    "trong cuộc tình sầu": "Ngô Thụy Miên",
-    "ta dâng đảng ngàn tiếng ca": "Trần Long Ẩn",
-}
-
-# 5. Các bài hát bản song ca / làm lại / remix đặc thù
-_FAMOUS_REMIX_CATALOG: set[str] = {
-    "cùng một người",
-}
-
-# 6. Các kênh / nghệ sĩ chuyên hát Cover nổi tiếng
-_SPECIALIZED_COVER_CHANNELS = {
-    "hương ly",
-    "thủy tạ bolero",
-    "joly thảo linh",
-    "nam em",
-    "beta music",
-}
+# 4. Ghi chú: Danh mục bài hát cover kinh điển, remix và kênh cover
+# đã được chuyển đổi hoàn toàn thành dữ liệu DB (bảng song_type_catalog)
+# và cơ chế Offline Snapshot dự phòng, truy xuất thông qua ICatalogRepository.
 
 
 def remove_accents(text: str) -> str:
@@ -113,15 +79,31 @@ def resolve_work_type_from_metadata(
     artist: str = "",
     metadata: dict[str, Any] | None = None,
     raw_gemini_work_type: str | None = None,
+    catalog_repo: ICatalogRepository | None = None,
 ) -> tuple[WorkType, str, bool, str | None, str | None]:
     """Giải mã và phân loại tác phẩm (Original vs Cover vs Remix).
 
-    Kết hợp đa tầng:
-    1. Ưu tiên nhãn Song Type nếu đã được truyền trong metadata.
-    2. Quét từ khóa tiêu đề (Cover vs Remix vs Live).
-    3. Tra cứu danh mục bài hát kinh điển / nghệ sĩ chuyên cover.
-    4. Tham chiếu phán đoán của mô hình Gemini nếu có.
+    Kết hợp đa tầng với quyền ưu tiên tuyệt đối cho Metadata và Từ khóa tiêu đề:
+    1. Quét từ khóa tiêu đề (Remix vs Cover vs Live).
+    2. Kiểm tra nhãn trực tiếp từ Song Type trong metadata.
+    3. Tra cứu danh mục bài hát kinh điển / nghệ sĩ chuyên cover từ Catalog Repository (DB/Snapshot).
+    4. Tham chiếu phán đoán của mô hình Gemini nếu không có dấu hiệu trên.
     """
+    repo = catalog_repo
+    if repo is None:
+        try:
+            from ..core.container import get_container
+
+            repo = get_container().catalog_repository
+        except Exception:
+            from ..repositories.database_catalog_repository import DatabaseCatalogRepository
+
+            repo = DatabaseCatalogRepository()
+
+    famous_cover_catalog = repo.get_famous_cover_catalog() if repo else {}
+    famous_remix_catalog = repo.get_famous_remix_catalog() if repo else set()
+    specialized_cover_channels = repo.get_specialized_cover_channels() if repo else set()
+
     meta = metadata or {}
     t_clean = str(title or "").strip()
     a_clean = str(artist or "").strip()
@@ -129,8 +111,25 @@ def resolve_work_type_from_metadata(
     combined_unacc = remove_accents(combined_lower)
     title_unacc = remove_accents(t_clean)
 
-    # 1. Kiểm tra nhãn trực tiếp từ Song Type nếu có
-    direct_song_type = meta.get("song_type")
+    # 1. Quy tắc Từ khóa Bắt buộc: REMIX (Ưu tiên cao nhất trên tiêu đề)
+    if REMIX_PATTERN.search(combined_lower) or REMIX_PATTERN.search(combined_unacc):
+        return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
+
+    for r_title in famous_remix_catalog:
+        if remove_accents(r_title) in title_unacc:
+            return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
+
+    # 2. Quy tắc Từ khóa Bắt buộc: COVER (Ưu tiên cao trên tiêu đề)
+    if COVER_KEYWORD_PATTERN.search(combined_lower) or COVER_KEYWORD_PATTERN.search(combined_unacc):
+        return (WorkType.COVER, "COVER (Bản hát lại)", True, None, t_clean)
+
+    # 3. Kiểm tra nhãn trực tiếp từ Song Type trong metadata nếu có
+    direct_song_type = (
+        meta.get("song_type")
+        or meta.get("Song Type")
+        or meta.get("work_type")
+        or meta.get("Work Type")
+    )
     if direct_song_type:
         mapped = map_song_type_to_work_type(str(direct_song_type))
         if mapped == "COVER":
@@ -140,24 +139,12 @@ def resolve_work_type_from_metadata(
         if mapped == "ORIGINAL":
             return (WorkType.ORIGINAL, "ORIGINAL (Tác phẩm chính chủ)", False, a_clean, t_clean)
 
-    # 2. Quy tắc Từ khóa Bắt buộc: COVER
-    if COVER_KEYWORD_PATTERN.search(combined_lower) or COVER_KEYWORD_PATTERN.search(combined_unacc):
-        return (WorkType.COVER, "COVER (Bản hát lại)", True, None, t_clean)
-
-    # 3. Quy tắc Từ khóa Bắt buộc: REMIX
-    if REMIX_PATTERN.search(combined_lower) or REMIX_PATTERN.search(combined_unacc):
-        return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
-
-    for r_title in _FAMOUS_REMIX_CATALOG:
-        if remove_accents(r_title) in title_unacc:
-            return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
-
     # 4. Quy tắc Từ khóa: LIVE (Bản thu trực tiếp chính chủ)
     if LIVE_ORIGINAL_PATTERN.search(combined_lower) or LIVE_ORIGINAL_PATTERN.search(combined_unacc):
         return (WorkType.ORIGINAL, "ORIGINAL (Bản Live chính chủ)", False, a_clean, t_clean)
 
     # 5. Đối soát danh mục bài hát kinh điển thường xuyên bị Cover
-    for song_name, orig_singer in _FAMOUS_COVER_CATALOG.items():
+    for song_name, orig_singer in famous_cover_catalog.items():
         song_unacc = remove_accents(song_name)
         orig_unacc = remove_accents(orig_singer)
         if song_unacc in title_unacc:
@@ -172,7 +159,7 @@ def resolve_work_type_from_metadata(
                 )
 
     # 6. Đối soát kênh / nghệ sĩ chuyên cover
-    for cov_channel in _SPECIALIZED_COVER_CHANNELS:
+    for cov_channel in specialized_cover_channels:
         cov_unacc = remove_accents(cov_channel)
         if cov_unacc in combined_unacc:
             return (

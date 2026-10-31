@@ -5,6 +5,7 @@ from ..api.controllers.report_controller import ReportController
 from ..api.controllers.track_controller import TrackController
 
 # Concrete Implementations
+from ..repositories.database_catalog_repository import DatabaseCatalogRepository
 from ..repositories.database_track_repository import DatabaseTrackRepository
 from ..repositories.file_report_repository import FileReportRepository
 from ..repositories.in_memory_track_repository import InMemoryTrackRepository
@@ -29,6 +30,7 @@ from .config import (
     get_ffmpeg_binary,
 )
 from .database import is_database_available
+from .interfaces.repositories.catalog_repository_interface import ICatalogRepository
 from .interfaces.repositories.report_repository_interface import IReportRepository
 from .interfaces.repositories.storage_repository_interface import IStorageRepository
 from .interfaces.repositories.track_repository_interface import ITrackRepository
@@ -67,6 +69,7 @@ class AppContainer:
         self.report_repository: IReportRepository = FileReportRepository(
             output_dir=output_dir or OUTPUT_DIR
         )
+        self.catalog_repository: ICatalogRepository = DatabaseCatalogRepository()
         if is_database_available():
             self.track_repository: ITrackRepository = DatabaseTrackRepository()
         else:
@@ -78,7 +81,9 @@ class AppContainer:
         )
         self.fakeprint_detector: IFakeprintDetector = FakeprintDetectorService()
         self.signal_analyzer: ISignalAnalyzer = SignalAnalyzerService(
-            fakeprint_detector=self.fakeprint_detector, storage_repo=self.storage_repository
+            fakeprint_detector=self.fakeprint_detector,
+            storage_repo=self.storage_repository,
+            catalog_repo=self.catalog_repository,
         )
         self.classifier: IAIClassifier = custom_classifier or GeminiClassifierService(
             api_keys=api_keys or GEMINI_API_KEYS,

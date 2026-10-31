@@ -22,6 +22,9 @@ from backend.services.gemini_classifier_service import GeminiClassifierService a
 
 class TestApiKeyFailover(unittest.TestCase):
     def setUp(self):
+        GeminiClassifier._active_key_index = 0
+        GeminiClassifier._key_cooldowns = {}
+
         self.metrics = AcousticMetrics(
             sample_rate=44100,
             duration_sec=30.0,
@@ -41,6 +44,8 @@ class TestApiKeyFailover(unittest.TestCase):
         self.dummy_spec.touch(exist_ok=True)
 
     def tearDown(self):
+        GeminiClassifier._active_key_index = 0
+        GeminiClassifier._key_cooldowns = {}
         if self.dummy_audio.exists():
             self.dummy_audio.unlink(missing_ok=True)
         if self.dummy_spec.exists():

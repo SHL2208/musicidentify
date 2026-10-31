@@ -374,7 +374,7 @@ class AudioEngineService(IAudioEngine):
         ):
             return None
 
-        out_path = self.temp_dir / f"{track_id}_raw.mp3"
+        out_path = self.temp_dir / f"{track_id}_multisegment.wav"
         js_runtimes_cfg = get_js_runtimes_config()
         full_cookie_paths = get_all_cookie_file_paths(mode="full")
         cookie_file = str(full_cookie_paths[0]) if full_cookie_paths else None
@@ -444,9 +444,7 @@ class AudioEngineService(IAudioEngine):
                             f"{dur:.2f}",
                             "-vn",
                             "-acodec",
-                            "libmp3lame",
-                            "-ab",
-                            "192k",
+                            "pcm_s16le",
                             "-ar",
                             "44100",
                             "-ac",
@@ -484,9 +482,7 @@ class AudioEngineService(IAudioEngine):
                             "[out]",
                             "-vn",
                             "-acodec",
-                            "libmp3lame",
-                            "-ab",
-                            "192k",
+                            "pcm_s16le",
                             "-ar",
                             "44100",
                             "-ac",
@@ -805,14 +801,50 @@ class AudioEngineService(IAudioEngine):
         """
         output_sample = self.temp_dir / f"{track_id}_multisegment.wav"
 
-        # TỐI ƯU SIÊU TỐC: Dùng FFmpeg CLI để slice stream trực tiếp trong 0.05 giây
-        dur = float(total_duration) if total_duration and total_duration > 0 else 0.0
-        if dur <= 0.0:
+        # 1. Luôn đọc thời lượng thực tế của file âm thanh trên đĩa trước
+        file_dur = 0.0
+        try:
+            snd_info = sf.info(str(input_audio))
+            file_dur = float(snd_info.duration)
+        except Exception:
+            file_dur = self._get_audio_duration_ffmpeg(input_audio)
+
+        # 2. Nếu file đầu vào đã là mẫu cắt (<= 48s) từ stream slice hoặc slice trước đó:
+        if 0.0 < file_dur <= 48.0:
+            if input_audio.resolve() == output_sample.resolve() and output_sample.exists():
+                return output_sample
             try:
-                snd_info = sf.info(str(input_audio))
-                dur = float(snd_info.duration)
+                cmd = [
+                    self.ffmpeg_path,
+                    "-y",
+                    "-i",
+                    str(input_audio),
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    str(output_sample),
+                ]
+                res = subprocess.run(
+                    cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+                )
+                if (
+                    res.returncode == 0
+                    and output_sample.exists()
+                    and output_sample.stat().st_size >= 1024
+                ):
+                    return output_sample
             except Exception:
-                dur = self._get_audio_duration_ffmpeg(input_audio)
+                pass
+
+        # 3. Với file dài (> 48s), xác định mốc cắt an toàn dựa trên độ dài thực tế
+        dur = (
+            file_dur
+            if file_dur > 0.0
+            else (float(total_duration) if total_duration and total_duration > 0 else 0.0)
+        )
+        if file_dur > 0.0 and dur > file_dur:
+            dur = file_dur
 
         if dur > 0.0:
             try:

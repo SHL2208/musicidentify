@@ -78,30 +78,37 @@ class DetectionService(IDetectionService):
                         metadata=meta,
                         metrics=m,
                     )
-                if getattr(existing_result, "work_type", WorkType.UNCERTAIN) == WorkType.UNCERTAIN:
-                    meta_w = {
-                        "distributor": track.distributor
-                        or getattr(existing_result, "distributor", ""),
-                        "title": track.track_title or track.raw_query,
-                        "artist": track.artist or "",
-                        "song_type": getattr(track, "song_type", None),
-                    }
-                    w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
-                        title=track.track_title or track.raw_query,
-                        artist=track.artist or "",
-                        metadata=meta_w,
-                    )
-                    existing_result.work_type = w_type
-                    existing_result.work_label = w_label
-                    existing_result.is_cover = is_cov
-                    if not getattr(existing_result, "original_artist", None) and orig_a:
-                        existing_result.original_artist = orig_a
-                    if not getattr(existing_result, "original_song_title", None) and orig_t:
-                        existing_result.original_song_title = orig_t
-                    try:
-                        self.track_repo.save_result(existing_result)
-                    except Exception:  # noqa: BLE001, S110
-                        pass
+                # Luôn giải mã lại tác phẩm qua metadata/tiêu đề để khắc phục các bản ghi cache cũ từng bị gán nhầm ORIGINAL
+                meta_w = {
+                    "distributor": track.distributor or getattr(existing_result, "distributor", ""),
+                    "title": track.track_title or track.raw_query,
+                    "artist": track.artist or "",
+                    "song_type": getattr(track, "song_type", None)
+                    or getattr(existing_result, "song_type", None),
+                }
+                raw_w_cached = getattr(existing_result, "work_type", None)
+                raw_w_cached_str = (
+                    raw_w_cached.value
+                    if hasattr(raw_w_cached, "value")
+                    else str(raw_w_cached or "UNCERTAIN")
+                )
+                w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                    title=track.track_title or track.raw_query,
+                    artist=track.artist or "",
+                    metadata=meta_w,
+                    raw_gemini_work_type=raw_w_cached_str,
+                )
+                existing_result.work_type = w_type
+                existing_result.work_label = w_label
+                existing_result.is_cover = is_cov
+                if not getattr(existing_result, "original_artist", None) and orig_a:
+                    existing_result.original_artist = orig_a
+                if not getattr(existing_result, "original_song_title", None) and orig_t:
+                    existing_result.original_song_title = orig_t
+                try:
+                    self.track_repo.save_result(existing_result)
+                except Exception:  # noqa: BLE001, S110
+                    pass
                 # Đồng bộ 2 chiều các trường metadata giữa track và existing_result:
                 # 1. URL
                 if track.resolved_url and not getattr(existing_result, "source_url", None):
@@ -703,21 +710,22 @@ class DetectionService(IDetectionService):
             result, track, metadata, metrics, language=language
         )
 
-        # 6. Đảm bảo phân loại Tác phẩm (Work Type) luôn được giải mã chuẩn xác nếu mô hình để trống
-        if getattr(result, "work_type", WorkType.UNCERTAIN) == WorkType.UNCERTAIN:
-            w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
-                title=track.track_title or track.raw_query,
-                artist=track.artist or "",
-                metadata=metadata,
-                raw_gemini_work_type=str(getattr(result, "work_type", "UNCERTAIN")),
-            )
-            result.work_type = w_type
-            result.work_label = w_label
-            result.is_cover = is_cov
-            if not result.original_artist and orig_a:
-                result.original_artist = orig_a
-            if not result.original_song_title and orig_t:
-                result.original_song_title = orig_t
+        # 6. Đảm bảo phân loại Tác phẩm (Work Type) luôn được giải mã chuẩn xác qua metadata và từ khóa tiêu đề
+        raw_w = getattr(result, "work_type", None)
+        raw_w_str = raw_w.value if hasattr(raw_w, "value") else str(raw_w or "UNCERTAIN")
+        w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+            title=track.track_title or track.raw_query,
+            artist=track.artist or "",
+            metadata=metadata,
+            raw_gemini_work_type=raw_w_str,
+        )
+        result.work_type = w_type
+        result.work_label = w_label
+        result.is_cover = is_cov
+        if not result.original_artist and orig_a:
+            result.original_artist = orig_a
+        if not result.original_song_title and orig_t:
+            result.original_song_title = orig_t
 
         # Đồng bộ kết luận tổng hợp cuối cùng
         if not getattr(track, "song_type", None) and result.work_type != WorkType.UNCERTAIN:
@@ -826,17 +834,26 @@ class DetectionService(IDetectionService):
             or ""
         ).strip()
 
+        from ..core.config import (
+            MAJOR_EXCLUSIVE_LABELS,
+            SAFEGUARD_FAKEPRINT_MODERATE,
+            SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH,
+            SAFEGUARD_FAKEPRINT_RELIABLE,
+            SAFEGUARD_FAKEPRINT_STRONG,
+            SAFEGUARD_HUMAN_FAKEPRINT_MAX,
+            SAFEGUARD_HUMAN_STEM_BLEED_MAX,
+            SAFEGUARD_STEM_BLEED_MODERATE,
+            SAFEGUARD_STEM_BLEED_OVERRIDE_HIGH,
+            SAFEGUARD_STEM_BLEED_STRONG,
+        )
         from .signal_analyzer_service import (
             get_dynamic_catalog,
             is_verified_human_artist,
         )
 
         is_human_artist = is_verified_human_artist(artist_str, title_str)
-        is_major_exclusive_label = any(
-            w in distributor_str for w in ["sony", "universal", "umg", "vieent", "loops", "bmz"]
-        )
-
-        _, ai_dist_list, ai_artist_regexes = get_dynamic_catalog()
+        wl_dist_list, ai_dist_list, ai_artist_regexes = get_dynamic_catalog()
+        is_major_exclusive_label = any(w in distributor_str for w in MAJOR_EXCLUSIVE_LABELS)
         is_ai_dist = any(ad in distributor_str for ad in ai_dist_list)
         if not is_ai_dist:
             for pat, _ in ai_artist_regexes:
@@ -855,7 +872,10 @@ class DetectionService(IDetectionService):
             # 1a. Bảo vệ ca sĩ người thật đã xác thực hoặc hãng đĩa lớn độc quyền
             if is_human_artist or is_major_exclusive_label:
                 stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
-                if not (metrics.fakeprint_score >= 0.85 and stem_bleed_val >= 0.50):
+                if not (
+                    metrics.fakeprint_score >= SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH
+                    and stem_bleed_val >= SAFEGUARD_STEM_BLEED_OVERRIDE_HIGH
+                ):
                     logger.info(
                         "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Nghệ sĩ xác thực '%s' / Hãng đĩa lớn được bảo vệ, hạ cấp về PROCESSED_HUMAN.",
                         track.track_title,
@@ -894,7 +914,10 @@ class DetectionService(IDetectionService):
             has_cutoff = getattr(metrics, "ultrasonic_cutoff_detected", False)
             rigidity = getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0
             harm_ratio = getattr(metrics, "harmonic_ratio", 0.0) or 0.0
-            is_ai_acoustic_signature = has_cutoff and rigidity >= 0.50 and harm_ratio >= 0.80
+            is_ai_acoustic_signature = (
+                getattr(metrics, "modern_ai_vocal_suspect", False)
+                and metrics.fakeprint_score >= 0.35
+            )
 
             is_derivative = is_derivative_or_remix_context(meta)
             is_vocal_human_suspect_beat = "vocal là người thật" in first_reason
@@ -903,9 +926,9 @@ class DetectionService(IDetectionService):
                 not is_ai_dist
                 and not is_catalog_or_batch_flag
                 and not is_ai_acoustic_signature
-                and metrics.fakeprint_score < 0.25
+                and metrics.fakeprint_score < SAFEGUARD_HUMAN_FAKEPRINT_MAX
                 and not metrics.fakeprint_detected
-                and stem_bleed_val < 0.25
+                and stem_bleed_val < SAFEGUARD_HUMAN_STEM_BLEED_MAX
             )
             if (is_derivative or is_vocal_human_suspect_beat) and is_clean_physical:
                 logger.info(
@@ -967,9 +990,15 @@ class DetectionService(IDetectionService):
 
             # 2b. Tiêu chí 2: AI có dấu vân răng lược hoặc stem bleed cao áp đảo
             strong_physical_ai = (
-                (metrics.fakeprint_score >= 0.50 and stem_bleed >= 0.35)
-                or (has_cutoff and metrics.fakeprint_score >= 0.60)
-                or (metrics.fakeprint_score >= 0.65 and stem_bleed >= 0.30)
+                (
+                    metrics.fakeprint_score >= SAFEGUARD_FAKEPRINT_MODERATE
+                    and stem_bleed >= SAFEGUARD_STEM_BLEED_MODERATE
+                )
+                or (has_cutoff and metrics.fakeprint_score >= SAFEGUARD_FAKEPRINT_RELIABLE)
+                or (
+                    metrics.fakeprint_score >= SAFEGUARD_FAKEPRINT_STRONG
+                    and stem_bleed >= SAFEGUARD_STEM_BLEED_STRONG
+                )
             )
 
             # 2c. Tiêu chí 3: Đồng thuận đa chỉ số mức trung bình (Borderline)
@@ -979,6 +1008,9 @@ class DetectionService(IDetectionService):
                 and harm_ratio >= 0.80
                 and (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.32)
             )
+
+            # 2d. Tiêu chí 4: AI Vocal thế hệ mới (Modern AI Vocal / Ultrasonic Cutoff)
+            is_modern_ai_acoustic = bool(getattr(metrics, "modern_ai_vocal_suspect", False))
 
             # Trọng tài Anti-FN can thiệp:
             # - Tuyệt đối không can thiệp nếu là nghệ sĩ người thật đã xác thực (trừ khi fakeprint cực đoan >= 0.85)
@@ -1042,6 +1074,27 @@ class DetectionService(IDetectionService):
                         override_reason = (
                             "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
                             f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
+                        )
+                elif (
+                    is_modern_ai_acoustic
+                    and not has_human_bio_evidence
+                    and not is_human_artist
+                    and not is_major_exclusive_label
+                ):
+                    should_override_to_ai = True
+                    if is_en:
+                        override_reason = (
+                            "[MODERN AI VOCAL ALERT]: Detected ultrasonic frequency cutoff or severe high-frequency roll-off "
+                            f"combined with vocal pitch rigidity (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
+                            "characteristic of modern neural diffusion vocal models (Suno/Udio). "
+                            "Overrides initial false perception of natural vocal tract."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO AI VOCAL ĐỜI MỚI]: Phát hiện vết cắt tần số siêu âm hoặc suy giảm dải cao nghiêm trọng "
+                            f"kết hợp độ cứng cao độ giọng hát (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
+                            "đặc trưng của mô hình thanh nhạc neural diffusion (Suno/Udio). "
+                            "Phủ quyết nhận định nhầm lẫn ban đầu về thanh quản sinh học."
                         )
 
             if should_override_to_ai:

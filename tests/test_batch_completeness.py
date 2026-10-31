@@ -35,6 +35,7 @@ class BatchManager:
         self.container.track_repository.find_result_by_query_or_url = lambda *args, **kwargs: None
         self.audio_engine = self.container.audio_engine
         self.batch_service = self.container.batch_service
+        self.batch_service.sleep_interval = 0.0
 
     def process_batch(self, tracks, on_progress=None):
         return self.batch_service.process_batch(tracks, on_progress=on_progress)

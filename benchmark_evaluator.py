@@ -887,10 +887,16 @@ def run_benchmark(
 
                 # Đọc lại trạng thái xác thực nguồn sau khi audio_engine đã chạy và xử lý fallback
                 is_verified = track.is_verified_match is not False
-                if not is_verified:
+                if not is_verified or (track.match_score is not None and track.match_score < 0.70):
                     unverified_matches += 1
-                    print(
-                        f"       -> ⚠️ CẢNH BÁO NGUỒN: YouTube không tìm thấy video khớp! (Score: {track.match_score})"
+                    score_pct = (
+                        f"{track.match_score * 100:.1f}%"
+                        if track.match_score is not None
+                        else "0.0%"
+                    )
+                    raise ValueError(
+                        f"Nguồn âm thanh không khớp bản gốc (Score: {score_pct} < 70.0% / Unverified). "
+                        "Từ chối đưa vào đối soát để bảo toàn độ sạch của benchmark, kích hoạt nạp bù bài khác."
                     )
 
                 pred_is_ai = res.is_ai

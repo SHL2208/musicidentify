@@ -942,6 +942,18 @@ class DetectionService(IDetectionService):
 
             is_derivative = is_derivative_or_remix_context(meta)
             is_vocal_human_suspect_beat = "vocal là người thật" in first_reason
+            # QUAN TRỌNG: Không hạ cấp nếu mô hình AI (Gemini) đã xác nhận vocal là do AI tạo sinh (tránh bỏ sót AI trong bản Remix)
+            is_vocal_explicit_ai = any(
+                kw in first_reason
+                for kw in [
+                    "vocal là ai",
+                    "thành phần vocal là ai",
+                    "vocal ai",
+                    "giọng hát ai",
+                    "giọng tổng hợp",
+                    "ai sinh tự động",
+                ]
+            )
             stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
             is_clean_physical = (
                 not is_ai_dist
@@ -951,7 +963,10 @@ class DetectionService(IDetectionService):
                 and not metrics.fakeprint_detected
                 and stem_bleed_val < SAFEGUARD_HUMAN_STEM_BLEED_MAX
             )
-            if (is_derivative or is_vocal_human_suspect_beat) and is_clean_physical:
+            if (
+                ((is_derivative and not is_vocal_explicit_ai) or is_vocal_human_suspect_beat)
+                and is_clean_physical
+            ):
                 logger.info(
                     "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Bản thu '%s' có chỉ số vật lý sạch, hạ cấp về PROCESSED_HUMAN.",
                     track.track_title,
@@ -994,6 +1009,7 @@ class DetectionService(IDetectionService):
                 for kw in [
                     "thanh quản sinh học",
                     "sinh học tự nhiên",
+                    "đặc trưng sinh học",
                     "vocal tract",
                     "biological",
                     "auto-tune phòng thu",
@@ -1002,6 +1018,36 @@ class DetectionService(IDetectionService):
                     "giọng người thật",
                     "cấu trúc thanh quản",
                     "thanh quản",
+                    "cộng hưởng ngực",
+                    "cộng hưởng lồng ngực",
+                    "cộng hưởng khoang ngực",
+                    "buồng vang ngực",
+                    "buồng vang",
+                    "buồng phổi",
+                    "mộc tự nhiên",
+                    "giọng hát mộc",
+                    "hơi thở hữu cơ",
+                    "khoảng ngắt hơi",
+                    "hơi thở chân thực",
+                    "hơi thở linh hoạt",
+                    "hơi thở sống động",
+                    "dao động vi mô",
+                    "biến đổi vi mô",
+                    "biến động vi mô",
+                    "micro-tremors",
+                    "micro-vibrato",
+                    "micro-fluctuations",
+                    "rung giọng (vibrato) tự nhiên",
+                    "vibrato tự nhiên",
+                    "quãng luyến láy chân thực",
+                    "sắc thái biểu cảm",
+                    "nghệ sĩ biểu diễn thật",
+                    "nghệ sĩ con người",
+                    "ca sĩ con người",
+                    "nghệ sĩ người thật",
+                    "giọng ca con người",
+                    "bản thu micro thực tế",
+                    "sinh lý giọng người",
                 ]
             )
 

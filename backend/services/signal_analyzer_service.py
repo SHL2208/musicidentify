@@ -225,6 +225,24 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 "reason": "Phát hiện nhãn xác nhận sáng tác bằng Udio AI trong phần mô tả / tiêu đề.",
             }
 
+        # 2a. Kiểm tra nhãn ca sĩ ảo / giọng hát AI rõ ràng trong tiêu đề hoặc mô tả
+        AI_SINGER_REGEX = (
+            r"\b(ca\s*sĩ\s*a\.?i|ca\s*sĩ\s*ảo|ai\s*singer|virtual\s*singer|"
+            r"giọng\s*hát\s*a\.?i|vocal\s*a\.?i)\b"
+        )
+        ai_singer_match = re.search(AI_SINGER_REGEX, combined_text, re.IGNORECASE)
+        if ai_singer_match:
+            return {
+                "is_ai": True,
+                "verdict_type": VerdictType.AI_GENERATED,
+                "confidence": 0.98,
+                "engine": "AI Virtual Singer",
+                "reason": (
+                    f"Phát hiện nhãn xác nhận ca sĩ ảo / giọng hát AI trong phần tiêu đề hoặc mô tả "
+                    f"('{ai_singer_match.group()}')."
+                ),
+            }
+
         # 2b. Kiểm tra các thẻ lệnh điều khiển cấu trúc AI sinh nhạc
         if re.search(AI_CONTEXT_PATTERN, combined_text, re.IGNORECASE):
             ai_prompt_tags = re.findall(SUNO_PROMPT_TAGS_PATTERN, description, re.IGNORECASE)

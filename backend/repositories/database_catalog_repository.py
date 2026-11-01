@@ -435,4 +435,3 @@ class DatabaseCatalogRepository(ICatalogRepository):
                     return True
 
         return False
-

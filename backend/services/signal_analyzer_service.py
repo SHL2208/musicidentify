@@ -280,6 +280,37 @@ class SignalAnalyzerService(ISignalAnalyzer):
         """Xác thực nghệ sĩ người thật (ủy quyền cho Catalog Repository)."""
         return self.catalog_repo.is_verified_human_artist(artist_str, title_str)
 
+    def _is_modern_ai_vocal(
+        self,
+        rolloff_95: float,
+        rigidity: float,
+        harmonic_ratio: float,
+        fakeprint_score: float,
+        stem_bleed: float,
+        ultrasonic_cutoff: bool = False,
+    ) -> bool:
+        """Đánh giá nghi vấn giọng hát AI đời mới (Suno v3.5/v4, Udio) qua đa chỉ số âm học vật lý."""
+        # 1. AI cổ điển / tạo sinh chung: Rolloff sụt giảm + Rigidity cao + (Fakeprint hoặc Bleed trung bình)
+        legacy_suspect = (
+            rolloff_95 < MODERN_AI_ROLLOFF_MAX
+            and rigidity >= MODERN_AI_RIGIDITY_MIN
+            and harmonic_ratio >= MODERN_AI_HARMONIC_MIN
+            and (
+                fakeprint_score >= MODERN_AI_FAKEPRINT_MIN or stem_bleed >= MODERN_AI_STEM_BLEED_MIN
+            )
+        ) or (ultrasonic_cutoff and rigidity >= MODERN_AI_ULTRASONIC_RIGIDITY_MIN)
+
+        # 2. Suno v3.5/v4 Dân ca, Ballad, Nhạc Xuân tiếng Việt:
+        # Đặc trưng: Rolloff lossy streaming <= 12500Hz, Rigidity >= 0.48, Harmonic >= 0.82, Fakeprint >= 0.20
+        suno_v35_ballad_suspect = (
+            rolloff_95 <= 12500.0
+            and rigidity >= 0.48
+            and harmonic_ratio >= 0.82
+            and fakeprint_score >= 0.20
+        )
+
+        return bool(legacy_suspect or suno_v35_ballad_suspect)
+
     def _compute_pitch_jitter(self, mono_harm: np.ndarray, sr: int = 44100) -> dict[str, Any]:
         """
         Trích xuất chỉ số vi biến thiên cao độ giọng hát (Pitch Micro-Jitter) và độ cứng nhắc phẳng (Rigidity).
@@ -529,15 +560,14 @@ class SignalAnalyzerService(ISignalAnalyzer):
             # 5c. Cờ nhận diện AI Vocals đời mới
             rigidity = float(pitch_res.get("pitch_rigidity_ratio", 0.0) or 0.0)
             stem_bleed = float(stem_bleed_res.get("stem_bleed_score", 0.0) or 0.0)
-            modern_ai_vocal_suspect = (
-                rolloff_95 < MODERN_AI_ROLLOFF_MAX
-                and rigidity >= MODERN_AI_RIGIDITY_MIN
-                and harmonic_ratio >= MODERN_AI_HARMONIC_MIN
-                and (
-                    fakeprint_score >= MODERN_AI_FAKEPRINT_MIN
-                    or stem_bleed >= MODERN_AI_STEM_BLEED_MIN
-                )
-            ) or (ultrasonic_cutoff and rigidity >= MODERN_AI_ULTRASONIC_RIGIDITY_MIN)
+            modern_ai_vocal_suspect = self._is_modern_ai_vocal(
+                rolloff_95=rolloff_95,
+                rigidity=rigidity,
+                harmonic_ratio=harmonic_ratio,
+                fakeprint_score=fakeprint_score,
+                stem_bleed=stem_bleed,
+                ultrasonic_cutoff=ultrasonic_cutoff,
+            )
 
             # 6. Đánh giá nén truyền tải và vết ngắt tần
             has_cutoff = rolloff_95 < COMPRESSION_LOSSY_ROLLOFF_MAX

@@ -826,13 +826,21 @@ class DetectionService(IDetectionService):
         distributor_str = (
             str(meta.get("distributor") or getattr(track, "distributor", "") or "").strip().lower()
         )
-        artist_str = str(meta.get("artist") or getattr(track, "artist", "") or "").strip()
-        title_str = str(
-            meta.get("title")
-            or getattr(track, "track_title", "")
-            or getattr(track, "raw_query", "")
-            or ""
-        ).strip()
+        artist_str = (
+            str(meta.get("artist") or getattr(track, "artist", "") or "")
+            .replace("\xa0", " ")
+            .strip()
+        )
+        title_str = (
+            str(
+                meta.get("title")
+                or getattr(track, "track_title", "")
+                or getattr(track, "raw_query", "")
+                or ""
+            )
+            .replace("\xa0", " ")
+            .strip()
+        )
 
         from ..core.config import (
             MAJOR_EXCLUSIVE_LABELS,
@@ -860,6 +868,19 @@ class DetectionService(IDetectionService):
                 if re.search(pat, artist_str.lower()) or re.search(pat, title_str.lower()):
                     is_ai_dist = True
                     break
+        if (
+            not is_ai_dist
+            and self.track_repo
+            and hasattr(self.track_repo, "get_ai_artist_projects")
+        ):
+            try:
+                for proj in self.track_repo.get_ai_artist_projects():
+                    pname = str(proj.get("artist_name", "")).strip().lower()
+                    if pname and (pname in artist_str.lower() or pname in title_str.lower()):
+                        is_ai_dist = True
+                        break
+            except Exception:
+                pass
 
         # 1. Safeguard Anti-FP (Bảo vệ nhạc người thật khỏi bị vu oan do nén lossy hoặc Auto-Tune)
         if result.is_ai:
@@ -1029,12 +1050,12 @@ class DetectionService(IDetectionService):
                     should_override_to_ai = True
                     if is_en:
                         override_reason = (
-                            "[AI CATALOG ALERT]: Artist or release belongs to known AI music project / virtual distributor catalog. "
+                            f"[AI CATALOG ALERT]: Artist or release '{artist_str or track.artist}' belongs to known AI music project / virtual distributor catalog. "
                             f"Physical metrics: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
                         )
                     else:
                         override_reason = (
-                            "[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành thuộc danh mục dự án AI / nhà phân phối ảo. "
+                            f"[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành ('{artist_str or track.artist}') thuộc danh mục dự án AI / nhà phân phối ảo. "
                             f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
                         )
                 elif is_instrumental_ai:
@@ -1081,21 +1102,26 @@ class DetectionService(IDetectionService):
                     and not is_human_artist
                     and not is_major_exclusive_label
                 ):
-                    should_override_to_ai = True
-                    if is_en:
-                        override_reason = (
-                            "[MODERN AI VOCAL ALERT]: Detected ultrasonic frequency cutoff or severe high-frequency roll-off "
-                            f"combined with vocal pitch rigidity (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
-                            "characteristic of modern neural diffusion vocal models (Suno/Udio). "
-                            "Overrides initial false perception of natural vocal tract."
-                        )
-                    else:
-                        override_reason = (
-                            "[CẢNH BÁO AI VOCAL ĐỜI MỚI]: Phát hiện vết cắt tần số siêu âm hoặc suy giảm dải cao nghiêm trọng "
-                            f"kết hợp độ cứng cao độ giọng hát (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
-                            "đặc trưng của mô hình thanh nhạc neural diffusion (Suno/Udio). "
-                            "Phủ quyết nhận định nhầm lẫn ban đầu về thanh quản sinh học."
-                        )
+                    # CHỐNG VU OAN (ANTI-FP): Nếu Gemini đã nghe và phán quyết là giọng ca người thật,
+                    # hiện tượng dải cao sụt giảm và Auto-Tune phòng thu là rất phổ biến trên lossy streaming.
+                    # Chỉ cho phép override khi có thêm bằng chứng vật lý deconvolution (Fakeprint >= 0.38)
+                    # hoặc rò rỉ âm học (Stem Bleed >= 0.28) hoặc trùng danh mục AI.
+                    if metrics.fakeprint_score >= 0.38 or stem_bleed >= 0.28 or is_ai_dist:
+                        should_override_to_ai = True
+                        if is_en:
+                            override_reason = (
+                                "[MODERN AI VOCAL ALERT]: Detected ultrasonic frequency cutoff or severe high-frequency roll-off "
+                                f"combined with vocal pitch rigidity (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
+                                "characteristic of modern neural diffusion vocal models (Suno/Udio). "
+                                "Overrides initial false perception of natural vocal tract."
+                            )
+                        else:
+                            override_reason = (
+                                "[CẢNH BÁO AI VOCAL ĐỜI MỚI]: Phát hiện vết cắt tần số siêu âm hoặc suy giảm dải cao nghiêm trọng "
+                                f"kết hợp độ cứng cao độ giọng hát (Rigidity: {rigidity * 100:.1f}%, Rolloff: {rolloff:.0f} Hz), "
+                                "đặc trưng của mô hình thanh nhạc neural diffusion (Suno/Udio). "
+                                "Phủ quyết nhận định nhầm lẫn ban đầu về thanh quản sinh học."
+                            )
 
             if should_override_to_ai:
                 logger.info(

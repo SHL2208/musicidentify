@@ -58,4 +58,3 @@ class ICatalogRepository(ABC):
     def refresh_cache(self) -> None:
         """Làm mới bộ nhớ đệm (in-memory cache) ngay lập tức từ DB."""
         pass
-

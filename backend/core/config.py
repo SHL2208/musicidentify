@@ -101,6 +101,7 @@ DEFAULT_FALLBACK_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
 ]
 
 _env_fallback = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
@@ -251,14 +252,14 @@ GENERIC_ANONYMOUS_ARTISTS = {
     "null",
 }
 
-AI_CONTEXT_PATTERN = r"\b(?:suno|udio)\b|ai\s+music|ai\s+cover|tạo bằng ai|mô hình ai|prompt:|style:"
+AI_CONTEXT_PATTERN = (
+    r"\b(?:suno|udio)\b|ai\s+music|ai\s+cover|tạo bằng ai|mô hình ai|prompt:|style:"
+)
 SUNO_PROMPT_TAGS_PATTERN = (
     r"\[\s*(?:verse\s*\d*|chorus|bridge|outro|intro|pre-chorus|hook|vocal chop|sub-?bass)[^\]]*\]"
 )
 BATCH_AI_NUMBER_PATTERN = r"bài\s*(?:số\s*)?\d+\s*/\s*\d+"
-BATCH_AI_KEYWORDS_PATTERN = (
-    r"\b(?:suno|udio|ai)\b|ai\s+music|ai\s+cover|#ai|tạo bằng ai|sinh bằng ai|dự án\s+(?:sáng tác|nhạc|ai)"
-)
+BATCH_AI_KEYWORDS_PATTERN = r"\b(?:suno|udio|ai)\b|ai\s+music|ai\s+cover|#ai|tạo bằng ai|sinh bằng ai|dự án\s+(?:sáng tác|nhạc|ai)"
 NATIONAL_ARTIST_HONORIFICS_PATTERN = r"\b(nsnd|nsưt|nsut)\b"
 COLLABORATOR_SPLIT_PATTERN = r"[,/&;+]|(?:\s+(?:x|ft\.?|feat\.?|vs\.?)\s+)"
 PRODUCER_PREFIX_PATTERN = r"^prod\.?\s*"

@@ -1015,18 +1015,21 @@ def run_benchmark(
                 errors += 1
                 print(f"       -> ❌ LỖI XỬ LÝ NGUỒN: {e}")
 
-                # Tìm mẫu thay thế cùng nhãn từ dataset dự phòng
+                # Tìm mẫu thay thế cùng nhãn từ dataset dự phòng (chọn ngẫu nhiên tránh lệch mẫu)
                 replacement: dict[str, Any] | None = None
                 if dataset:
-                    for cand in dataset:
+                    candidates_pool = [
+                        cand
+                        for cand in dataset
                         if (
                             cand["gt_is_ai"] == item["gt_is_ai"]
                             and cand["media_id"] not in attempted_ids
-                        ):
-                            replacement = cand
-                            attempted_ids.add(cand["media_id"])
-                            evaluation_queue.append(cand)
-                            break
+                        )
+                    ]
+                    if candidates_pool:
+                        replacement = random.choice(candidates_pool)
+                        attempted_ids.add(replacement["media_id"])
+                        evaluation_queue.append(replacement)
 
                 # Ghi nhận sự cố vào error_records
                 error_records.append(

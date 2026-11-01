@@ -54,7 +54,10 @@ class TestDynamicSongTypeCatalog(unittest.TestCase):
         """Kiểm tra repository ghi log cảnh báo khi Database Supabase offline và nạp snapshot."""
         repo = DatabaseCatalogRepository()
         with (
-            patch("backend.repositories.database_catalog_repository.is_database_available", return_value=False),
+            patch(
+                "backend.repositories.database_catalog_repository.is_database_available",
+                return_value=False,
+            ),
             patch("backend.repositories.database_catalog_repository.logger.warning") as mock_warn,
         ):
             repo.reload_catalogs(force=True)
@@ -62,7 +65,10 @@ class TestDynamicSongTypeCatalog(unittest.TestCase):
             # Xác nhận có log cảnh báo offline snapshot
             warning_messages = [call.args[0] for call in mock_warn.call_args_list if call.args]
             self.assertTrue(
-                any("[CATALOG ALERT]" in msg or "OFFLINE SNAPSHOT" in msg for msg in warning_messages),
+                any(
+                    "[CATALOG ALERT]" in msg or "OFFLINE SNAPSHOT" in msg
+                    for msg in warning_messages
+                ),
                 f"Expected warning log not found in: {warning_messages}",
             )
 
@@ -113,7 +119,10 @@ class TestDynamicSongTypeCatalog(unittest.TestCase):
         self.assertTrue(hasattr(repo, "refresh_cache"))
 
         # Kiểm tra xử lý an toàn khi offline (trả về False, không văng ngoại lệ)
-        with patch("backend.repositories.database_catalog_repository.is_database_available", return_value=False):
+        with patch(
+            "backend.repositories.database_catalog_repository.is_database_available",
+            return_value=False,
+        ):
             res_human = repo.add_verified_human_artist("Ca Sĩ Thử Nghiệm")
             res_ai = repo.add_ai_artist_project("Dự Án AI Thử Nghiệm")
             self.assertFalse(res_human)

@@ -51,6 +51,7 @@ from backend.core.container import get_container
 from backend.core.models.entities import (
     DetectionResult,
     TrackItem,
+    VerdictType,
 )
 from backend.services.work_type_resolver import (
     map_song_type_to_work_type,
@@ -755,6 +756,8 @@ def run_benchmark(
     force_rescan: bool = False,
     mock_mode: bool = False,
     mock_accuracy: float = 0.70,
+    allow_replenish: bool = True,
+    max_replacements: int | None = None,
 ) -> dict[str, Any]:
     """
     Thực hiện thẩm định toàn bộ mẫu và tính toán các chỉ số độ chính xác.
@@ -858,13 +861,29 @@ def run_benchmark(
         print(f"🚀 BẮT ĐẦU CHẤM ĐIỂM TESTCASE (MỤC TIÊU: {len(samples)} BÀI HÁT THÀNH CÔNG)")
         print("=" * 75)
 
+        target_successful = len(samples)
+        if max_replacements is None:
+            max_replacements = target_successful
+
         i = 0
         while i < len(evaluation_queue):
+            success_count = sum(1 for r in results if r.get("prediction") not in ("ERROR", "LỖI"))
+            if success_count >= target_successful:
+                print(
+                    f"\n🎉 [HOÀN THÀNH] Đã thẩm định thành công đủ mục tiêu {target_successful} bài hát! Dừng hàng đợi."
+                )
+                break
+
+            if i >= len(evaluation_queue):
+                break
+
             item = evaluation_queue[i]
             i += 1
             gt = item["gt_label"]
             query = item["query"]
-            print(f"\n[{i}/{len(evaluation_queue)}] Thẩm định: '{query}' | Ground Truth: {gt}")
+            print(
+                f"\n[{i}/{len(evaluation_queue)}] [Thành công: {success_count}/{target_successful} | Lỗi: {errors}] Thẩm định: '{query}' | Ground Truth: {gt}"
+            )
 
             track: TrackItem | None = None
             try:
@@ -1023,41 +1042,54 @@ def run_benchmark(
 
                 # Tìm mẫu thay thế cùng nhãn từ dataset dự phòng (chọn ngẫu nhiên tránh lệch mẫu)
                 replacement: dict[str, Any] | None = None
-                if dataset:
+                replenish_status = ""
+
+                if not allow_replenish:
+                    replenish_status = "Chế độ --no-replenish đang bật (không nạp bù)"
+                elif not dataset:
+                    replenish_status = "Không có dataset dự phòng để nạp bù"
+                elif success_count >= target_successful:
+                    replenish_status = f"Đã đạt đủ mục tiêu {target_successful} bài thành công"
+                elif errors > max_replacements:
+                    replenish_status = f"Đã đạt giới hạn nạp bù an toàn tối đa ({max_replacements} bài)"
+                else:
                     candidates_pool = [
                         cand
                         for cand in dataset
                         if (
-                            cand["gt_is_ai"] == item["gt_is_ai"]
-                            and cand["media_id"] not in attempted_ids
+                            cand.get("gt_is_ai") == item.get("gt_is_ai")
+                            and cand.get("media_id") not in attempted_ids
                         )
                     ]
                     if candidates_pool:
                         replacement = random.choice(candidates_pool)
                         attempted_ids.add(replacement["media_id"])
                         evaluation_queue.append(replacement)
+                    else:
+                        replenish_status = f"Hết bài dự phòng cùng nhãn {gt} trong dataset"
 
                 # Ghi nhận sự cố vào error_records
                 error_records.append(
                     {
-                        "Mã bài lỗi (Media ID)": item["media_id"],
-                        "Tên bài lỗi (Song Title)": item["title"],
-                        "Ca sĩ (Artist)": item["artist"],
+                        "Mã bài lỗi (Media ID)": item.get("media_id", ""),
+                        "Tên bài lỗi (Song Title)": item.get("title", ""),
+                        "Ca sĩ (Artist)": item.get("artist", ""),
                         "Nhãn thực tế (Ground Truth)": gt,
                         "Nguyên nhân sự cố (Error)": str(e),
-                        "Bài nạp bù thay thế (Replacement)": replacement["query"]
-                        if replacement
-                        else "Không còn bài dự phòng",
+                        "Bài nạp bù thay thế (Replacement)": (
+                            replacement["query"] if replacement else f"Không nạp bù ({replenish_status})"
+                        ),
                         "Thời điểm ghi nhận": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                 )
 
                 if replacement:
                     print(
-                        f"       -> 🔄 ĐÃ NẠP BÙ MẪU THAY THẾ: '{replacement['query']}' (cùng nhãn {gt})"
+                        f"       -> 🔄 ĐÃ NẠP BÙ MẪU THAY THẾ: '{replacement['query']}' (cùng nhãn {gt} | Hàng đợi: {len(evaluation_queue)} bài)"
                     )
                 else:
-                    # Nếu không tìm thấy bài nạp bù, ghi nhận là kết quả ERROR
+                    print(f"       -> ⚠️ {replenish_status} (ghi nhận 1 lỗi vào báo cáo)")
+                    # Chỉ ghi nhận vào results nếu KHÔNG nạp bù để tránh tính lỗi thành thành công
                     results.append(
                         {
                             "media_id": item["media_id"],
@@ -1458,6 +1490,11 @@ def main():
         default=None,
         help="Đường dẫn lưu hình ảnh Confusion Matrix",
     )
+    parser.add_argument(
+        "--no-replenish",
+        action="store_true",
+        help="Không nạp bù bài hát khi gặp lỗi (chỉ đánh giá đúng số lượng bài mẫu ban đầu)",
+    )
 
     args = parser.parse_args()
 
@@ -1510,6 +1547,7 @@ def main():
         force_rescan=args.force_rescan,
         mock_mode=args.mock,
         mock_accuracy=args.mock_acc,
+        allow_replenish=not args.no_replenish,
     )
     metrics = benchmark_data["metrics"]
     results = benchmark_data["results"]

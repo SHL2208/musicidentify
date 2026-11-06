@@ -844,6 +844,8 @@ class DetectionService(IDetectionService):
 
         from ..core.config import (
             MAJOR_EXCLUSIVE_LABELS,
+            SAFEGUARD_AUTOTUNE_FORMANT_MIN,
+            SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED,
             SAFEGUARD_FAKEPRINT_MODERATE,
             SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH,
             SAFEGUARD_FAKEPRINT_RELIABLE,
@@ -853,23 +855,33 @@ class DetectionService(IDetectionService):
             SAFEGUARD_STEM_BLEED_MODERATE,
             SAFEGUARD_STEM_BLEED_OVERRIDE_HIGH,
             SAFEGUARD_STEM_BLEED_STRONG,
+            UNCERTAIN_CONFIDENCE_MAX,
+            UNCERTAIN_CONFIDENCE_MIN,
         )
         from .signal_analyzer_service import (
             get_dynamic_catalog,
             is_verified_human_artist,
         )
 
-        is_human_artist = is_verified_human_artist(artist_str, title_str)
+        sub_artists = [a.strip() for a in re.split(r"[,&/]|feat\.?|ft\.?|\bx\b", artist_str) if a.strip()]
+        is_human_artist = is_verified_human_artist(artist_str, title_str) or any(
+            is_verified_human_artist(sub, title_str) for sub in sub_artists
+        )
         wl_dist_list, ai_dist_list, ai_artist_regexes = get_dynamic_catalog()
         is_major_exclusive_label = any(w in distributor_str for w in MAJOR_EXCLUSIVE_LABELS)
         is_ai_dist = any(ad in distributor_str for ad in ai_dist_list)
-        if not is_ai_dist:
-            for pat, _ in ai_artist_regexes:
+        
+        # Nhận diện dự án nghệ sĩ ảo / kênh phát hành AI (Tín hiệu mềm cần đối soát âm học)
+        is_ai_artist_project = bool(meta.get("suspected_ai_project"))
+        ai_project_name = meta.get("suspected_ai_project", "")
+        if not is_ai_artist_project:
+            for pat, proj in ai_artist_regexes:
                 if re.search(pat, artist_str.lower()) or re.search(pat, title_str.lower()):
-                    is_ai_dist = True
+                    is_ai_artist_project = True
+                    ai_project_name = proj
                     break
         if (
-            not is_ai_dist
+            not is_ai_artist_project
             and self.track_repo
             and hasattr(self.track_repo, "get_ai_artist_projects")
         ):
@@ -877,14 +889,52 @@ class DetectionService(IDetectionService):
                 for proj in self.track_repo.get_ai_artist_projects():
                     pname = str(proj.get("artist_name", "")).strip().lower()
                     if pname and (pname in artist_str.lower() or pname in title_str.lower()):
-                        is_ai_dist = True
+                        is_ai_artist_project = True
+                        ai_project_name = pname
                         break
             except Exception:
                 pass
 
+        comb_sig = getattr(metrics, "comb_signature_score", 0.0) or 0.0
+        stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
+        phase_coh = getattr(metrics, "phase_coherence_score", 1.0) or 1.0
+        is_clipped = getattr(metrics, "is_clipped_master", False)
+
+        # Ngưỡng thích ứng theo thể loại Phonk / Master Clipping (Phase 2):
+        # Nếu audio bị clipping/mastering nặng, nhiễu hài do méo biên độ có thể đẩy comb_sig giả,
+        # nên yêu cầu comb_sig cao hơn (>= 0.85) hoặc phase_coherence sụt giảm (< 0.60).
+        comb_threshold = 0.85 if is_clipped else 0.78
+
+        # Định nghĩa các ngưỡng vật lý AI rõ nét (Tránh bị Auto-Tune Safeguard nuốt mất)
+        is_heavy_neural_artifact = (
+            comb_sig >= comb_threshold
+            or (phase_coh < 0.55 and comb_sig >= 0.70)
+            or (metrics.fakeprint_score >= 0.55 and stem_bleed_val >= 0.35)
+            or (getattr(metrics, "modern_ai_vocal_suspect", False) and metrics.fakeprint_score >= 0.45)
+        )
+        has_ai_audio_evidence = (
+            metrics.fakeprint_score >= 0.35
+            or comb_sig >= (0.75 if is_clipped else 0.70)
+            or getattr(metrics, "ultrasonic_cutoff_detected", False)
+            or stem_bleed_val >= 0.32
+            or (getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0) >= 0.40
+            or getattr(metrics, "modern_ai_vocal_suspect", False)
+            or phase_coh < 0.60
+        )
+
+        is_autotune = (
+            SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED
+            and (
+                getattr(metrics, "is_studio_autotune", False)
+                or (getattr(metrics, "vocal_formant_variance", 0.0) or 0.0) >= SAFEGUARD_AUTOTUNE_FORMANT_MIN
+                or "studio auto-tuned" in getattr(metrics, "pitch_stability_label", "").lower()
+            )
+        )
+
         # 1. Safeguard Anti-FP (Bảo vệ nhạc người thật khỏi bị vu oan do nén lossy hoặc Auto-Tune)
         if result.is_ai:
             first_reason = (result.reasons[0] if result.reasons else "").lower()
+            all_reasons_str = " ".join((result.reasons or []) + [result.detailed_explanation or ""]).lower()
 
             is_en = (
                 str(language).strip().lower().startswith("en")
@@ -921,7 +971,77 @@ class DetectionService(IDetectionService):
                     result.consensus_verdict = "PROCESSED_HUMAN"
                     return result
 
-            # 1b. Bản thu phái sinh/remix có vocal người thật và chỉ số vật lý sạch
+            is_catalog_or_batch_flag = any(
+                kw in first_reason
+                for kw in [
+                    "phát hành hàng loạt",
+                    "dự án âm nhạc",
+                    "nhà phân phối",
+                    "ai virtual project",
+                    "bài số",
+                ]
+            )
+
+            # 1b. Bảo vệ ca sĩ dùng Auto-Tune phòng thu xác thực (Formant biến thiên tự nhiên)
+            # QUAN TRỌNG: Nếu có chữ ký Fourier Deconvolution Comb cao (>= 78%) hoặc Stem Bleed AI nặng -> KHÔNG hạ cấp!
+            if is_autotune and not is_ai_dist and not is_catalog_or_batch_flag:
+                if is_heavy_neural_artifact:
+                    logger.info(
+                        "Phát hiện chữ ký Neural Comb / Fakeprint AI rõ nét (Comb: %.1f%%, FP: %.1f%%) trên '%s' -> Giữ nguyên kết luận AI.",
+                        comb_sig * 100, metrics.fakeprint_score * 100, track.track_title
+                    )
+                elif metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH:
+                    logger.info(
+                        "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Ca sĩ dùng Auto-Tune phòng thu trên '%s', hạ cấp về PROCESSED_HUMAN.",
+                        track.track_title,
+                    )
+                    result.is_ai = False
+                    result.verdict_type = VerdictType.PROCESSED_HUMAN
+                    result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
+                    formant_val = (getattr(metrics, 'vocal_formant_variance', 0.0) or 0.0)
+                    safeguard_reason = (
+                        f"[BẢO VỆ AUTO-TUNE PHÒNG THU]: Ca sĩ sử dụng kỹ thuật căn chỉnh cao độ số (Auto-Tune / Melodyne) trên nền tảng thanh quản sinh học tự nhiên "
+                        f"(Formant Variance: {formant_val:.1f} Hz²). Không phải giọng hát tạo sinh AI."
+                        if not is_en
+                        else "[STUDIO AUTO-TUNE SAFEGUARD]: Artist uses studio pitch quantization (Auto-Tune/Melodyne) over natural biological vocal tract. Not generative AI voice."
+                    )
+                    result.reasons = [safeguard_reason] + (result.reasons or [])
+                    result.confidence_score = max(0.90, result.confidence_score)
+                    result.suspected_engine = "None"
+                    result.consensus_is_ai = False
+                    result.consensus_verdict = "PROCESSED_HUMAN"
+                    return result
+
+            # 1c. Bản thu có vocal người thật trên beat điện tử / Trap / Phonk / Clipped Master
+            is_vocal_human_suspect_beat = (
+                "vocal là người thật" in first_reason
+                or "vocal là con người" in first_reason
+                or "vocal là người" in first_reason
+                or ("người thật" in all_reasons_str and any(b in all_reasons_str for b in ["beat", "trap", "phonk", "808", "hoà âm"]))
+            )
+            # Bảo vệ Phonk / Clipped Master có giọng thật với phase coherence cao
+            is_clean_phonk_vocal = is_clipped and phase_coh >= 0.75 and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_MODERATE
+            if (is_vocal_human_suspect_beat or is_clean_phonk_vocal) and not is_ai_dist and not is_heavy_neural_artifact and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_STRONG:
+                logger.info(
+                    "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Vocal con người trên beat điện tử/trap '%s', hạ cấp về PROCESSED_HUMAN.",
+                    track.track_title,
+                )
+                result.is_ai = False
+                result.verdict_type = VerdictType.PROCESSED_HUMAN
+                result.verdict_label = "PROCESSED HUMAN (Người làm - Kỹ thuật số)"
+                safeguard_reason = (
+                    "[BẢO VỆ VOCAL CON NGƯỜI]: Giọng hát chính là bản thu thực tế của ca sĩ con người trên nền hòa âm điện tử phòng thu. Không quy kết thành AI."
+                    if not is_en
+                    else "[HUMAN VOCAL SAFEGUARD]: Lead vocal is authentic human performance over digital electronic studio arrangement."
+                )
+                result.reasons = [safeguard_reason] + (result.reasons or [])
+                result.confidence_score = max(0.90, result.confidence_score)
+                result.suspected_engine = "None"
+                result.consensus_is_ai = False
+                result.consensus_verdict = "PROCESSED_HUMAN"
+                return result
+
+            # 1d. Bản thu phái sinh/remix có vocal người thật và chỉ số vật lý sạch
             is_catalog_or_batch_flag = any(
                 kw in first_reason
                 for kw in [
@@ -941,7 +1061,6 @@ class DetectionService(IDetectionService):
             )
 
             is_derivative = is_derivative_or_remix_context(meta)
-            is_vocal_human_suspect_beat = "vocal là người thật" in first_reason
             # QUAN TRỌNG: Không hạ cấp nếu mô hình AI (Gemini) đã xác nhận vocal là do AI tạo sinh (tránh bỏ sót AI trong bản Remix)
             is_vocal_explicit_ai = any(
                 kw in first_reason
@@ -1096,13 +1215,25 @@ class DetectionService(IDetectionService):
                     should_override_to_ai = True
                     if is_en:
                         override_reason = (
-                            f"[AI CATALOG ALERT]: Artist or release '{artist_str or track.artist}' belongs to known AI music project / virtual distributor catalog. "
+                            f"[AI CATALOG ALERT]: Release distributor belongs to known AI distributor catalog. "
                             f"Physical metrics: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
                         )
                     else:
                         override_reason = (
-                            f"[CẢNH BÁO DANH MỤC AI]: Nghệ sĩ hoặc bản phát hành ('{artist_str or track.artist}') thuộc danh mục dự án AI / nhà phân phối ảo. "
+                            f"[CẢNH BÁO DANH MỤC AI]: Bản phát hành thuộc danh mục nhà phân phối AI. "
                             f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
+                        )
+                elif is_ai_artist_project and has_ai_audio_evidence:
+                    should_override_to_ai = True
+                    if is_en:
+                        override_reason = (
+                            f"[AI VIRTUAL PROJECT VERIFIED]: Artist '{artist_str or track.artist}' matches AI virtual project catalog ('{ai_project_name}') "
+                            f"and physical audio confirms AI artifacts (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
+                        )
+                    else:
+                        override_reason = (
+                            f"[DỰ ÁN AI ĐÃ ĐỐI SOÁT ÂM HỌC]: Nghệ sĩ '{artist_str or track.artist}' thuộc dự án âm nhạc AI '{ai_project_name}' "
+                            f"kết hợp bằng chứng âm học vật lý (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
                         )
                 elif is_instrumental_ai:
                     should_override_to_ai = True
@@ -1116,18 +1247,18 @@ class DetectionService(IDetectionService):
                             "[CẢNH BÁO ÂM HỌC NHẠC CỤ AI]: Tần số suy giảm đột ngột và độ cứng cao bất thường "
                             f"(Rolloff: {rolloff:.0f} Hz, Rigidity: {rigidity:.2f}), đặc trưng của mô hình tạo sinh nhạc cụ/ambient."
                         )
-                elif strong_physical_ai:
+                elif strong_physical_ai or comb_sig >= comb_threshold or (phase_coh < 0.55 and comb_sig >= 0.70):
                     should_override_to_ai = True
                     if is_en:
                         override_reason = (
                             "[AI PHYSICAL ACOUSTICS ALERT]: Physical mathematical evidence confirms prominent AI signatures "
-                            f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
+                            f"(Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
                             "Fourier deconvolution fakeprint and intermodulation stem bleed outweigh initial assessment."
                         )
                     else:
                         override_reason = (
                             "[CẢNH BÁO ÂM HỌC VẬT LÝ]: Bằng chứng vật lý toán học xác nhận dấu vết AI vượt trội "
-                            f"(Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
+                            f"(Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
                             "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
                         )
                 elif borderline_ai and not has_human_bio_evidence and not is_major_exclusive_label:
@@ -1142,17 +1273,18 @@ class DetectionService(IDetectionService):
                             "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
                             f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
                         )
+                elif is_autotune and not is_ai_dist and not is_heavy_neural_artifact and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH:
+                    # BẢO VỆ MẠNH CHO AUTO-TUNE PHÒNG THU: Ngăn chặn override sang AI khi không có dấu hiệu nơ-ron nặng
+                    logger.info("Phát hiện Auto-Tune phòng thu mộc trên '%s', bảo lưu phán quyết Người.", track.track_title)
+                    should_override_to_ai = False
                 elif (
                     is_modern_ai_acoustic
                     and not has_human_bio_evidence
                     and not is_human_artist
                     and not is_major_exclusive_label
                 ):
-                    # CHỐNG VU OAN (ANTI-FP): Nếu Gemini đã nghe và phán quyết là giọng ca người thật,
-                    # hiện tượng dải cao sụt giảm và Auto-Tune phòng thu là rất phổ biến trên lossy streaming.
-                    # Chỉ cho phép override khi có thêm bằng chứng vật lý deconvolution (Fakeprint >= 0.38)
-                    # hoặc rò rỉ âm học (Stem Bleed >= 0.28) hoặc trùng danh mục AI.
-                    if metrics.fakeprint_score >= 0.38 or stem_bleed >= 0.28 or is_ai_dist:
+                    # CHỐNG VU OAN: Nếu có bằng chứng vật lý áp đảo hoặc catalog AI -> Nâng cấp AI
+                    if metrics.fakeprint_score >= 0.50 or stem_bleed >= 0.38 or is_ai_dist:
                         should_override_to_ai = True
                         if is_en:
                             override_reason = (
@@ -1168,6 +1300,23 @@ class DetectionService(IDetectionService):
                                 "đặc trưng của mô hình thanh nhạc neural diffusion (Suno/Udio). "
                                 "Phủ quyết nhận định nhầm lẫn ban đầu về thanh quản sinh học."
                             )
+                    elif metrics.fakeprint_score >= 0.30 or stem_bleed >= 0.28:
+                        # Vùng mâu thuẫn tín hiệu -> VÙNG XÁM UNCERTAIN
+                        logger.info("Kích hoạt Trọng tài Hậu kiểm: Mâu thuẫn tín hiệu biên trên '%s', gán nhãn UNCERTAIN.", track.track_title)
+                        result.is_ai = False
+                        result.verdict_type = VerdictType.UNCERTAIN
+                        result.verdict_label = "UNCERTAIN (Chưa thể kết luận - Cần thẩm định)"
+                        uncertain_reason = (
+                            "[CHƯA THỂ KẾT LUẬN]: Dải cao sụt giảm và cao độ phẳng nhưng chưa đủ căn cứ toán học khẳng định AI. Cần chuyên viên thẩm định lại."
+                            if not is_en
+                            else "[UNCERTAIN - REVIEW REQUIRED]: High frequency rolloff and pitch rigidity detected but insufficient mathematical proof of AI. Manual review required."
+                        )
+                        result.reasons = [uncertain_reason] + (result.reasons or [])
+                        result.confidence_score = 0.55
+                        result.suspected_engine = "None"
+                        result.consensus_is_ai = False
+                        result.consensus_verdict = "UNCERTAIN"
+                        return result
 
             if should_override_to_ai:
                 logger.info(
@@ -1181,6 +1330,24 @@ class DetectionService(IDetectionService):
                 if not result.suspected_engine or result.suspected_engine == "None":
                     result.suspected_engine = "Suno/Udio"
                 result.confidence_score = max(0.90, result.confidence_score)
+
+        # 3. Kích hoạt Vùng xám theo dải Confidence Score [UNCERTAIN_CONFIDENCE_MIN, UNCERTAIN_CONFIDENCE_MAX]
+        if UNCERTAIN_CONFIDENCE_MIN <= result.confidence_score <= UNCERTAIN_CONFIDENCE_MAX:
+            if not is_human_artist and not is_ai_dist and not is_major_exclusive_label and result.verdict_type != VerdictType.UNCERTAIN:
+                logger.info(
+                    "Kích hoạt Trọng tài Hậu kiểm: Độ tự tin %.2f rơi vào vùng xám, chuyển về UNCERTAIN.",
+                    result.confidence_score,
+                )
+                result.is_ai = False
+                result.verdict_type = VerdictType.UNCERTAIN
+                result.verdict_label = "UNCERTAIN (Chưa thể kết luận - Cần thẩm định)"
+                uncertain_reason = (
+                    "[CHƯA THỂ KẾT LUẬN]: Độ tin cậy nằm trong vùng phân định xám (48% - 65%). Khuyến nghị chuyên viên nghe lại."
+                    if not is_en
+                    else "[UNCERTAIN - REVIEW REQUIRED]: Confidence score is within the grey zone (48% - 65%). Manual review recommended."
+                )
+                result.reasons = [uncertain_reason] + (result.reasons or [])
+                result.suspected_engine = "None"
 
         result.consensus_is_ai = result.is_ai
         result.consensus_verdict = (

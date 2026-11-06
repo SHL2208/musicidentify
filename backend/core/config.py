@@ -209,6 +209,12 @@ SAFEGUARD_FAKEPRINT_RELIABLE = float(os.getenv("SAFEGUARD_FAKEPRINT_RELIABLE", "
 SAFEGUARD_HUMAN_FAKEPRINT_MAX = float(os.getenv("SAFEGUARD_HUMAN_FAKEPRINT_MAX", "0.25"))
 SAFEGUARD_HUMAN_STEM_BLEED_MAX = float(os.getenv("SAFEGUARD_HUMAN_STEM_BLEED_MAX", "0.25"))
 
+# 4.8. Uncertainty Band & Auto-Tune Protection Configuration
+UNCERTAIN_CONFIDENCE_MIN = float(os.getenv("UNCERTAIN_CONFIDENCE_MIN", "0.48"))
+UNCERTAIN_CONFIDENCE_MAX = float(os.getenv("UNCERTAIN_CONFIDENCE_MAX", "0.65"))
+SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED = os.getenv("SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED", "true").lower() in ("true", "1", "yes")
+SAFEGUARD_AUTOTUNE_FORMANT_MIN = float(os.getenv("SAFEGUARD_AUTOTUNE_FORMANT_MIN", "150000.0"))
+
 # ==============================================================================
 # SECTION 5: HEURISTICS & RULES CONFIGURATION
 # ==============================================================================

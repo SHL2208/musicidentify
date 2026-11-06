@@ -73,6 +73,10 @@ class AcousticMetrics(BaseModel):
         default=0.0,
         description="Điểm vết vân Fourier deconvolution (Deezer ISMIR 2025 algorithm: 0.0 - 1.0)",
     )
+    comb_signature_score: float = Field(
+        default=0.0,
+        description="Chữ ký lược Fourier Deconvolution Comb (ISMIR 2025: 0.0 - 1.0)",
+    )
     fakeprint_detected: bool = Field(
         default=False,
         description="True nếu phát hiện dấu vân răng lược deconvolution đặc trưng của Suno/Udio",
@@ -136,6 +140,22 @@ class AcousticMetrics(BaseModel):
     modern_ai_vocal_suspect: bool = Field(
         default=False,
         description="True nếu xuất hiện tổ hợp dấu hiệu của AI Vocal đời mới (Rolloff < 11.8kHz, Rigidity >= 45%, Harmonic >= 80%)",
+    )
+    phase_coherence_score: float = Field(
+        default=1.0,
+        description="Độ mạch lạc pha dải cao (>6kHz) - Bóc tách Auto-Tune phòng thu (pha ổn định) vs Neural Vocoder (phân tán pha ngẫu nhiên)",
+    )
+    crest_factor_db: float = Field(
+        default=12.0,
+        description="Hệ số đỉnh Crest Factor (dB) = 20*log10(Peak/RMS) - Đo mức độ nén/clipping master",
+    )
+    clipping_ratio: float = Field(
+        default=0.0,
+        description="Tỷ lệ mẫu âm thanh chạm trần biên độ 0 dBFS (0.0 - 1.0) - Đặc trưng thể loại Phonk/Loudness War",
+    )
+    is_clipped_master: bool = Field(
+        default=False,
+        description="True nếu bản thu là Master bị nén/clipping cực đoan (Crest Factor < 7dB và Clipping > 0.5% hoặc Clipping > 1.5%)",
     )
 
 

@@ -275,20 +275,17 @@ class SignalAnalyzerService(ISignalAnalyzer):
             or ""
         ).lower()
 
-        # 3. Các dự án nghệ sĩ ảo / AI sinh hàng loạt đã được nạp 100% từ Database
+        # 3. Các dự án nghệ sĩ ảo / AI sinh hàng loạt:
+        # Không short-circuit trả về AI ngay tại đây để tránh False Positive (vu oan cho bài mộc).
+        # Thay vào đó, gắn cờ nghi vấn vào metadata để Trọng tài Hậu kiểm đối soát âm học vật lý.
         catalog_data = self.catalog_repo.get_catalog_data()
         ai_artist_regexes = catalog_data.get("ai_artists") or []
 
         for pat, proj_name in ai_artist_regexes:
             try:
                 if re.search(pat, artist_lower):
-                    return {
-                        "is_ai": True,
-                        "verdict_type": VerdictType.AI_GENERATED,
-                        "confidence": 0.98,
-                        "engine": "AI Virtual Project",
-                        "reason": f"Dự án âm nhạc '{proj_name}' là sản phẩm phát hành hàng loạt từ mô hình sinh nhạc AI.",
-                    }
+                    metadata["suspected_ai_project"] = proj_name
+                    break
             except Exception:
                 continue
 
@@ -587,6 +584,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 ultrasonic_cutoff=ultrasonic_cutoff,
             )
 
+            # 5d. Phân tích độ mạch lạc pha (Phase Coherence) & Nén Clipping Master (Phase 2)
+            phase_coherence = self._calculate_high_freq_phase_coherence(mono_y, sr)
+            crest_factor_db, clipping_ratio, is_clipped_master = self._calculate_clipping_metrics(mono_y)
+
             # 6. Đánh giá nén truyền tải và vết ngắt tần
             has_cutoff = rolloff_95 < COMPRESSION_LOSSY_ROLLOFF_MAX
             if has_cutoff and not fakeprint_detected:
@@ -621,6 +622,10 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 is_instrumental=is_instrumental,
                 vocal_energy_ratio=vocal_energy_ratio,
                 modern_ai_vocal_suspect=modern_ai_vocal_suspect,
+                phase_coherence_score=phase_coherence,
+                crest_factor_db=crest_factor_db,
+                clipping_ratio=clipping_ratio,
+                is_clipped_master=is_clipped_master,
             )
 
             # 7. Vẽ biểu đồ Forensic 3 tầng
@@ -642,6 +647,58 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 f"Lỗi khi trích xuất thông số âm học từ '{audio_path}': {e}"
             ) from e
 
+    def _calculate_high_freq_phase_coherence(
+        self, y: np.ndarray, sr: int, fmin: float = 6000.0
+    ) -> float:
+        """Tính toán độ mạch lạc pha (Phase Coherence) dải cao (>6kHz).
+        
+        Vocal con người (kể cả qua Auto-Tune/Melodyne) có độ mạch lạc pha cao (>= 0.65).
+        Neural Vocoder (Suno/Udio) bị phân tán pha ngẫu nhiên (Phase Smearing) dải cao (< 0.55).
+        """
+        try:
+            if len(y) < sr:
+                return 1.0
+            n_fft = 2048
+            hop_length = 512
+            D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length)
+            mag, phase = np.abs(D), np.angle(D)
+            
+            freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+            hf_idx = np.where(freqs >= fmin)[0]
+            if len(hf_idx) < 5 or phase.shape[1] < 3:
+                return 1.0
+                
+            hf_phase = phase[hf_idx, :]
+            hf_mag = mag[hf_idx, :]
+            
+            dphase = np.diff(hf_phase, axis=1)
+            d2phase = np.diff(dphase, axis=1)
+            d2phase_wrapped = np.angle(np.exp(1j * d2phase))
+            
+            weights = hf_mag[:, 2:] + 1e-9
+            mean_circ_var = np.average(np.abs(d2phase_wrapped), weights=weights)
+            
+            coherence = max(0.0, min(1.0, 1.0 - (mean_circ_var / (np.pi * 0.75))))
+            return float(round(coherence, 3))
+        except Exception:
+            return 1.0
+
+    def _calculate_clipping_metrics(self, y: np.ndarray) -> tuple[float, float, bool]:
+        """Tính toán hệ số đỉnh Crest Factor và tỷ lệ mẫu chạm trần clipping (Phonk/EDM)."""
+        try:
+            if len(y) == 0:
+                return 12.0, 0.0, False
+            peak = float(np.max(np.abs(y)))
+            rms = float(np.sqrt(np.mean(y**2))) + 1e-9
+            crest_factor_db = float(round(20.0 * np.log10(max(peak, 1e-9) / rms), 2))
+            
+            clipping_samples = int(np.sum(np.abs(y) >= 0.985))
+            clipping_ratio = float(round(clipping_samples / max(len(y), 1), 4))
+            is_clipped_master = bool(clipping_ratio >= 0.015 or (crest_factor_db < 7.0 and clipping_ratio >= 0.005))
+            return crest_factor_db, clipping_ratio, is_clipped_master
+        except Exception:
+            return 12.0, 0.0, False
+
     def _get_tier3_spectrogram_title(self, metrics: AcousticMetrics) -> str:
         """Trả về tiêu đề trung tính khoa học cho Subplot 3 của ảnh phổ."""
         return "TẦNG 3: PHỔ DƯ SAI FOURIER (FOURIER RESIDUAL DECONVOLUTION SPECTRUM)"

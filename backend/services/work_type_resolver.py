@@ -109,21 +109,10 @@ def resolve_work_type_from_metadata(
     a_clean = str(artist or "").strip()
     combined_lower = f"{t_clean} {a_clean}".lower()
     combined_unacc = remove_accents(combined_lower)
+    title_lower = t_clean.lower()
     title_unacc = remove_accents(t_clean)
 
-    # 1. Quy tắc Từ khóa Bắt buộc: REMIX (Ưu tiên cao nhất trên tiêu đề)
-    if REMIX_PATTERN.search(combined_lower) or REMIX_PATTERN.search(combined_unacc):
-        return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
-
-    for r_title in famous_remix_catalog:
-        if remove_accents(r_title) in title_unacc:
-            return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
-
-    # 2. Quy tắc Từ khóa Bắt buộc: COVER (Ưu tiên cao trên tiêu đề)
-    if COVER_KEYWORD_PATTERN.search(combined_lower) or COVER_KEYWORD_PATTERN.search(combined_unacc):
-        return (WorkType.COVER, "COVER (Bản hát lại)", True, None, t_clean)
-
-    # 3. Kiểm tra nhãn trực tiếp từ Song Type trong metadata nếu có
+    # 1. Kiểm tra nhãn trực tiếp từ Song Type trong metadata nếu có (Catalog / Ground Truth)
     direct_song_type = (
         meta.get("song_type")
         or meta.get("Song Type")
@@ -138,6 +127,37 @@ def resolve_work_type_from_metadata(
             return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
         if mapped == "ORIGINAL":
             return (WorkType.ORIGINAL, "ORIGINAL (Tác phẩm chính chủ)", False, a_clean, t_clean)
+
+    # 2. Quy tắc Tiêu đề COVER rõ ràng (Ưu tiên cao hơn Remix khi tiêu đề khẳng định là Cover)
+    # Ví dụ: "Em Chịu Đau Quá Dữ (Cover)" - Chấn Hào, WDM
+    is_title_cover = bool(
+        COVER_KEYWORD_PATTERN.search(title_lower)
+        or COVER_KEYWORD_PATTERN.search(title_unacc)
+    )
+    is_explicit_remix = bool(
+        re.search(
+            r"\b(remix|remake|vinahouse|club\s*mix|drill|nightcore|lofi|lo-fi|slowed|speed\s*up|sped\s*up)\b",
+            title_lower,
+        )
+    )
+    if is_title_cover and not is_explicit_remix:
+        return (WorkType.COVER, "COVER (Bản hát lại)", True, None, t_clean)
+
+    # 3. Quy tắc Từ khóa Bắt buộc: REMIX (trên tiêu đề)
+    if REMIX_PATTERN.search(title_lower) or REMIX_PATTERN.search(title_unacc):
+        return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
+
+    for r_title in famous_remix_catalog:
+        if remove_accents(r_title) in title_unacc:
+            return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
+
+    # 4. Quy tắc Từ khóa: REMIX trên combined (trừ khi tiêu đề là Cover)
+    if (REMIX_PATTERN.search(combined_lower) or REMIX_PATTERN.search(combined_unacc)) and not is_title_cover:
+        return (WorkType.REMIX, "REMIX (Bản phối lại)", False, a_clean, t_clean)
+
+    # 5. Quy tắc Từ khóa Bắt buộc: COVER (trên toàn bộ chuỗi combined)
+    if COVER_KEYWORD_PATTERN.search(combined_lower) or COVER_KEYWORD_PATTERN.search(combined_unacc):
+        return (WorkType.COVER, "COVER (Bản hát lại)", True, None, t_clean)
 
     # 4. Quy tắc Từ khóa: LIVE (Bản thu trực tiếp chính chủ)
     if LIVE_ORIGINAL_PATTERN.search(combined_lower) or LIVE_ORIGINAL_PATTERN.search(combined_unacc):

@@ -48,6 +48,12 @@ class IInputResolver(ABC):
         """Tìm kiếm link và metadata bài hát trên Spotify."""
         return {}
 
+    def parse_spotify_batch_input(
+        self, input_data: str | Path | Any
+    ) -> tuple[list[dict[str, Any]], Any]:
+        """Bóc tách dữ liệu đầu vào cho tra cứu Spotify hàng loạt (text hoặc file .xlsx/.csv/.txt)."""
+        return [], None
+
     def validate_match(
         self,
         target_title: str,

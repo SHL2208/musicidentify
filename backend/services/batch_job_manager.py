@@ -61,6 +61,18 @@ def format_detection_row(r: DetectionResult, stt: int | None = None) -> dict:
         dur_sec = getattr(r.acoustic_metrics, "duration_sec", None)
     dur_str = format_time_duration(dur_sec) if dur_sec and dur_sec > 0 else "-"
 
+    spot_url = getattr(r, "spotify_url", None) or "-"
+    spot_meta = getattr(r, "spotify_metadata", {}) or {}
+    spot_score = spot_meta.get("match_score")
+    if spot_score is not None and isinstance(spot_score, (int, float)) and spot_url != "-":
+        spot_match_str = f"{spot_score * 100:.0f}%"
+    elif spot_url != "-" and "open.spotify.com/track" in spot_url:
+        spot_match_str = "100%"
+    elif spot_url != "-" and "open.spotify.com/search" in spot_url:
+        spot_match_str = "0%"
+    else:
+        spot_match_str = "-"
+
     res_dict = {}
     if stt is not None:
         res_dict["STT"] = stt
@@ -79,6 +91,8 @@ def format_detection_row(r: DetectionResult, stt: int | None = None) -> dict:
             "Mô hình nghi vấn": r.suspected_engine or "N/A",
             "Luận cứ": " | ".join(reasons[:2]) if reasons else "N/A",
             "Nguồn link": r.source_url or "N/A",
+            "Link Spotify": spot_url,
+            "Độ khớp Spotify (%)": spot_match_str,
         }
     )
     return res_dict

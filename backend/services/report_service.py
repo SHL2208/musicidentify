@@ -136,6 +136,18 @@ class ReportService(IReportService):
             if song_type_display in ("None", ""):
                 song_type_display = "N/A"
 
+            spot_url = getattr(r, "spotify_url", None) or "N/A"
+            spot_meta = getattr(r, "spotify_metadata", {}) or {}
+            spot_score = spot_meta.get("match_score")
+            if spot_score is not None and isinstance(spot_score, (int, float)) and spot_url != "N/A":
+                spot_match_str = f"{spot_score * 100:.0f}%"
+            elif spot_url != "N/A" and "open.spotify.com/track" in spot_url:
+                spot_match_str = "100%"
+            elif spot_url != "N/A" and "open.spotify.com/search" in spot_url:
+                spot_match_str = "0%"
+            else:
+                spot_match_str = "N/A"
+
             if r.verdict_type == VerdictType.ERROR:
                 records.append(
                     {
@@ -168,6 +180,8 @@ class ReportService(IReportService):
                         else "Lỗi không xác định",
                         "Giải thích chi tiết": r.detailed_explanation,
                         "Nguồn link": url_str,
+                        "Link Spotify": spot_url,
+                        "Độ khớp Spotify (%)": spot_match_str,
                         "Thời gian quét": r.processed_at,
                     }
                 )
@@ -213,6 +227,8 @@ class ReportService(IReportService):
                         "Luận cứ chính / Chi tiết lỗi": " | ".join(r.reasons),
                         "Giải thích chi tiết": r.detailed_explanation,
                         "Nguồn link": url_str,
+                        "Link Spotify": spot_url,
+                        "Độ khớp Spotify (%)": spot_match_str,
                         "Thời gian quét": r.processed_at,
                     }
                 )
@@ -234,3 +250,71 @@ class ReportService(IReportService):
             return None
         records = self.build_report_records(results)
         return self.report_repo.export_report_bytes(records, format=format)
+
+    def export_spotify_batch_report(
+        self, original_df: Any, results: list[dict[str, Any]], format: str = "xlsx"
+    ) -> bytes:
+        """
+        Ghép nối kết quả tra cứu Spotify vào DataFrame gốc (đối soát 1-1)
+        và xuất ra định dạng bytes (Excel hoặc CSV).
+        """
+        import io
+        import pandas as pd
+        from ..core.utils import clean_excel_text
+
+        spot_rows = []
+        for r in results:
+            score = r.get("match_score", 0.0)
+            score_str = f"{score * 100:.0f}%" if isinstance(score, (int, float)) else "0%"
+            dur = r.get("duration_sec", 0.0)
+            dur_str = f"{int(dur // 60)}m {int(dur % 60):02d}s" if dur > 0 else "-"
+            status_text = "Có 🟢" if r.get("is_found") else (
+                "Link tìm kiếm 🔍"
+                if (r.get("is_search_link") or "open.spotify.com/search" in (r.get("spotify_url") or ""))
+                else "Không ⚪"
+            )
+            spot_rows.append(
+                {
+                    "Spotify Tìm thấy": status_text,
+                    "Link Spotify": r.get("spotify_url") or "N/A",
+                    "Tên bài trên Spotify": r.get("spotify_title") or "N/A",
+                    "Nghệ sĩ trên Spotify": r.get("spotify_artist") or "N/A",
+                    "Album": r.get("spotify_album") or "N/A",
+                    "Ngày phát hành": r.get("spotify_release_date") or "N/A",
+                    "Thời lượng Spotify": dur_str,
+                    "Độ tương đồng": score_str,
+                    "Mã ISRC": r.get("spotify_isrc") or "N/A",
+                    "Độ phổ biến": f"{r.get('popularity', 0)}%",
+                }
+            )
+        spot_df = pd.DataFrame(spot_rows)
+
+        if original_df is not None and isinstance(original_df, pd.DataFrame) and len(original_df) == len(spot_df):
+            merged_df = pd.concat([original_df.reset_index(drop=True), spot_df.reset_index(drop=True)], axis=1)
+        else:
+            input_titles = [r.get("input_query", "") for r in results]
+            input_artists = [r.get("input_artist", "") for r in results]
+            base_df = pd.DataFrame(
+                {
+                    "STT": list(range(1, len(results) + 1)),
+                    "Từ khóa tìm kiếm": input_titles,
+                    "Ca sĩ đầu vào": input_artists,
+                }
+            )
+            merged_df = pd.concat([base_df, spot_df], axis=1)
+
+        if hasattr(merged_df, "map"):
+            merged_df = merged_df.map(clean_excel_text)
+        else:
+            legacy_applymap = getattr(merged_df, "applymap", None)
+            if callable(legacy_applymap):
+                merged_df = legacy_applymap(clean_excel_text)
+
+        if format.lower() == "csv":
+            csv_str = merged_df.to_csv(index=False, encoding="utf-8-sig")
+            return csv_str.encode("utf-8-sig") if isinstance(csv_str, str) else csv_str
+        else:
+            buffer = io.BytesIO()
+            merged_df.to_excel(buffer, index=False, engine="openpyxl")
+            buffer.seek(0)
+            return buffer.getvalue()

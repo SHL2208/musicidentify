@@ -30,13 +30,18 @@ import yt_dlp
 
 
 
-from ..core.config import get_cookie_file_path, get_js_runtimes_config, get_youtube_proxy
+from ..core.config import (
+    ENABLE_SPOTIFY_PRE_SEARCH,
+    get_cookie_file_path,
+    get_js_runtimes_config,
+    get_youtube_proxy,
+)
 
 from ..core.exceptions import InvalidInputException, TrackNotFoundException
-
 from ..core.interfaces.services.resolver_interface import IInputResolver
-
+from ..core.interfaces.services.spotify_service_interface import ISpotifyService
 from ..core.models.entities import InputType, TrackItem
+from .spotify_service import SpotifyService
 
 
 
@@ -356,9 +361,9 @@ class InputResolverService(IInputResolver):
 
 
 
-    def __init__(self) -> None:
-
+    def __init__(self, spotify_service: ISpotifyService | None = None) -> None:
         self._cache: dict[str, TrackItem] = {}
+        self.spotify_service: ISpotifyService = spotify_service or SpotifyService()
 
 
 
@@ -897,61 +902,56 @@ class InputResolverService(IInputResolver):
 
 
     def _fetch_spotify_metadata(self, url: str) -> dict[str, Any]:
-
-        """Trích xuất thông tin bài hát Spotify qua API OEmbed chính thức."""
+        """Trích xuất thông tin bài hát Spotify qua SpotifyService hoặc API OEmbed chính thức."""
+        if hasattr(self, "spotify_service") and self.spotify_service:
+            try:
+                meta = self.spotify_service.get_track_by_url(url)
+                if meta and meta.get("title"):
+                    return {
+                        "id": meta.get("id", ""),
+                        "title": meta.get("title", ""),
+                        "artist": meta.get("artist", ""),
+                        "duration": meta.get("duration_sec", 0.0),
+                        "preview_url": meta.get("preview_url"),
+                        "track_url": meta.get("spotify_url", url),
+                        "cover_url": meta.get("cover_url"),
+                        "album": meta.get("album", ""),
+                        "release_date": meta.get("release_date", ""),
+                        "embed_url": meta.get("embed_url", ""),
+                        "isrc": meta.get("isrc"),
+                    }
+            except Exception as e:
+                logger.debug("Lỗi trích xuất Spotify metadata qua service: %s", e)
 
         api_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(url)}"
-
         req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-
         try:
-
             with urllib.request.urlopen(req, timeout=4) as resp:
-
                 data = json.loads(resp.read().decode("utf-8"))
-
                 title = data.get("title", "")
-
                 artist = ""
-
                 # Oembed title thường có dạng "Title by Artist" hoặc "Title"
-
                 if " by " in title:
-
                     parts = title.split(" by ")
-
                     title = parts[0].strip()
-
                     artist = parts[1].strip()
-
                 return {
-
                     "title": title,
-
                     "artist": artist,
-
                     "duration": 0.0,
-
                     "preview_url": None,
-
+                    "track_url": url,
+                    "cover_url": data.get("thumbnail_url"),
                 }
-
         except Exception as e:  # noqa: BLE001
-
             print(f"[InputResolverService] Lỗi gọi API Spotify OEmbed: {e}")
 
-
-
         return {
-
             "title": url,
-
             "artist": "",
-
             "duration": 0.0,
-
             "preview_url": None,
-
+            "track_url": url,
         }
 
 
@@ -996,51 +996,50 @@ class InputResolverService(IInputResolver):
 
 
 
-    def search_spotify(self, song_name: str) -> dict[str, Any]:
-
-        """Tìm kiếm bài hát trên Spotify (hỗ trợ preview 30s hoặc canonical metadata)."""
-
+    def search_spotify(self, song_name: str, target_artist: str = "") -> dict[str, Any]:
+        """Tìm kiếm bài hát trên Spotify qua SpotifyService hoặc API OEmbed."""
         clean_q = song_name.strip()
-
         if self.is_spotify_url(clean_q):
-
             return self._fetch_spotify_metadata(clean_q)
 
-
+        if hasattr(self, "spotify_service") and self.spotify_service:
+            try:
+                best = self.spotify_service.find_best_match(clean_q, artist=target_artist)
+                if best and (best.get("spotify_url") or best.get("embed_url")):
+                    return {
+                        "id": best.get("id"),
+                        "title": best.get("title") or clean_q,
+                        "artist": best.get("artist") or target_artist,
+                        "duration": best.get("duration_sec") or 0.0,
+                        "preview_url": best.get("preview_url"),
+                        "track_url": best.get("spotify_url"),
+                        "spotify_url": best.get("spotify_url"),
+                        "cover_url": best.get("cover_url"),
+                        "album": best.get("album", ""),
+                        "release_date": best.get("release_date", ""),
+                        "distributor": best.get("distributor", ""),
+                        "isrc": best.get("isrc"),
+                        "embed_url": best.get("embed_url", ""),
+                    }
+            except Exception as e:
+                logger.debug("search_spotify via spotify_service failed: %s", e)
 
         try:
-
             api_url = f"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{urllib.parse.quote(clean_q)}"
-
             req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-
             with urllib.request.urlopen(req, timeout=3) as resp:
-
                 data = json.loads(resp.read().decode("utf-8"))
-
                 title = data.get("title", "")
-
                 if title:
-
                     return {
-
                         "title": title,
-
-                        "artist": "",
-
+                        "artist": target_artist,
                         "duration": 0.0,
-
                         "preview_url": None,
-
                         "track_url": f"https://open.spotify.com/search/{urllib.parse.quote(clean_q)}",
-
                     }
-
         except Exception:  # noqa: BLE001, S110
-
             pass
-
-
 
         return {}
 
@@ -1271,11 +1270,10 @@ class InputResolverService(IInputResolver):
                     platform="spotify_bridge",
 
                     is_verified_match=is_verified,
-
                     match_score=score,
-
                     preview_url=meta.get("preview_url"),
-
+                    spotify_url=meta.get("track_url") or query,
+                    spotify_metadata=meta,
                 )
 
 
@@ -1358,39 +1356,57 @@ class InputResolverService(IInputResolver):
 
 
 
+        # TẦNG 0: Tiền trích xuất & làm sạch siêu dữ liệu qua Spotify (nếu bật ENABLE_SPOTIFY_PRE_SEARCH)
+        spotify_pre_meta = None
+        if ENABLE_SPOTIFY_PRE_SEARCH and hasattr(self, "spotify_service") and self.spotify_service:
+            try:
+                spot_match = self.search_spotify(target_title, target_artist=target_artist)
+                if (
+                    spot_match
+                    and spot_match.get("title")
+                    and not str(spot_match.get("id", "")).startswith("search_fallback")
+                ):
+                    spotify_pre_meta = spot_match
+                    if spot_match.get("title"):
+                        target_title = spot_match["title"]
+                    if spot_match.get("artist") and not target_artist:
+                        target_artist = spot_match["artist"]
+            except Exception as spot_err:
+                pass
+
         # TẦNG 1: Ưu tiên tìm kiếm trên YouTube qua Smart Matcher (kho nhạc lớn nhất, hỗ trợ Stream Slice 45s, không bị khóa VIP)
-
         yt_url, yt_title, yt_dur, yt_verified, yt_score = self.search_youtube(
-
             target_title, target_artist=target_artist
-
         )
 
         if yt_verified and yt_url:
-
-            return TrackItem(
-
+            resolved_track = TrackItem(
                 id=generate_deterministic_track_id(query, input_type, resolved_url=yt_url),
-
                 raw_query=query,
-
                 input_type=input_type,
-
                 resolved_url=yt_url,
-
-                track_title=yt_title or query,
-
-                artist=target_artist or None,
-
+                track_title=(spotify_pre_meta.get("title") if spotify_pre_meta and spotify_pre_meta.get("title") else None) or yt_title or target_title or query,
+                artist=(spotify_pre_meta.get("artist") if spotify_pre_meta and spotify_pre_meta.get("artist") else None) or target_artist or None,
                 duration_sec=yt_dur,
-
                 platform="youtube_search",
-
                 is_verified_match=True,
-
                 match_score=yt_score,
-
             )
+            if spotify_pre_meta:
+                resolved_track.spotify_url = spotify_pre_meta.get("spotify_url") or spotify_pre_meta.get("track_url")
+                resolved_track.spotify_metadata = spotify_pre_meta
+                if spotify_pre_meta.get("release_date") and not resolved_track.release_date:
+                    resolved_track.release_date = spotify_pre_meta.get("release_date")
+                if spotify_pre_meta.get("distributor"):
+                    resolved_track.distributor = spotify_pre_meta.get("distributor")
+                elif spotify_pre_meta.get("album") and not getattr(resolved_track, "distributor", None):
+                    resolved_track.distributor = spotify_pre_meta.get("album")
+                if spotify_pre_meta.get("duration") and not resolved_track.duration_sec:
+                    try:
+                        resolved_track.duration_sec = float(spotify_pre_meta.get("duration", 0.0))
+                    except (ValueError, TypeError):
+                        pass
+            return resolved_track
 
 
 
@@ -1455,11 +1471,10 @@ class InputResolverService(IInputResolver):
                 platform="spotify",
 
                 is_verified_match=True,
-
                 match_score=0.90,
-
                 preview_url=spotify_meta.get("preview_url"),
-
+                spotify_url=spotify_meta.get("track_url"),
+                spotify_metadata=spotify_meta,
             )
 
 
@@ -2027,12 +2042,120 @@ class InputResolverService(IInputResolver):
 
 
         else:
-
             raise InvalidInputException(
-
                 f"Định dạng tệp không được hỗ trợ: {suffix}. Vui lòng dùng .txt, .csv, hoặc .xlsx"
-
             )
+
+    def parse_spotify_batch_input(
+        self, input_data: str | Path | pd.DataFrame
+    ) -> tuple[list[dict[str, Any]], pd.DataFrame | None]:
+        """
+        Bóc tách dữ liệu đầu vào cho tra cứu Spotify hàng loạt (text, DataFrame, hoặc file .xlsx/.csv/.txt).
+        Trả về tuple: (danh sách query dict chuẩn hóa, original_df nếu có).
+        """
+        import re
+
+        # Nếu truyền trực tiếp pd.DataFrame
+        if isinstance(input_data, pd.DataFrame):
+            df = input_data.copy()
+            title_col = None
+            artist_col = None
+            for c in df.columns:
+                c_low = str(c).strip().lower()
+                if not title_col and any(k in c_low for k in ["tên bài", "title", "song", "track", "tên", "query", "từ khóa"]):
+                    title_col = c
+                if not artist_col and any(k in c_low for k in ["ca sĩ", "artist", "nghệ sĩ", "uploader", "singer", "performer"]):
+                    artist_col = c
+
+            if not title_col and len(df.columns) > 0:
+                title_col = df.columns[0]
+            if not artist_col and len(df.columns) > 1:
+                artist_col = df.columns[1]
+
+            items = []
+            for _, row in df.iterrows():
+                t_val = str(row[title_col]).strip() if title_col and pd.notna(row[title_col]) else ""
+                a_val = str(row[artist_col]).strip() if artist_col and pd.notna(row[artist_col]) else ""
+                if t_val and t_val.lower() not in ("nan", "none", ""):
+                    items.append({"query": t_val, "artist": a_val})
+
+            return items, df
+
+        p_obj: Path | None = None
+        if isinstance(input_data, Path):
+            p_obj = input_data
+        elif isinstance(input_data, str) and os.path.isfile(input_data):
+            p_obj = Path(input_data)
+
+        if p_obj and p_obj.exists():
+            suffix = p_obj.suffix.lower()
+            if suffix == ".txt":
+                with open(p_obj, encoding="utf-8") as f:
+                    lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+                items: list[dict[str, Any]] = []
+                for line in lines:
+                    clean_line = re.sub(r"^\s*(?:\d+[\.\)\-:]|\*|-)\s*", "", line).strip()
+                    if not clean_line:
+                        continue
+                    if " - " in clean_line and not clean_line.startswith("http"):
+                        parts = clean_line.split(" - ", 1)
+                        items.append({"query": parts[0].strip(), "artist": parts[1].strip()})
+                    else:
+                        items.append({"query": clean_line, "artist": ""})
+                orig_df = pd.DataFrame(items)
+                return items, orig_df
+
+            # File Excel hoặc CSV
+            if suffix in [".xlsx", ".xls"]:
+                df = pd.read_excel(p_obj)
+            else:
+                try:
+                    df = pd.read_csv(p_obj, encoding="utf-8")
+                except Exception:
+                    df = pd.read_csv(p_obj, encoding="latin-1")
+
+            # Nhận diện cột Title và Artist
+            title_col = None
+            artist_col = None
+            for c in df.columns:
+                c_low = str(c).strip().lower()
+                if not title_col and any(k in c_low for k in ["tên bài", "title", "song", "track", "tên", "query", "từ khóa"]):
+                    title_col = c
+                if not artist_col and any(k in c_low for k in ["ca sĩ", "artist", "nghệ sĩ", "uploader", "singer", "performer"]):
+                    artist_col = c
+
+            # Fallback nếu không có tên cột khớp: lấy cột đầu tiên làm title, cột thứ 2 làm artist (nếu có)
+            if not title_col and len(df.columns) > 0:
+                title_col = df.columns[0]
+            if not artist_col and len(df.columns) > 1:
+                artist_col = df.columns[1]
+
+            items = []
+            for _, row in df.iterrows():
+                t_val = str(row[title_col]).strip() if title_col and pd.notna(row[title_col]) else ""
+                a_val = str(row[artist_col]).strip() if artist_col and pd.notna(row[artist_col]) else ""
+                # Bỏ qua dòng trống
+                if t_val and t_val.lower() not in ("nan", "none", ""):
+                    items.append({"query": t_val, "artist": a_val})
+
+            return items, df
+
+        # Xử lý chuỗi text nhập vào từ TextArea
+        text_str = str(input_data).strip()
+        lines = [line.strip() for line in text_str.split("\n") if line.strip() and not line.startswith("#")]
+        items = []
+        for line in lines:
+            clean_line = re.sub(r"^\s*(?:\d+[\.\)\-:]|\*|-)\s*", "", line).strip()
+            if not clean_line:
+                continue
+            if " - " in clean_line and not clean_line.startswith("http"):
+                parts = clean_line.split(" - ", 1)
+                items.append({"query": parts[0].strip(), "artist": parts[1].strip()})
+            else:
+                items.append({"query": clean_line, "artist": ""})
+
+        orig_df = pd.DataFrame(items) if items else None
+        return items, orig_df
 
 
 

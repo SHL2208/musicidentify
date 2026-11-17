@@ -10,6 +10,7 @@ import streamlit as st
 
 from backend.core.config import TEMP_DIR
 from frontend.components.batch_view import render_batch_view
+from frontend.components.spotify_view import render_spotify_view
 
 # UI Components
 from frontend.components.header import render_header
@@ -53,10 +54,11 @@ def main():
     )
 
     # Tabs
-    tab1, tab2 = st.tabs(
+    tab1, tab2, tab3 = st.tabs(
         [
             "🔍 Thẩm định Đơn bài (Single Track)",
             "📁 Quét Hàng loạt (Batch Mode)",
+            "🎧 Tra cứu Spotify (Spotify Search)",
         ]
     )
 
@@ -273,6 +275,10 @@ def main():
     # TAB 2: BATCH SCAN
     with tab2:
         render_batch_view(client)
+
+    # TAB 3: SPOTIFY SEARCH
+    with tab3:
+        render_spotify_view(client)
 
 
 if __name__ == "__main__":

@@ -17,8 +17,10 @@ Cách dùng:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -38,6 +40,8 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8")
     except Exception:  # noqa: BLE001, S110
         pass
+
+from backend.core.config import BENCHMARK_WORKERS
 
 import matplotlib
 
@@ -758,6 +762,7 @@ def run_benchmark(
     mock_accuracy: float = 0.70,
     allow_replenish: bool = True,
     max_replacements: int | None = None,
+    workers: int = 1,
 ) -> dict[str, Any]:
     """
     Thực hiện thẩm định toàn bộ mẫu và tính toán các chỉ số độ chính xác.
@@ -865,25 +870,17 @@ def run_benchmark(
         if max_replacements is None:
             max_replacements = target_successful
 
-        i = 0
-        while i < len(evaluation_queue):
-            success_count = sum(1 for r in results if r.get("prediction") not in ("ERROR", "LỖI"))
-            if success_count >= target_successful:
-                print(
-                    f"\n🎉 [HOÀN THÀNH] Đã thẩm định thành công đủ mục tiêu {target_successful} bài hát! Dừng hàng đợi."
-                )
-                break
+        print_lock = threading.Lock()
 
-            if i >= len(evaluation_queue):
-                break
-
-            item = evaluation_queue[i]
-            i += 1
+        def _evaluate_item_logic(item: dict[str, Any], curr_i: int) -> dict[str, Any] | None:
+            nonlocal tp, tn, fp, fn, errors, unverified_matches
             gt = item["gt_label"]
             query = item["query"]
-            print(
-                f"\n[{i}/{len(evaluation_queue)}] [Thành công: {success_count}/{target_successful} | Lỗi: {errors}] Thẩm định: '{query}' | Ground Truth: {gt}"
-            )
+            with print_lock:
+                success_count = sum(1 for r in results if r.get("prediction") not in ("ERROR", "LỖI"))
+                print(
+                    f"\n[{curr_i}/{len(evaluation_queue)}] [Thành công: {success_count}/{target_successful} | Lỗi: {errors}] Thẩm định: '{query}' | Ground Truth: {gt}"
+                )
 
             track: TrackItem | None = None
             try:
@@ -894,7 +891,7 @@ def run_benchmark(
                 except TypeError:
                     track = resolver.resolve_track(item["title"], artist=item.get("artist", ""))
 
-                track.song_type = item.get("song_type") or ""
+                track.song_type = None  # Không nạp trước Ground Truth để đảm bảo tính khách quan
                 track.release_date = str(item.get("release_date") or "")
                 track.distributor = str(item.get("distributor") or "")
                 try:
@@ -907,7 +904,8 @@ def run_benchmark(
                 # Đọc lại trạng thái xác thực nguồn sau khi audio_engine đã chạy và xử lý fallback
                 is_verified = track.is_verified_match is not False
                 if not is_verified or (track.match_score is not None and track.match_score < 0.70):
-                    unverified_matches += 1
+                    with print_lock:
+                        unverified_matches += 1
                     score_pct = (
                         f"{track.match_score * 100:.1f}%"
                         if track.match_score is not None
@@ -930,11 +928,28 @@ def run_benchmark(
                     if hasattr(raw_w_type, "value")
                     else (str(raw_w_type) if raw_w_type else "UNCERTAIN")
                 )
+                # Bóc tách hoàn toàn nhãn kiểm thử (Ground Truth) để tránh Data Leakage
+                clean_metadata = {
+                    k: v
+                    for k, v in item.items()
+                    if k
+                    not in (
+                        "song_type",
+                        "Song Type",
+                        "work_type",
+                        "Work Type",
+                        "gt_work_type",
+                        "AI YES",
+                        "NOTE",
+                        "gt_is_ai",
+                        "gt_label",
+                    )
+                }
                 resolved_w, resolved_label, is_cov, orig_a, orig_t = (
                     resolve_work_type_from_metadata(
                         title=item.get("title") or track.track_title or track.raw_query,
                         artist=item.get("artist") or track.artist or "",
-                        metadata=item,
+                        metadata=clean_metadata,
                         raw_gemini_work_type=pred_work_raw,
                     )
                 )
@@ -948,23 +963,16 @@ def run_benchmark(
                     res.original_song_title = orig_t
 
                 work_is_correct = (pred_work == gt_work) if gt_work != "UNCERTAIN" else None
-                if gt_work != "UNCERTAIN":
-                    y_true_work.append(gt_work)
-                    y_pred_work.append(pred_work)
 
                 # Phân loại Confusion Matrix
                 if item["gt_is_ai"] and pred_is_ai:
                     metric_type = "TP (Đúng: Phát hiện AI)"
-                    tp += 1
                 elif not item["gt_is_ai"] and not pred_is_ai:
                     metric_type = "TN (Đúng: Xác nhận Người)"
-                    tn += 1
                 elif not item["gt_is_ai"] and pred_is_ai:
                     metric_type = "FP (Sai: Vu oan nhạc người)"
-                    fp += 1
                 else:
                     metric_type = "FN (Sai: Bỏ sót nhạc AI)"
-                    fn += 1
 
                 icon = "✅" if is_correct else "❌"
                 match_status_text = "ĐÃ XÁC THỰC" if is_verified else "SAI LỆCH (UNVERIFIED)"
@@ -980,150 +988,232 @@ def run_benchmark(
                 work_icon = (
                     "💿" if pred_work == "ORIGINAL" else ("🎙️" if pred_work == "COVER" else "🎛️")
                 )
-                print(
-                    f"       -> Model AI: {ai_verdict_str} | Tổng hợp: {consensus_str} ({res.verdict_label}) | {icon} {metric_type}"
-                )
-                print(
-                    f"       -> Tác phẩm: {work_icon} {getattr(res, 'work_label', pred_work)} (Thực tế: {gt_work})"
-                )
-                print(
-                    f"       -> Nguồn audio: {match_status_text} | Độ tin cậy: {res.confidence_score * 100:.1f}%"
-                )
-                print(f"       -> Lý do: {res.reasons[0] if res.reasons else 'N/A'}")
 
-                results.append(
-                    {
-                        "media_id": item["media_id"],
-                        "song_title": item["title"],
-                        "artist": item["artist"],
-                        "query": query,
-                        "ground_truth": gt,
-                        "gt_work_type": gt_work,
-                        "pred_work_type": pred_work,
-                        "work_is_correct": "ĐÚNG"
-                        if work_is_correct is True
-                        else ("SAI" if work_is_correct is False else "N/A"),
-                        "work_label": getattr(res, "work_label", "Chưa rõ tác phẩm"),
-                        "original_artist": getattr(res, "original_artist", "") or "N/A",
-                        "original_song_title": getattr(res, "original_song_title", "") or "N/A",
-                        "is_cover": getattr(res, "is_cover", False),
-                        "ai_model_prediction": ai_pred_label,
-                        "ai_model_verdict": ai_verdict_str,
-                        "ai_model_is_correct": ai_is_correct,
-                        "consensus_prediction": pred_label,
-                        "consensus_verdict": consensus_str,
-                        "prediction": pred_label,
-                        "is_correct": "ĐÚNG" if is_correct else "SAI",
-                        "classification_type": metric_type,
-                        "is_verified_source": is_verified,
-                        "source_verification": match_status_text,
-                        "match_score": (
-                            f"{track.match_score * 100:.1f}%"
-                            if track.match_score is not None
-                            else "N/A"
-                        ),
-                        "verdict_type": (
-                            res.verdict_type.value
-                            if hasattr(res.verdict_type, "value")
-                            else str(res.verdict_type)
-                        ),
-                        "verdict_label": res.verdict_label,
-                        "confidence_score": f"{res.confidence_score * 100:.1f}%",
-                        "suspected_engine": res.suspected_engine,
-                        "source_url": (res.source_url or getattr(track, "resolved_url", "") or ""),
-                        "reasons": " | ".join(res.reasons or []),
-                        "error": "",
-                    }
-                )
+                rec = {
+                    "media_id": item["media_id"],
+                    "song_title": item["title"],
+                    "artist": item["artist"],
+                    "query": query,
+                    "ground_truth": gt,
+                    "gt_work_type": gt_work,
+                    "pred_work_type": pred_work,
+                    "work_is_correct": "ĐÚNG"
+                    if work_is_correct is True
+                    else ("SAI" if work_is_correct is False else "N/A"),
+                    "work_label": getattr(res, "work_label", "Chưa rõ tác phẩm"),
+                    "original_artist": getattr(res, "original_artist", "") or "N/A",
+                    "original_song_title": getattr(res, "original_song_title", "") or "N/A",
+                    "is_cover": getattr(res, "is_cover", False),
+                    "ai_model_prediction": ai_pred_label,
+                    "ai_model_verdict": ai_verdict_str,
+                    "ai_model_is_correct": ai_is_correct,
+                    "consensus_prediction": pred_label,
+                    "consensus_verdict": consensus_str,
+                    "prediction": pred_label,
+                    "is_correct": "ĐÚNG" if is_correct else "SAI",
+                    "classification_type": metric_type,
+                    "is_verified_source": is_verified,
+                    "source_verification": match_status_text,
+                    "match_score": (
+                        f"{track.match_score * 100:.1f}%"
+                        if track.match_score is not None
+                        else "N/A"
+                    ),
+                    "verdict_type": (
+                        res.verdict_type.value
+                        if hasattr(res.verdict_type, "value")
+                        else str(res.verdict_type)
+                    ),
+                    "verdict_label": res.verdict_label,
+                    "confidence_score": f"{res.confidence_score * 100:.1f}%",
+                    "suspected_engine": res.suspected_engine,
+                    "source_url": (res.source_url or getattr(track, "resolved_url", "") or ""),
+                    "reasons": " | ".join(res.reasons or []),
+                    "error": "",
+                }
 
-            except Exception as e:  # noqa: BLE001
-                errors += 1
-                print(f"       -> ❌ LỖI XỬ LÝ NGUỒN: {e}")
-
-                # Tìm mẫu thay thế cùng nhãn từ dataset dự phòng (chọn ngẫu nhiên tránh lệch mẫu)
-                replacement: dict[str, Any] | None = None
-                replenish_status = ""
-
-                if not allow_replenish:
-                    replenish_status = "Chế độ --no-replenish đang bật (không nạp bù)"
-                elif not dataset:
-                    replenish_status = "Không có dataset dự phòng để nạp bù"
-                elif success_count >= target_successful:
-                    replenish_status = f"Đã đạt đủ mục tiêu {target_successful} bài thành công"
-                elif errors > max_replacements:
-                    replenish_status = f"Đã đạt giới hạn nạp bù an toàn tối đa ({max_replacements} bài)"
-                else:
-                    candidates_pool = [
-                        cand
-                        for cand in dataset
-                        if (
-                            cand.get("gt_is_ai") == item.get("gt_is_ai")
-                            and cand.get("media_id") not in attempted_ids
-                        )
-                    ]
-                    if candidates_pool:
-                        replacement = random.choice(candidates_pool)
-                        attempted_ids.add(replacement["media_id"])
-                        evaluation_queue.append(replacement)
+                with print_lock:
+                    if item["gt_is_ai"] and pred_is_ai:
+                        tp += 1
+                    elif not item["gt_is_ai"] and not pred_is_ai:
+                        tn += 1
+                    elif not item["gt_is_ai"] and pred_is_ai:
+                        fp += 1
                     else:
-                        replenish_status = f"Hết bài dự phòng cùng nhãn {gt} trong dataset"
+                        fn += 1
 
-                # Ghi nhận sự cố vào error_records
-                error_records.append(
-                    {
-                        "Mã bài lỗi (Media ID)": item.get("media_id", ""),
-                        "Tên bài lỗi (Song Title)": item.get("title", ""),
-                        "Ca sĩ (Artist)": item.get("artist", ""),
-                        "Nhãn thực tế (Ground Truth)": gt,
-                        "Nguyên nhân sự cố (Error)": str(e),
-                        "Bài nạp bù thay thế (Replacement)": (
-                            replacement["query"] if replacement else f"Không nạp bù ({replenish_status})"
-                        ),
-                        "Thời điểm ghi nhận": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                )
+                    if gt_work != "UNCERTAIN":
+                        y_true_work.append(gt_work)
+                        y_pred_work.append(pred_work)
 
-                if replacement:
+                    results.append(rec)
                     print(
-                        f"       -> 🔄 ĐÃ NẠP BÙ MẪU THAY THẾ: '{replacement['query']}' (cùng nhãn {gt} | Hàng đợi: {len(evaluation_queue)} bài)"
+                        f"       -> Model AI: {ai_verdict_str} | Tổng hợp: {consensus_str} ({res.verdict_label}) | {icon} {metric_type}"
                     )
-                else:
-                    print(f"       -> ⚠️ {replenish_status} (ghi nhận 1 lỗi vào báo cáo)")
-                    # Chỉ ghi nhận vào results nếu KHÔNG nạp bù để tránh tính lỗi thành thành công
-                    results.append(
+                    print(
+                        f"       -> Tác phẩm: {work_icon} {getattr(res, 'work_label', pred_work)} (Thực tế: {gt_work})"
+                    )
+                    print(
+                        f"       -> Nguồn audio: {match_status_text} | Độ tin cậy: {res.confidence_score * 100:.1f}%"
+                    )
+                    print(f"       -> Lý do: {res.reasons[0] if res.reasons else 'N/A'}")
+
+                return None
+
+            except Exception as e:
+                with print_lock:
+                    errors += 1
+                    print(f"       -> ❌ LỖI XỬ LÝ NGUỒN: {e}")
+
+                    replacement = None
+                    replenish_status = ""
+                    curr_success = sum(1 for r in results if r.get("prediction") not in ("ERROR", "LỖI"))
+
+                    if not allow_replenish:
+                        replenish_status = "Chế độ --no-replenish đang bật (không nạp bù)"
+                    elif not dataset:
+                        replenish_status = "Không có dataset dự phòng để nạp bù"
+                    elif curr_success >= target_successful:
+                        replenish_status = f"Đã đạt đủ mục tiêu {target_successful} bài thành công"
+                    elif errors > max_replacements:
+                        replenish_status = f"Đã đạt giới hạn nạp bù an toàn tối đa ({max_replacements} bài)"
+                    else:
+                        candidates_pool = [
+                            cand
+                            for cand in dataset
+                            if (
+                                cand.get("gt_is_ai") == item.get("gt_is_ai")
+                                and cand.get("media_id") not in attempted_ids
+                            )
+                        ]
+                        if candidates_pool:
+                            replacement = random.choice(candidates_pool)
+                            attempted_ids.add(replacement["media_id"])
+                        else:
+                            replenish_status = f"Hết bài dự phòng cùng nhãn {gt} trong dataset"
+
+                    error_records.append(
                         {
-                            "media_id": item["media_id"],
-                            "song_title": item["title"],
-                            "artist": item["artist"],
-                            "query": query,
-                            "ground_truth": gt,
-                            "ai_model_prediction": "ERROR",
-                            "ai_model_verdict": "ERROR",
-                            "ai_model_is_correct": "LỖI",
-                            "consensus_prediction": "ERROR",
-                            "consensus_verdict": "ERROR",
-                            "prediction": "ERROR",
-                            "is_correct": "LỖI",
-                            "classification_type": "ERROR",
-                            "is_verified_source": False,
-                            "source_verification": "LỖI",
-                            "match_score": "0%",
-                            "verdict_type": "ERROR",
-                            "verdict_label": "LỖI HỆ THỐNG",
-                            "confidence_score": "0%",
-                            "suspected_engine": "N/A",
-                            "source_url": (
-                                getattr(track, "resolved_url", "")
-                                if track and getattr(track, "resolved_url", None)
-                                else ""
+                            "Mã bài lỗi (Media ID)": item.get("media_id", ""),
+                            "Tên bài lỗi (Song Title)": item.get("title", ""),
+                            "Ca sĩ (Artist)": item.get("artist", ""),
+                            "Nhãn thực tế (Ground Truth)": gt,
+                            "Nguyên nhân sự cố (Error)": str(e),
+                            "Bài nạp bù thay thế (Replacement)": (
+                                replacement["query"] if replacement else f"Không nạp bù ({replenish_status})"
                             ),
-                            "reasons": str(e),
-                            "error": str(e),
+                            "Thời điểm ghi nhận": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         }
                     )
 
-            if i < len(evaluation_queue):
-                time.sleep(2.5)
+                    if replacement:
+                        print(
+                            f"       -> 🔄 ĐÃ NẠP BÙ MẪU THAY THẾ: '{replacement['query']}' (cùng nhãn {gt} | Hàng đợi: {len(evaluation_queue)} bài)"
+                        )
+                    else:
+                        print(f"       -> ⚠️ {replenish_status} (ghi nhận 1 lỗi vào báo cáo)")
+                        results.append(
+                            {
+                                "media_id": item["media_id"],
+                                "song_title": item["title"],
+                                "artist": item["artist"],
+                                "query": query,
+                                "ground_truth": gt,
+                                "ai_model_prediction": "ERROR",
+                                "ai_model_verdict": "ERROR",
+                                "ai_model_is_correct": "LỖI",
+                                "consensus_prediction": "ERROR",
+                                "consensus_verdict": "ERROR",
+                                "prediction": "ERROR",
+                                "is_correct": "LỖI",
+                                "classification_type": "ERROR",
+                                "is_verified_source": False,
+                                "source_verification": "LỖI",
+                                "match_score": "0%",
+                                "verdict_type": "ERROR",
+                                "verdict_label": "LỖI HỆ THỐNG",
+                                "confidence_score": "0%",
+                                "suspected_engine": "N/A",
+                                "source_url": (
+                                    getattr(track, "resolved_url", "")
+                                    if track and getattr(track, "resolved_url", None)
+                                    else ""
+                                ),
+                                "reasons": str(e),
+                                "error": str(e),
+                            }
+                        )
+                return replacement
+
+        if workers > 1:
+            active_workers = max(1, min(workers, 16))
+            print("=" * 75)
+            print(
+                f"🚀 BẮT ĐẦU CHẤM ĐIỂM TESTCASE ĐA LUỒNG (MỤC TIÊU: {len(samples)} BÀI HÁT THÀNH CÔNG | WORKERS: {active_workers})"
+            )
+            print("=" * 75)
+
+            queue_idx = 0
+            with ThreadPoolExecutor(max_workers=active_workers) as executor:
+                futures = {}
+                for itm in evaluation_queue:
+                    queue_idx += 1
+                    futures[executor.submit(_evaluate_item_logic, itm, queue_idx)] = itm
+
+                while futures:
+                    done_set = []
+                    for fut in as_completed(futures):
+                        done_set.append(fut)
+                        try:
+                            repl = fut.result()
+                            with print_lock:
+                                curr_succ = sum(
+                                    1 for r in results if r.get("prediction") not in ("ERROR", "LỖI")
+                                )
+                                if repl and curr_succ < target_successful:
+                                    queue_idx += 1
+                                    evaluation_queue.append(repl)
+                                    new_f = executor.submit(_evaluate_item_logic, repl, queue_idx)
+                                    futures[new_f] = repl
+                        except Exception:
+                            pass
+                        with print_lock:
+                            curr_succ = sum(
+                                1 for r in results if r.get("prediction") not in ("ERROR", "LỖI")
+                            )
+                            if curr_succ >= target_successful:
+                                break
+                    for df in done_set:
+                        futures.pop(df, None)
+                    with print_lock:
+                        curr_succ = sum(
+                            1 for r in results if r.get("prediction") not in ("ERROR", "LỖI")
+                        )
+                        if curr_succ >= target_successful:
+                            for f in futures:
+                                f.cancel()
+                            break
+        else:
+            i = 0
+            while i < len(evaluation_queue):
+                success_count = sum(1 for r in results if r.get("prediction") not in ("ERROR", "LỖI"))
+                if success_count >= target_successful:
+                    print(
+                        f"\n🎉 [HOÀN THÀNH] Đã thẩm định thành công đủ mục tiêu {target_successful} bài hát! Dừng hàng đợi."
+                    )
+                    break
+
+                if i >= len(evaluation_queue):
+                    break
+
+                item = evaluation_queue[i]
+                i += 1
+                repl = _evaluate_item_logic(item, i)
+                if repl:
+                    evaluation_queue.append(repl)
+
+                if i < len(evaluation_queue):
+                    time.sleep(2.5)
 
     # Tính toán các chỉ số
     evaluated_total = tp + tn + fp + fn
@@ -1495,6 +1585,12 @@ def main():
         action="store_true",
         help="Không nạp bù bài hát khi gặp lỗi (chỉ đánh giá đúng số lượng bài mẫu ban đầu)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=BENCHMARK_WORKERS,
+        help=f"Số luồng chạy đồng thời (mặc định: {BENCHMARK_WORKERS})",
+    )
 
     args = parser.parse_args()
 
@@ -1548,6 +1644,7 @@ def main():
         mock_mode=args.mock,
         mock_accuracy=args.mock_acc,
         allow_replenish=not args.no_replenish,
+        workers=args.workers,
     )
     metrics = benchmark_data["metrics"]
     results = benchmark_data["results"]

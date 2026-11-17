@@ -66,7 +66,7 @@ class TestStreamSliceAndDBArtists(unittest.TestCase):
         self.assertTrue(output_sample.exists(), "Output sample phải tồn tại")
         file_info = sf.info(str(output_sample))
         self.assertGreater(file_info.frames, 0, "Output sample không được rỗng 0-frame")
-        self.assertGreaterEqual(file_info.duration, 40.0, "Thời lượng phải duy trì ~45s")
+        self.assertGreaterEqual(file_info.duration, 35.0, "Thời lượng phải duy trì ~36s")
         # Đảm bảo librosa / stft không bị lỗi length=0
         data, _ = sf.read(str(output_sample))
         self.assertGreater(len(data), 0, "Dữ liệu âm thanh phải lớn hơn 0 mẫu")

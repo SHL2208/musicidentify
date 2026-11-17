@@ -143,6 +143,28 @@ class TestBenchmarkWorkType(unittest.TestCase):
         sheet_text = [str(row[0]) for row in summary_sheet.iter_rows(values_only=True)]
         self.assertTrue(any("Độ chính xác Tác phẩm" in t for t in sheet_text))
 
+    def test_remix_pattern_new_tokens(self) -> None:
+        """Kiểm tra các token mở rộng của REMIX_PATTERN: liên khúc, mix, remastered, deep house, latin dance."""
+        from backend.core.models.entities import WorkType
+        from backend.services.work_type_resolver import resolve_work_type_from_metadata
+
+        test_cases = [
+            ("Liên Khúc Mới Nhất Con Phải Tha Phương", "Lưu Hoài Nam", WorkType.REMIX),
+            ("Liên Khúc Bolero Đừng Buồn Mẹ Ơi - Căn Nhà Ngoại Ô", "Ánh Như", WorkType.REMIX),
+            ("Happy Birthday - Party Celebration Mix", "Birthday Studio", WorkType.REMIX),
+            ("Ngẩn Ngơ Giữa Ngân Hà (Deep House #2)", "THIÊN ĐÌNH", WorkType.REMIX),
+            ("Vé một chiều (2025 Remastered)", "Dương Trường Giang, Khả Linh", WorkType.REMIX),
+            ("The Greatest Games (WC 26) - Latin Dance", "Goal Vibes", WorkType.REMIX),
+        ]
+
+        for title, artist, expected_wt in test_cases:
+            w_type, _, _, _, _ = resolve_work_type_from_metadata(title=title, artist=artist)
+            self.assertEqual(
+                w_type,
+                expected_wt,
+                f"Bài '{title}' của '{artist}' phải được phân loại là {expected_wt}, nhưng nhận được {w_type}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

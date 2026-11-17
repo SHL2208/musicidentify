@@ -15,9 +15,12 @@ from ..services.batch_service import BatchService
 from ..services.detection_service import DetectionService
 from ..services.fakeprint_detector_service import FakeprintDetectorService
 from ..services.gemini_classifier_service import GeminiClassifierService
+from ..services.local_llm_classifier_service import LocalLLMClassifierService
+from ..services.routing_classifier_service import RoutingClassifierService
 from ..services.report_service import ReportService
 from ..services.resolver_service import InputResolverService
 from ..services.signal_analyzer_service import SignalAnalyzerService
+from ..services.spotify_service import SpotifyService
 
 # Core Configurations
 from .config import (
@@ -25,8 +28,13 @@ from .config import (
     DEFAULT_GEMINI_MODEL,
     GEMINI_API_KEYS,
     GEMINI_FALLBACK_MODELS,
+    LOCAL_DEFAULT_MODEL,
+    LOCAL_FALLBACK_MODELS,
+    LOCAL_MODEL_API_KEY,
+    LOCAL_MODEL_BASE_URL,
     OUTPUT_DIR,
     TEMP_DIR,
+    USE_LOCAL_MODEL,
     get_ffmpeg_binary,
 )
 from .database import is_database_available
@@ -44,6 +52,7 @@ from .interfaces.services.fakeprint_detector_interface import IFakeprintDetector
 from .interfaces.services.report_service_interface import IReportService
 from .interfaces.services.resolver_interface import IInputResolver
 from .interfaces.services.signal_analyzer_interface import ISignalAnalyzer
+from .interfaces.services.spotify_service_interface import ISpotifyService
 
 
 class AppContainer:
@@ -85,12 +94,33 @@ class AppContainer:
             storage_repo=self.storage_repository,
             catalog_repo=self.catalog_repository,
         )
-        self.classifier: IAIClassifier = custom_classifier or GeminiClassifierService(
-            api_keys=api_keys or GEMINI_API_KEYS,
-            model_name=default_model or DEFAULT_GEMINI_MODEL,
-            fallback_models=fallback_models or GEMINI_FALLBACK_MODELS,
-        )
-        self.resolver: IInputResolver = InputResolverService()
+        if custom_classifier:
+            self.classifier: IAIClassifier = custom_classifier
+        else:
+            cloud_classifier = GeminiClassifierService(
+                api_keys=api_keys or GEMINI_API_KEYS,
+                model_name=default_model or DEFAULT_GEMINI_MODEL,
+                fallback_models=fallback_models or GEMINI_FALLBACK_MODELS,
+            )
+            local_classifier = None
+            if LOCAL_MODEL_BASE_URL and (LOCAL_MODEL_API_KEY or USE_LOCAL_MODEL):
+                local_classifier = LocalLLMClassifierService(
+                    base_url=LOCAL_MODEL_BASE_URL,
+                    api_key=LOCAL_MODEL_API_KEY,
+                    model_name=default_model if (default_model and "/" in default_model) else LOCAL_DEFAULT_MODEL,
+                    fallback_models=LOCAL_FALLBACK_MODELS,
+                )
+
+            if local_classifier:
+                self.classifier: IAIClassifier = RoutingClassifierService(
+                    local_classifier=local_classifier,
+                    cloud_classifier=cloud_classifier,
+                    use_local_default=USE_LOCAL_MODEL,
+                )
+            else:
+                self.classifier: IAIClassifier = cloud_classifier
+        self.spotify_service: ISpotifyService = SpotifyService()
+        self.resolver: IInputResolver = InputResolverService(spotify_service=self.spotify_service)
         self.report_service: IReportService = ReportService(report_repo=self.report_repository)
         self.detection_service: IDetectionService = DetectionService(
             audio_engine=self.audio_engine,
@@ -98,6 +128,7 @@ class AppContainer:
             classifier=self.classifier,
             resolver=self.resolver,
             track_repo=self.track_repository,
+            spotify_service=self.spotify_service,
         )
         self.batch_service: IBatchService = BatchService(
             detection_service=self.detection_service,
@@ -111,6 +142,7 @@ class AppContainer:
             detection_service=self.detection_service,
             resolver=self.resolver,
             track_repo=self.track_repository,
+            spotify_service=self.spotify_service,
         )
         self.batch_controller: BatchController = BatchController(
             batch_service=self.batch_service, resolver=self.resolver

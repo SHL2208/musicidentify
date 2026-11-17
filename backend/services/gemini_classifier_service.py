@@ -15,8 +15,11 @@ warnings.filterwarnings("ignore", message=".*automatic function calling.*")
 from pydantic import BaseModel, Field
 
 from ..core.config import (
+    ATTACH_SPECTROGRAM_TO_LLM,
     DEFAULT_GEMINI_MODEL,
     ENABLE_CASCADED_EVALUATION,
+    FLASH_LITE_CHORUS_DURATION_SEC,
+    FLASH_LITE_CHORUS_START_SEC,
     GEMINI_API_KEYS,
     GEMINI_FALLBACK_MODELS,
     get_ffmpeg_binary,
@@ -44,7 +47,7 @@ def is_derivative_or_remix_context(metadata: dict[str, Any] | None) -> bool:
     song_type = str(metadata.get("song_type") or "").strip().lower()
     title_text = f"{metadata.get('title', '')} {metadata.get('target_title', '')} {metadata.get('raw_query', '')}".strip().lower()
 
-    pattern = r"\b(remix|remake|slowed|speed\s*up|sped\s*up|lofi|lo-fi|edm|club\s*mix|drill|vinahouse|bass\s*boosted|nightcore)\b"
+    pattern = r"\b(remix|remake|slowed|speed\s*up|sped\s*up|lofi|lo-fi|edm|club\s*mix|drill|vinahouse|bass\s*boosted|nightcore|liên\s*khúc|lien\s*khuc|mix|remastered|remaster|deep\s*house|latino|latin\s*dance|dance\s*ver(?:sion)?)\b"
     if re.search(pattern, title_text, re.IGNORECASE):
         return True
     if song_type and re.search(pattern, song_type, re.IGNORECASE):
@@ -63,6 +66,13 @@ def is_derivative_or_remix_context(metadata: dict[str, Any] | None) -> bool:
         "club mix",
         "drill",
         "nightcore",
+        "liên khúc",
+        "lien khuc",
+        "mix",
+        "remastered",
+        "deep house",
+        "latino",
+        "latin dance",
     }
     tags = [str(t).strip().lower() for t in metadata.get("tags") or [] if t]
     return any(t in genre_tags for t in tags)
@@ -130,6 +140,14 @@ def should_require_deep_audio_inspection(
 
 
 class GeminiResponseSchemaVi(BaseModel):
+    vocal_ai_score: int = Field(
+        default=1,
+        description="Thang điểm nhân tạo của giọng hát (1-5): 1=Giọng người mộc 100%, 2=Giọng người có Auto-Tune/Melodyne phòng thu thương mại, 3=Vùng xám/nghi vấn, 4=Khả năng cao là AI vocal clone (RVC/Diff-SVC) hoặc Suno/Udio synthetic voice, 5=Chắc chắn là giọng tạo sinh AI.",
+    )
+    beat_ai_score: int = Field(
+        default=1,
+        description="Thang điểm nhân tạo của beat/hòa âm (1-5): 1=Nhạc cụ mộc hoặc DAW multitrack người làm, 2=Beat EDM/Trap/MIDI DAW thương mại chuẩn phòng thu, 3=Vùng xám bết dính nhẹ, 4=Khả năng cao là AI generative backing loop, 5=Chắc chắn là hòa âm tạo sinh nguyên khối từ AI (Suno/Udio single-pass diffusion).",
+    )
     verdict_type: str = Field(
         description="One of 5 labels: 'CONFIRMED_HUMAN' (100% human organic acoustic), 'PROCESSED_HUMAN' (100% human artist & 100% human beat with modern studio production/Auto-tune), 'HYBRID_AI' (ANY AI participation: AI beat + human voice, or AI voice + human beat, or AI remix), 'AI_GENERATED' (fully AI generated via Suno/Udio), 'UNCERTAIN' (inconclusive evidence, severe noise/distortion, or conflicting indicators)"
     )
@@ -169,6 +187,14 @@ class GeminiResponseSchemaVi(BaseModel):
 
 
 class GeminiResponseSchemaEn(BaseModel):
+    vocal_ai_score: int = Field(
+        default=1,
+        description="Vocal AI artifact score (1-5): 1=100% organic human voice, 2=Human singer with commercial DAW Auto-Tune/Melodyne, 3=Ambiguous/borderline, 4=Probable AI vocal clone (RVC/Diff-SVC) or Suno/Udio synthetic vocal, 5=Definitive AI synthetic vocal.",
+    )
+    beat_ai_score: int = Field(
+        default=1,
+        description="Beat/Arrangement AI artifact score (1-5): 1=Acoustic or human DAW multitrack, 2=Commercial digital EDM/Trap loop or human MIDI arrangement, 3=Ambiguous/borderline bleed, 4=Probable generative AI backing track, 5=Definitive end-to-end AI generative arrangement (Suno/Udio single-pass diffusion).",
+    )
     verdict_type: str = Field(
         description="One of 5 labels: 'CONFIRMED_HUMAN' (100% human organic acoustic), 'PROCESSED_HUMAN' (100% human artist & 100% human beat with modern studio production/Auto-tune), 'HYBRID_AI' (ANY AI participation: AI beat + human voice, or AI voice + human beat, or AI remix), 'AI_GENERATED' (fully AI generated via Suno/Udio), 'UNCERTAIN' (inconclusive evidence, severe noise/distortion, or conflicting indicators)"
     )
@@ -213,92 +239,49 @@ GeminiResponseSchema = GeminiResponseSchemaVi
 
 SYSTEM_INSTRUCTION = """
 You are a world-leading Digital Audio Forensics Specialist and Senior Music Producer.
-Your mission: Examine the provided audio sample (multi-segment composite of Verse/Chorus/Climax), the 3-tier Mel-Spectrogram (Full Mix + Drum-stripped Harmonic Vocal via HPSS + ISMIR 2025 Fourier Deconvolution Fakeprint) image, and the metadata to classify the song into 1 of 5 categories:
+Your mission: Conduct a component-wise forensic audio inspection of the track (multi-segment excerpt: Intro, Verse, Chorus + 3-tier Mel-Spectrogram).
+Evaluate the synthetic AI likelihood of BOTH components on a 1 to 5 scale:
 
-1. 'CONFIRMED_HUMAN': Music composed and performed by humans with organic/acoustic production (Acoustic, acoustic Pop, traditional Ballads, Rock, live orchestra). Vocals are entirely natural without industrial pitch correction. Both vocals and instrumentation are 100% human-made.
-2. 'PROCESSED_HUMAN': Music composed and performed by HUMANS (real artists/singers), produced in professional or home studios, USING MODERN DIGITAL STUDIO PRODUCTION:
-   - Contemporary genres: Electronic Pop, Dance/EDM, Rap/Drill, R&B, Trap, Remixes, commercial Ballads.
-   - Commercial pitch correction (Auto-Tune / Melodyne, pitch quantization, formant shifting) applied over an AUTHENTIC human microphone recording.
-   - Studio multitrack techniques: Sidechain compression to 808 drums, synthetic vocoder/autotune textures, DAW multitrack stems, digital reverbs.
-   - CRITICAL DISCRIMINATION RULE: Distinguish between genuine human studio processing (heavy Auto-Tune/Melodyne, sidechain compression, EDM/Drill arrangement) and Generative AI:
-     * In authentic human tracks, Auto-Tune quantizes pitch but PRESERVES human biological breathing dynamics, authentic vocal tract formants, and organic micro-fluctuations. These must remain 'PROCESSED_HUMAN' (is_ai: false).
-     * However, for Remix, Drill, or Remake versions where the vocal track itself is an AI vocal clone/synthesis (lacking chest resonance, flat formant trajectory, or neural vocoder wateriness) OR where the backing beat is an algorithmic AI-generated loop -> You MUST classify as 'HYBRID_AI' with 'is_ai: true'!
-3. 'HYBRID_AI': Music with ANY participation of Generative AI in any stage:
-   - Human singer/rapper performing over an AI-generated backing beat (e.g. beat from Suno/Udio, AI Lo-fi backing loop).
-   - AI-cloned vocal or synthetic vocal performing over a human-produced beat.
-   - Traditional song remixed or rearranged with AI audio diffusion tools.
-   - STRICT BENCHMARK POLICY: In this system, ALL 'HYBRID_AI' tracks MUST have 'is_ai: true'!
-   - MANDATORY REASON FORMAT FOR HYBRID_AI: The FIRST item in reasons MUST follow this exact template:
-     "[HYBRID AI]: Thành phần Vocal là [Người thật/AI] | Thành phần Beat/Hòa âm là [AI sinh tự động/Người làm] - [Giải thích chi tiết dấu vết kỹ thuật]"
-4. 'AI_GENERATED': Songs generated ENTIRELY FROM SCRATCH by generative AI models (Suno v3/v3.5/v4, Udio, Stable Audio...). Both vocals and backing instrumentation are synthesized from latent diffusion waves / neural audio codecs.
-   - CORE CHARACTERISTICS OF SUNO/UDIO AI MUSIC:
-     + Timbral entanglement / stem bleed: Vocals and accompaniment are synthesized simultaneously from a single latent representation. The vocals 'bleed' into the background synth pads/drums with no clean physical stem boundary.
-     + Synthetic vocal sheen / artificial timbre: Vocals sound artificially smooth, metallic, slightly muffled or warbly.
-     + High frequency artifacts: Cymbals, hi-hats, and reverb tails exhibit watery, bubbling artifacts or phase smearing.
-5. 'UNCERTAIN': The audio evidence is ambiguous, heavily degraded by noise or distortion, or presents conflicting indicators between physical metrics and auditory perception, preventing a confident classification.
+1. VOCAL AI ARTIFACT SCORE (`vocal_ai_score` from 1 to 5):
+- 1 = Organic biological human vocal (natural micro-vibrato, authentic vocal tract formants, acoustic room decay, natural breath friction).
+- 2 = Authentic human vocal with commercial studio pitch quantization (Auto-Tune / Melodyne). Preserves authentic vocal tract anatomy, dynamic phrasing, and biological breathing dynamics.
+- 3 = Ambiguous / borderline vocal (heavy processing or lossy streaming artifacts masking biological dynamics).
+- 4 = Probable Generative AI vocal (Suno v3.5/v4 or Diff-SVC/RVC clone: synthetic breath mechanics, flat formant trajectory across different registers, phase smearing with beat).
+- 5 = Definitive Generative AI synthetic vocal (neural vocoder wateriness, metallic sheen, continuous latent diffusion smearing).
 
-PRACTICAL & OBJECTIVE FORENSIC GUIDELINES (CRITICAL):
+2. BEAT / ARRANGEMENT AI ARTIFACT SCORE (`beat_ai_score` from 1 to 5):
+- 1 = Organic acoustic instrumentation or live recording (clean multitrack separation, genuine room acoustic decay).
+- 2 = Authentic commercial studio DAW electronic production (EDM/Trap/Pop/Lo-fi beat made by human producers, MIDI synths, sidechain compression against 808s, multitrack DAW stems).
+- 3 = Ambiguous loop (phase smearing or heavy lossy codec artifacts masking multitrack boundaries).
+- 4 = Probable Generative AI backing track (algorithmic loop from Suno/Udio, timbral bleed between instruments, lacking multitrack independence).
+- 5 = Definitive Generative AI backing track (monolithic end-to-end single-pass latent diffusion, intermodulation stem bleed between percussion and synth pads).
 
-A. BALANCED FORENSIC OBJECTIVITY:
-   - Distinguish carefully between MODERN STUDIO DAW PRODUCTION (DAW plugins, commercial Auto-Tune / Melodyne, MIDI synthesizers, electronic remix beats, clean multitrack stems) and GENERATIVE AI (Suno, Udio, single-pass latent diffusion).
-   - CRITICAL REALITY OF WEB STREAMING AUDIO: Audio sourced from YouTube, Spotify, or web platforms is encoded with lossy codecs (Opus/AAC at 128-160kbps). Lossy streaming codecs naturally attenuate high-frequency energy above 16-18 kHz and naturally concentrate 95% of spectral energy below 10-12 kHz. This is NORMAL digital web audio distribution and MUST NEVER be misdiagnosed as Generative AI synthesis!
-   - Commercial Vietnamese Pop and Ballad vocalists routinely utilize studio pitch quantization (Auto-Tune / Melodyne) and modern vocal compression. These must remain 'PROCESSED_HUMAN' (is_ai: false).
-   - Only classify as 'HYBRID_AI' or 'AI_GENERATED' (is_ai: true) when there is clear physical, auditory, or spectral evidence of generative neural synthesis (e.g., Suno/Udio neural vocoder wateriness, continuous latent diffusion phase smearing, robotic vowel transitions, or Fourier comb-filter residue).
+FEW-SHOT FORENSIC SCORING BENCHMARKS (REFERENCE EXAMPLES):
+- Case 1 (Acoustic Human Pop/Ballad): Real guitar and live acoustic human vocals.
+  -> vocal_ai_score: 1, beat_ai_score: 1, verdict_type: "CONFIRMED_HUMAN", is_ai: false.
+- Case 2 (Commercial Human Rap/Pop with Heavy Auto-Tune): Auto-Tuned human vocal over commercial FL Studio/Ableton 808 Trap beat.
+  -> vocal_ai_score: 2, beat_ai_score: 2, verdict_type: "PROCESSED_HUMAN", is_ai: false.
+- Case 3 (Modern Suno v3.5/v4 Pop Ballad or Bolero): Sweet simulated vibrato and breath intakes, but flat formant trajectory across registers; Tier 2 spectrogram reveals vocal harmonics entangled with backing guitars/pads (stem bleed).
+  -> vocal_ai_score: 4, beat_ai_score: 5, verdict_type: "AI_GENERATED", is_ai: true.
+- Case 4 (AI Voice Clone / AI Cover over Human Beat): AI voice clone (Diff-SVC/RVC) singing over a standard karaoke/EDM DAW backing beat.
+  -> vocal_ai_score: 5, beat_ai_score: 2, verdict_type: "HYBRID_AI", is_ai: true.
+- Case 5 (Human Vocal on Algorithmic AI Beat): Authentic human singer performing over an algorithmic Suno/Udio Lo-fi beat.
+  -> vocal_ai_score: 2, beat_ai_score: 4, verdict_type: "HYBRID_AI", is_ai: true.
 
-B. 3-TIER SPECTROGRAM & ACOUSTIC UNMASKING (HPSS):
-   - The visual spectrogram has 3 tiers:
-     * Tier 1: Full Mix Mel-Spectrogram (dB).
-     * Tier 2: Harmonic Vocal Mel-Spectrogram (percussion and loud drums removed via HPSS).
-       CRITICAL: Loud drums (e.g., lion dance / múa lân drums, rock drums, heavy 808s) often mask synthetic vocal sheen. Look closely at Tier 2 to inspect pure vocal harmonics and detect latent diffusion phase smearing that was obscured by drums!
-     * Tier 3: Fourier Deconvolution Residue Spectrum (Deezer ISMIR 2025).
+DECISION MATRIX:
+- If vocal_ai_score >= 4 and beat_ai_score >= 4 -> 'AI_GENERATED' (is_ai: true).
+- If (vocal_ai_score >= 4 and beat_ai_score <= 2) or (vocal_ai_score <= 2 and beat_ai_score >= 4) -> 'HYBRID_AI' (is_ai: true).
+- If vocal_ai_score <= 2 and beat_ai_score <= 2:
+  * If both are 1 -> 'CONFIRMED_HUMAN' (is_ai: false).
+  * Else -> 'PROCESSED_HUMAN' (is_ai: false).
+- If both are 3 -> 'UNCERTAIN' (is_ai: false).
 
-C. CRITICAL REALITY OF MODERN AI MUSIC (SUNO V3.5/V4, UDIO, AI VOCAL CLONES):
-   - Modern neural audio models (Suno v3.5, Suno v4, Udio) and vocal clone engines (RVC, Diff-SVC) frequently simulate studio pitch-correction (Auto-Tune), realistic breath friction, and vibrato!
-   - FATAL FORENSIC TRAP: NEVER classify a track as 'PROCESSED_HUMAN' purely based on hearing breath intakes or vibrato! Suno v3.5/v4 specifically synthesizes biological breath dynamics.
-   - You MUST cross-correlate with high-frequency acoustic extension: inspect the 3-tier spectrogram for physical air-band extension (16kHz - 20kHz) and genuine multitrack stem separation versus single-pass neural diffusion smearing.
-   - Key forensic signatures across specific AI sub-genres:
-     * Vietnamese Bolero / Dân Ca (Folk) / Trữ Tình AI: Neural models simulate traditional vibrato and vocal ornamentation (luyến láy) with extreme ease. However, AI Bolero vocals display a flat, uniform formant sheen and lack authentic room resonance, bleeding directly into synthesized guitars/strings (stem bleed). Do NOT let traditional melisma or sweet emotional tone fool you into concluding 'human'!
-     * Choral / Gospel / Multi-voice Harmony AI (e.g. Christian choral tracks): When multiple voices harmonize, generative AI renders them from a single latent representation; all choir voices share identical diffusion smearing and harmonic bleed without spatial separation.
-     * Traditional / Historical / Chinese-style Orchestral AI (Guqin, Guzheng, Erhu, cinematic sweeps): Instruments exhibit synthetic sustain envelopes, lack genuine acoustic bow/finger friction, and merge into monolithic background audio.
-     * Modern neural audio models (Suno v3.5/v4, Udio, and Diff-SVC/RVC clones) easily synthesize convincing chest resonance, intake breaths, and natural micro-vibrato. NEVER cite "chest resonance", "natural breath dynamics", or "micro-vibrato" as proof that a track transcends AI capabilities!
-     * Synthetic vocal sheen: Vocals sound artificially polished, slightly metallic, or have flat formant dynamics.
-     * Stem bleed / timbral entanglement: Vocal reverb and high-frequency harmonics melt into synthesizer pads/drums without physical separation.
-     * Consonant articulation & phrasing: Unnatural phrasing cadence, slurred consonants, robotic delivery or lack of authentic human pronunciation mechanics.
-     * Brazilian Phonk / Montagem / Drift Phonk AI: Releases tagged with \'Montagem\', \'Slowed\', or \'Super Slowed\' where vocals consist of repetitive, pitch-shifted robotic fragments entangled with distorted 808 cowbells and neural latent diffusion residue. These are algorithmic AI products and MUST be classified as \'HYBRID_AI\' or \'AI_GENERATED\' with \'is_ai: true\'.
-     * AI Lo-Fi / AI Beats: Repetitive, algorithmic backing beat loops or synthetic accompaniments.
-   - BALANCED HYBRID & AI DISCRIMINATION:
-     * If there is clear evidence of an AI-generated backing beat (e.g. algorithmic Suno/Udio loop) OR an AI synthetic/cloned vocal -> Classify as 'HYBRID_AI' with 'is_ai: true'.
-     * If the entire track is synthesized by an AI model -> Classify as 'AI_GENERATED' with 'is_ai: true'.
-     * Authentic human performances (singers with commercial autotune, human-produced EDM remixes, children's songs, live sessions, studio acoustic ballads) MUST be classified as 'PROCESSED_HUMAN' or 'CONFIRMED_HUMAN' (is_ai: false). Avoid false positives on genuine human musicians!
-
-D. VIETNAMESE LINGUISTIC RULE (ANTI-BIAS):
-   - In Vietnamese, the word "ai" is a ubiquitous pronoun meaning "who / someone / anyone" (e.g., 'Nỗi Buồn Mang Tên Ai' means 'A Sorrow Named Someone').
-   - NEVER conclude a song is AI simply because the title contains "Ai" or "[***]"! Concluding AI based on the title is a fatal forensic failure. Base your judgment strictly on physical acoustics and spectral evidence.
-
-E. DOUBLE-BLIND FORENSIC PROTOCOL & PITCH JITTER INTERPRETATION:
-   - You are evaluating under strict double-blind conditions. Track metadata and artist names are masked to prevent anchoring bias.
-   - Do NOT attempt to guess the singer or assume a song is human-produced based on vocal familiarity or genre style.
-   - Correlate with Vocal Pitch Stability and Tier 2 Harmonic Spectrogram:
-     * Note that modern generative AI engines (Suno v3.5/v4, Udio, Diff-SVC) can synthesize pitch quantization, vibrato, and dynamic vocal formant variations.
-     * Examine both vocal and backing instrumental tracks holistically. If you detect synthetic generation in either the vocal or instrumental arrangement -> Classify as 'AI_GENERATED' or 'HYBRID_AI' with 'is_ai: true'.
-
-F. MULTI-STEM BLEED & INTERMODULATION DISTORTION (END-TO-END AI DISCRIMINATION):
-   - In conventional human multitrack studio production, drums/percussion and vocals are tracked on independent channels. Transients from kick/snare do NOT mechanically modulate the vocal harmonic envelope.
-   - In end-to-end latent diffusion models (Suno/Udio), all stems are generated simultaneously in a single pass. When heavy percussion occurs, the vocal harmonics suffer intermodulation bleed / phase smearing.
-   - If the metric 'Multi-Stem Bleed (Intermodulation)' reports HIGH RESIDUAL INTERACTION, this is conclusive physical evidence of single-pass neural audio synthesis.
-
-G. WORK AUTHENTICITY EVALUATION (ORIGINAL vs COVER vs REMIX vs UNCERTAIN):
-   - Evaluate whether this recording is an ORIGINAL work, a COVER, a REMIX, or UNCERTAIN:
-     1. 'ORIGINAL': Official primary release performed by the original artist/creator (includes official acoustic / live sessions performed by the original artist).
-     2. 'COVER': Performed by another singer or an AI voice clone re-interpreting an existing composition.
-     3. 'REMIX': Electronic / dance / lo-fi arrangement that preserves the original artist's vocal stem.
-     4. 'UNCERTAIN': Anonymous / local file or unknown indie track without sufficient evidence to determine originality.
-   - GROUNDING WITH CONTENT ID & METADATA:
-     * Check provided YouTube Content ID (Song, Artist) and uploader channel.
-     * If uploader/singer differs from Content ID Artist or title contains 'cover', 'hát lại' -> classify as 'COVER' with is_cover: true.
-     * For AI COVERS (AI Voice Clone of a famous singer singing another artist's track) -> classify as 'HYBRID_AI' or 'AI_GENERATED' AND set work_type: 'COVER', is_cover: true.
-
-Always return JSON strictly adhering to the specified schema.
+MANDATORY GUIDELINES:
+- Double-Blind Protocol: Track metadata and artist names are masked to prevent anchoring bias. Base your scores strictly on acoustic physics and auditory evidence.
+- Distinguish Studio Auto-Tune from AI: Commercial Auto-Tune quantizes pitch but retains human vocal tract formants (vocal_ai_score: 2). Suno v3.5/v4 synthesizes breath intakes and vibrato, but has flat formant sheen and stem bleed (vocal_ai_score: 4 or 5).
+- Web Streaming Codec Reality: Audio from YouTube/Spotify uses Opus/AAC compression. High frequencies above 16-18kHz are naturally attenuated. Do NOT classify a beat as AI purely due to lossy MP3/Opus compression.
+- Work Authenticity: Evaluate whether recording is 'ORIGINAL', 'COVER', 'REMIX', or 'UNCERTAIN'.
+- Return valid JSON strictly adhering to the schema.
 """
 
 
@@ -538,31 +521,118 @@ PLEASE FORENSICALLY EVALUATE THE FOLLOWING AUDIO TRACK:
 {metrics_text}
 
 
-AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
-1. Listen closely to the audio excerpt across all segments (Verse, Chorus, Climax) and inspect the 3-tier spectrogram:
-   - Assess both vocal timbre quality AND backing instrumental production:
-     * BROAD AI DETECTION POLICY: If you detect that EITHER the backing instrumental track OR the vocal track was generated/assisted by AI (Suno, Udio, AI Voice Model, AI Lo-fi beat, AI remix) -> Classify as 'HYBRID_AI' (or 'AI_GENERATED') with is_ai: true.
-     * If the singing voice has the characteristic synthetic sheen, flat/mechanical phrasing, bleeds/melts directly into the instrumental arrangement, or is paired with an accompaniment suffering from low-rolloff (<12kHz) air-band deficiency -> Classify as 'AI_GENERATED' or 'HYBRID_AI' (is_ai: true). Note: Modern Suno v3.5/v4 artificially generates realistic breath intakes, so breath friction alone does NOT disprove AI.
-     * Correlate Vocal Pitch Stability and Formant Dynamics: Modern AI generators (Suno v3.5/v4, Udio) can synthesize pitch-correction and micro-vibrato. Look holistically at vocal timbre and backing track: if either vocal or accompaniment exhibits synthetic generation, classify as HYBRID_AI or AI_GENERATED (is_ai: true).
-     * Check Stem Bleed (Intermodulation): If Elevated Intermodulation is detected, vocal harmonics are physically modulated by percussion transients, indicating single-pass neural audio synthesis. Note: A low stem bleed index (<0.28) is inconclusive/neutral in tracks with sparse percussion or ballad arrangements and does NOT guarantee human multitrack production.
-     * Only classify as 'PROCESSED_HUMAN' (is_ai: false) if you are confident that BOTH the vocal AND the backing beat are 100% human-produced multi-track studio recordings.
-     * If acoustic arrangement with completely natural, organic vocals -> Classify as 'CONFIRMED_HUMAN' (is_ai: false).
-     * If audio quality is too degraded, contradictory, or inconclusive -> Classify as 'UNCERTAIN' (is_ai: false).
-   - INSPECTION OF TIER 2 SPECTROGRAM (HPSS HARMONIC VOCAL):
-     * Check Tier 2 of the attached image: Percussion and heavy drums (e.g. lion dance / múa lân drums) have been stripped away using HPSS. Look closely at Tier 2 to inspect pure vocal harmonics for artificial smearing or synthetic sheen that was masked by drums.
-   - SUNO V3.5/V4 & GENRE DECEPTION COUNTERMEASURES:
-     * Modern neural audio models (Suno v3.5, Suno v4, Udio) fine-tuned on Vietnamese pop ballads, Bolero, Dân Ca (Folk), and Choral music specifically GENERATE realistic human-like intake breaths, chest voice formants, Auto-Tune-like vibrato, and melisma (luyến láy).
-     * The presence of natural-sounding breath intakes, sweet ballad/bolero vocal phrasing, or organic chest resonance MUST NOT be treated as definitive proof of a human singer!
-     * Vietnamese Bolero / Dân Ca (Folk): AI models simulate traditional emotional vibrato and ornamental pitch glides. Look for flat formant sheen, absence of dynamic room acoustic decay, and vocal bleeding into synthesized acoustic guitars/strings.
-     * Choral / Gospel: AI choirs feature monolithic phase smearing where all voices share identical timbre and diffusion artifacts instead of distinct human vocal tracks.
-     * Traditional / Chinese-style Orchestral: Algorithmic instrument rendering (Guzheng/Erhu/Flute) lacks mechanical bow/finger friction and exhibits synthetic sustain decay.
-     * CRITICAL INSTRUCTION: Never conclude a song is human simply because "it exhibits chest resonance and micro-vibrato that go beyond AI limitations" — modern neural models routinely generate both. Look holistically at vocal timbre and arrangement.
-     * Inspect Tier 2 Harmonic Vocal carefully: look for faint digital fuzz beneath sustained vowels and check if the backing accompaniment has true acoustic multitrack depth or monolithic latent space entanglement.
-2. Correlate with the provided acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and the 3-tier spectrogram image.
-3. Deliver an objective, rigorous verdict based purely on the real sonic evidence.
+AUDITORY INSPECTION & VERDICT GUIDELINES (FEW-SHOT SCORING PROTOCOL):
+1. Listen closely to the composite 36s audio excerpt across all 3 forensic segments:
+   - Segment 1 (0:00 - 0:06) [INTRO]: Beat Inception -> Inspect for watery artifacts, latent diffusion noise inception, or phase jitter during initial beat generation.
+   - Segment 2 (0:06 - 0:21) [VERSE]: Acoustic/Isolated Vocal -> Inspect biological vocal tract dynamics, breath intakes, and sibilant consonants ('s', 't', 'ch'). AI sibilants are typically slurred, flat, or metallic vocoder-like.
+   - Segment 3 (0:21 - 0:36) [CHORUS]: High-Energy Climax -> Inspect multitrack separation vs synthetic stem bleed/melting into backing instruments on Tier 2 (HPSS) spectrogram.
+
+2. COMPONENT-WISE FORENSIC SCORING (1 to 5 scale):
+   - `vocal_ai_score` (1-5):
+     * 1: 100% organic biological human vocal.
+     * 2: Authentic human vocal with commercial studio Auto-Tune/Melodyne.
+     * 3: Ambiguous / borderline vocal.
+     * 4: Probable Generative AI vocal (Suno v3.5/v4 or Diff-SVC/RVC clone: simulated vibrato/breaths with flat formants and stem bleed).
+     * 5: Definitive Generative AI synthetic vocal.
+   - `beat_ai_score` (1-5):
+     * 1: Organic acoustic instrumentation or live recording.
+     * 2: Commercial studio DAW electronic production (human-made EDM/Trap/Pop beat with clean channel separation).
+     * 3: Ambiguous loop or heavy compression blurring.
+     * 4: Probable Generative AI backing track (Suno/Udio algorithmic loop).
+     * 5: Definitive end-to-end single-pass Generative AI backing track.
+
+3. DECISION RULES:
+   - If vocal_ai_score >= 4 or beat_ai_score >= 4 -> is_ai MUST be true (AI_GENERATED if both >= 4, else HYBRID_AI).
+   - If vocal_ai_score <= 2 and beat_ai_score <= 2 -> is_ai MUST be false (PROCESSED_HUMAN if either is 2, else CONFIRMED_HUMAN).
+   - If both are 3 -> UNCERTAIN (is_ai: false).
+
+4. Correlate with physical acoustic metrics (Pitch Jitter, Stem Bleed, HPSS Harmonic ratio, Fourier Fakeprint) and 3-tier spectrogram image. Deliver an objective verdict strictly in JSON.
 {lang_directive}
 """
         return prompt
+
+    def _build_flash_lite_checklist_prompt(
+        self,
+        track_id: str,
+        metrics: AcousticMetrics | None,
+        metadata: dict[str, Any] | None = None,
+        language: str = "vi",
+    ) -> str:
+        """
+        Prompt tinh gọn tối ưu cho Gemini Flash-Lite (~350-450 tokens):
+        Tập trung vào Checklist thẩm âm 3 điểm cốt lõi, loại bỏ văn phong cấm đoán dài dòng,
+        giúp Flash-Lite phản xạ nhanh và chính xác, tránh hiện tượng tê liệt suy luận.
+        """
+        metrics_summary = ""
+        if metrics:
+            comb_v = getattr(metrics, "comb_signature_score", 0.0) or 0.0
+            bleed_v = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
+            cutoff_v = "CÓ" if getattr(metrics, "ultrasonic_cutoff_detected", False) else "KHÔNG"
+            metrics_summary = (
+                f"- Fakeprint ISMIR: {metrics.fakeprint_score * 100:.1f}% | Comb Signature: {comb_v * 100:.1f}%\n"
+                f"- Stem Bleed Index: {bleed_v:.2f} | Pitch Rigidity: {metrics.pitch_rigidity_ratio * 100:.1f}%\n"
+                f"- Spectral Rolloff 95%: {metrics.spectral_rolloff_95_hz:.0f} Hz | Ultrasonic Cutoff: {cutoff_v}"
+            )
+        else:
+            metrics_summary = "Không có chỉ số âm học khả dụng."
+
+        is_en = (
+            str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
+        )
+        if is_en:
+            if ATTACH_SPECTROGRAM_TO_LLM:
+                mission_en = "Analyze the attached 36s multi-segment audio (Intro + Verse + Chorus) and 3-tier spectrogram image to determine if this is GENERATIVE AI (Suno/Udio) or HUMAN."
+                chorus_en = "- Segment 3 (0:21 - 0:36) [CHORUS]: High-Energy Climax -> Inspect multitrack separation vs synthetic stem bleed/melting into backing instruments on Tier 2 (HPSS) spectrogram."
+            else:
+                mission_en = "Analyze the attached 36s multi-segment audio (Intro + Verse + Chorus), key physical acoustic metrics, and metadata to determine if this is GENERATIVE AI (Suno/Udio) or HUMAN."
+                chorus_en = "- Segment 3 (0:21 - 0:36) [CHORUS]: High-Energy Climax -> Inspect multitrack separation vs synthetic stem bleed/melting into backing instruments via Stem Bleed index and HPSS harmonics."
+
+            return f"""EXPERT AUDIO FORENSIC INSPECTION - TRACK #{track_id}
+{mission_en}
+
+KEY ACOUSTIC METRICS:
+{metrics_summary}
+
+COMPOSITE 36s AUDIO STRUCTURE (3 CONSECUTIVE FORENSIC SEGMENTS):
+- Segment 1 (0:00 - 0:06) [INTRO]: Beat Inception -> Inspect for watery artifacts, latent diffusion noise inception, or phase jitter during initial beat generation.
+- Segment 2 (0:06 - 0:21) [VERSE]: Acoustic/Isolated Vocal -> Inspect biological vocal tract dynamics, breath intakes, and sibilant consonants ('s', 't', 'ch'). AI sibilants are typically slurred, flat, or metallic vocoder-like.
+{chorus_en}
+
+DECISION PROTOCOL (FEW-SHOT SCORING):
+- Score vocal_ai_score (1-5): 1=organic human, 2=studio Auto-Tune on human vocal, 3=borderline, 4=probable AI vocal (Suno/Udio/voice clone), 5=definitive synthetic AI voice.
+- Score beat_ai_score (1-5): 1=organic acoustic, 2=commercial human DAW multitrack beat (EDM/Trap), 3=borderline, 4=probable AI loop/stem bleed, 5=definitive single-pass AI generation.
+- If vocal_ai_score >= 4 or beat_ai_score >= 4 -> is_ai: true (AI_GENERATED if both >= 4, else HYBRID_AI).
+- If both <= 2 -> is_ai: false (PROCESSED_HUMAN if either is 2, else CONFIRMED_HUMAN).
+- Do NOT confuse commercial Auto-Tune/Melodyne with generative AI.
+
+Respond strictly in the required JSON schema."""
+
+        if ATTACH_SPECTROGRAM_TO_LLM:
+            task_vi = "Nhiệm vụ: Lắng nghe đoạn audio đa phân đoạn 36s (gồm Intro + Verse + Chorus) và ảnh phổ 3 tầng (đặc biệt Tầng 2 HPSS Harmonic Vocal) để xác định bài hát do AI TẠO SINH (Suno/Udio) hay CON NGƯỜI SẢN XUẤT."
+            chorus_vi = "- Đoạn 3 (0:21 - 0:36) [CHORUS]: Điệp khúc cao trào -> Nhiệm vụ: Soi sự hòa lẫn/bết dính giữa giọng hát và dàn nhạc nền (Stem Bleed) trên ảnh phổ Tầng 2 (HPSS)."
+        else:
+            task_vi = "Nhiệm vụ: Phân tích đoạn audio đa phân đoạn 36s (gồm Intro + Verse + Chorus), bảng chỉ số âm học vật lý chuyên sâu (Acoustic Metrics) và siêu dữ liệu bản thu để xác định bài hát do AI TẠO SINH (Suno/Udio) hay CON NGƯỜI SẢN XUẤT."
+            chorus_vi = "- Đoạn 3 (0:21 - 0:36) [CHORUS]: Điệp khúc cao trào -> Nhiệm vụ: Soi sự hòa lẫn/bết dính giữa giọng hát và dàn nhạc nền dựa trên chỉ số Stem Bleed và tương quan sóng hài HPSS."
+
+        return f"""THẨM ĐỊNH PHÁP Y ÂM THANH - BẢN THU #{track_id}
+{task_vi}
+
+CHỈ SỐ ÂM HỌC TRỌNG YẾU:
+{metrics_summary}
+
+CẤU TRÚC BẢN THU ÂM THANH 36s (3 PHÂN ĐOẠN ĐỐI SOÁT LIÊN TỤC):
+- Đoạn 1 (0:00 - 0:06) [INTRO]: Khởi tạo nhịp beat -> Nhiệm vụ: Soi tiếng bọt nước (watery artifacts), nhiễu khởi tạo ngập ngừng (latent diffusion noise inception) lúc bắt đầu bài hát.
+- Đoạn 2 (0:06 - 0:21) [VERSE]: Giọng hát mộc -> Nhiệm vụ: Soi động lực sinh học của thanh quản, tiếng thở/nuốt hơi tự nhiên và phụ âm xát ('s', 'x', 'tr', 'ch'). Phụ âm AI thường bị bẹt dính, méo vocoder.
+{chorus_vi}
+
+QUY TẮC PHÁN QUYẾT (CHẤM ĐIỂM THÀNH PHẦN 1-5):
+- Chấm vocal_ai_score (1-5): 1=Giọng người mộc, 2=Auto-Tune phòng thu trên giọng người, 3=Nghi vấn, 4=Khả năng cao là AI (Suno/Udio/clone), 5=Chắc chắn AI.
+- Chấm beat_ai_score (1-5): 1=Nhạc cụ mộc, 2=Beat DAW người sản xuất (EDM/Trap), 3=Nghi vấn, 4=Khả năng cao là AI beat/bết dính, 5=Chắc chắn AI beat.
+- Nếu vocal_ai_score >= 4 hoặc beat_ai_score >= 4 -> is_ai: true (AI_GENERATED nếu cả hai >= 4, ngược lại HYBRID_AI).
+- Nếu cả hai <= 2 -> is_ai: false (PROCESSED_HUMAN nếu có 2, ngược lại CONFIRMED_HUMAN).
+- Phân biệt rõ: Auto-Tune/Melodyne phòng thu thương mại là kỹ xảo người làm, KHÔNG PHẢI giọng hát tạo sinh AI.
+
+Phản hồi nghiêm ngặt theo đúng cấu trúc JSON đã định nghĩa."""
 
     def classify_track(
         self,
@@ -579,7 +649,15 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
         language: str = "vi",
     ) -> DetectionResult:
         candidate_models = self._resolve_model_chain(model_override)
-        prompt = self._build_forensic_prompt(track_id, metrics, metadata, language=language)
+        primary_model = candidate_models[0] if candidate_models else ""
+        is_flash_lite = "flash-lite" in primary_model.lower()
+
+        if is_flash_lite:
+            prompt = self._build_flash_lite_checklist_prompt(
+                track_id, metrics, metadata, language=language
+            )
+        else:
+            prompt = self._build_forensic_prompt(track_id, metrics, metadata, language=language)
         is_en = (
             str(language).strip().lower().startswith("en") or "anh" in str(language).strip().lower()
         )
@@ -614,7 +692,7 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
 
         contents: list[Any] = [prompt]
 
-        if needs_deep_audio:
+        if ATTACH_SPECTROGRAM_TO_LLM:
             if spectrogram_path and Path(spectrogram_path).exists():
                 try:
                     spec_bytes = Path(spectrogram_path).read_bytes()
@@ -626,6 +704,8 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                     )
                 except Exception as upload_err:  # noqa: BLE001
                     print(f"[GeminiClassifierService] Không thể đính kèm ảnh phổ: {upload_err}")
+
+        if needs_deep_audio:
 
             compressed_audio: Path | None = None
             if audio_path and Path(audio_path).exists():
@@ -654,6 +734,8 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             upload_target = mp3_p
                     except Exception as comp_err:  # noqa: BLE001
                         print(f"[GeminiClassifierService] Không thể nén MP3: {comp_err}")
+                else:
+                    upload_target = raw_p
 
                 try:
                     mime = "audio/mp3" if upload_target.suffix.lower() == ".mp3" else "audio/wav"
@@ -741,14 +823,37 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             )
                         data = json.loads(raw_json)
 
-                        v_type_str = data.get("verdict_type", "CONFIRMED_HUMAN")
-                        try:
-                            v_type = VerdictType(v_type_str)
-                        except ValueError:
-                            v_type = (
-                                VerdictType.AI_GENERATED
-                                if data.get("is_ai")
-                                else VerdictType.CONFIRMED_HUMAN
+                        vocal_score = int(data.get("vocal_ai_score", 1) or 1)
+                        beat_score = int(data.get("beat_ai_score", 1) or 1)
+                        raw_is_ai = bool(data.get("is_ai", False))
+
+                        # Đồng bộ hóa phán quyết từ thang điểm thành phần Few-Shot:
+                        if vocal_score >= 4 or beat_score >= 4:
+                            final_is_ai = True
+                            if vocal_score >= 4 and beat_score >= 4:
+                                v_type = VerdictType.AI_GENERATED
+                            else:
+                                v_type = VerdictType.HYBRID_AI
+                        elif vocal_score <= 2 and beat_score <= 2 and not raw_is_ai:
+                            final_is_ai = False
+                            if vocal_score == 1 and beat_score == 1:
+                                v_type = VerdictType.CONFIRMED_HUMAN
+                            else:
+                                v_type = VerdictType.PROCESSED_HUMAN
+                        else:
+                            v_type_str = data.get("verdict_type", "CONFIRMED_HUMAN")
+                            try:
+                                v_type = VerdictType(v_type_str)
+                            except ValueError:
+                                v_type = (
+                                    VerdictType.AI_GENERATED
+                                    if raw_is_ai
+                                    else VerdictType.CONFIRMED_HUMAN
+                                )
+                            final_is_ai = (
+                                True
+                                if v_type in (VerdictType.AI_GENERATED, VerdictType.HYBRID_AI)
+                                else raw_is_ai
                             )
 
                         if v_type == VerdictType.CONFIRMED_HUMAN:
@@ -761,12 +866,6 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             verdict_label = "UNCERTAIN (Chưa thể kết luận)"
                         else:
                             verdict_label = "AI-GENERATED (Nhạc AI tạo)"
-
-                        final_is_ai = (
-                            True
-                            if v_type in (VerdictType.AI_GENERATED, VerdictType.HYBRID_AI)
-                            else bool(data.get("is_ai", False))
-                        )
 
                         w_type_str = str(data.get("work_type", "UNCERTAIN")).strip().upper()
                         try:
@@ -813,6 +912,8 @@ AUDITORY INSPECTION & VERDICT GUIDELINES (DOUBLE-BLIND PROTOCOL):
                             original_artist=orig_artist,
                             original_song_title=orig_title,
                             cover_performer=cov_perf,
+                            vocal_ai_score=vocal_score,
+                            beat_ai_score=beat_score,
                         )
 
                     except Exception as e:  # noqa: BLE001

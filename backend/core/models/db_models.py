@@ -37,6 +37,8 @@ class TrackModel(Base):
     song_type = Column(String(50), nullable=True)
     release_date = Column(String(50), nullable=True)
     distributor = Column(String(255), nullable=True)
+    spotify_url = Column(Text, nullable=True)
+    spotify_metadata = Column(JSON, nullable=True)
     is_verified_match = Column(Boolean, nullable=True)
     match_score = Column(Float, nullable=True)
     status = Column(String(20), default="PENDING")
@@ -72,6 +74,8 @@ class DetectionResultModel(Base):
     ai_model_verdict = Column(String(50), nullable=True)
     consensus_is_ai = Column(Boolean, nullable=True)
     consensus_verdict = Column(String(50), nullable=True)
+    spotify_url = Column(Text, nullable=True)
+    spotify_metadata = Column(JSON, nullable=True)
     processed_at = Column(DateTime(timezone=True), default=get_utc_now)
 
     track = relationship("TrackModel", back_populates="detection_result")

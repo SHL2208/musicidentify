@@ -24,6 +24,10 @@ class InMemoryTrackRepository(ITrackRepository):
                 track.release_date = existing.release_date
             if not track.artist and existing.artist:
                 track.artist = existing.artist
+            if not track.spotify_url and getattr(existing, "spotify_url", None):
+                track.spotify_url = existing.spotify_url
+            if not track.spotify_metadata and getattr(existing, "spotify_metadata", None):
+                track.spotify_metadata = existing.spotify_metadata
             if (
                 not track.track_title or track.track_title == track.raw_query
             ) and existing.track_title:
@@ -48,6 +52,14 @@ class InMemoryTrackRepository(ITrackRepository):
                 track.distributor = result.distributor
             if result.release_date and not track.release_date:
                 track.release_date = result.release_date
+            if getattr(result, "spotify_url", None) and not track.spotify_url:
+                track.spotify_url = result.spotify_url
+            elif track.spotify_url and not getattr(result, "spotify_url", None):
+                result.spotify_url = track.spotify_url
+            if getattr(result, "spotify_metadata", None) and not track.spotify_metadata:
+                track.spotify_metadata = result.spotify_metadata
+            elif track.spotify_metadata and not getattr(result, "spotify_metadata", None):
+                result.spotify_metadata = track.spotify_metadata
             dur_val = getattr(result, "duration_sec", None) or (
                 result.acoustic_metrics.duration_sec if result.acoustic_metrics else None
             )

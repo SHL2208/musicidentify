@@ -2,12 +2,20 @@ import logging
 import re
 from pathlib import Path
 
+from ..core.config import (
+    ATTACH_SPECTROGRAM_TO_LLM,
+    ENABLE_SPOTIFY_EARLY_EXIT,
+    ENABLE_SPOTIFY_SEARCH,
+    PRE_AI_CUTOFF_MONTH,
+    PRE_AI_CUTOFF_YEAR,
+)
 from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
 from ..core.interfaces.services.audio_engine_interface import IAudioEngine
 from ..core.interfaces.services.classifier_interface import IAIClassifier
 from ..core.interfaces.services.detection_service_interface import IDetectionService
 from ..core.interfaces.services.resolver_interface import IInputResolver
 from ..core.interfaces.services.signal_analyzer_interface import ISignalAnalyzer
+from ..core.interfaces.services.spotify_service_interface import ISpotifyService
 from ..core.models.entities import (
     AcousticMetrics,
     DetectionResult,
@@ -35,12 +43,14 @@ class DetectionService(IDetectionService):
         classifier: IAIClassifier,
         resolver: IInputResolver,
         track_repo: ITrackRepository,
+        spotify_service: ISpotifyService | None = None,
     ):
         self.audio_engine = audio_engine
         self.signal_analyzer = signal_analyzer
         self.classifier = classifier
         self.resolver = resolver
         self.track_repo = track_repo
+        self.spotify_service = spotify_service
 
     def detect_single(
         self,
@@ -192,6 +202,32 @@ class DetectionService(IDetectionService):
                     existing_result.release_date = track.release_date
                 elif getattr(existing_result, "release_date", None) and not track.release_date:
                     track.release_date = existing_result.release_date
+
+                # 7. Spotify URL & Metadata
+                if track.spotify_url and not getattr(existing_result, "spotify_url", None):
+                    existing_result.spotify_url = track.spotify_url
+                    existing_result.spotify_metadata = track.spotify_metadata
+                elif getattr(existing_result, "spotify_url", None) and not track.spotify_url:
+                    track.spotify_url = existing_result.spotify_url
+                    track.spotify_metadata = getattr(existing_result, "spotify_metadata", None)
+                elif (
+                    not getattr(existing_result, "spotify_url", None)
+                    and getattr(self, "spotify_service", None)
+                    and ENABLE_SPOTIFY_SEARCH
+                ):
+                    title_q = track.track_title or existing_result.track_title or track.raw_query
+                    if title_q and not title_q.startswith(("http://", "https://")):
+                        try:
+                            spot = self.spotify_service.find_best_match(
+                                title_q, artist=track.artist or ""
+                            )
+                            if spot and spot.get("spotify_url"):
+                                track.spotify_url = spot.get("spotify_url")
+                                track.spotify_metadata = spot
+                                existing_result.spotify_url = spot.get("spotify_url")
+                                existing_result.spotify_metadata = spot
+                        except Exception:
+                            pass
 
                 # Lưu cập nhật đồng bộ lại vào CSDL
                 track.status = "COMPLETED"
@@ -458,6 +494,143 @@ class DetectionService(IDetectionService):
                     resolve_err,
                 )
 
+        # 0c. Tự động tra cứu Spotify làm giàu siêu dữ liệu (nếu chưa có)
+        if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
+            if not track.spotify_url:
+                title_for_spotify = track.track_title or track.raw_query
+                if title_for_spotify and not title_for_spotify.startswith(("http://", "https://")):
+                    try:
+                        best_spot = self.spotify_service.find_best_match(
+                            title_for_spotify, artist=track.artist or ""
+                        )
+                        if (
+                            best_spot
+                            and best_spot.get("spotify_url")
+                            and not str(best_spot.get("id", "")).startswith("search_fallback")
+                        ):
+                            track.spotify_url = best_spot.get("spotify_url")
+                            track.spotify_metadata = best_spot
+                            if best_spot.get("release_date") and not track.release_date:
+                                track.release_date = best_spot.get("release_date")
+                            if best_spot.get("artist") and not track.artist:
+                                track.artist = best_spot.get("artist")
+                            if best_spot.get("album") and not track.distributor:
+                                track.distributor = best_spot.get("album")
+                            if best_spot.get("duration_sec") and not track.duration_sec:
+                                try:
+                                    track.duration_sec = float(best_spot.get("duration_sec"))
+                                except (ValueError, TypeError):
+                                    pass
+                    except Exception as spot_e:
+                        logger.debug("Spotify enrichment error: %s", spot_e)
+
+        # 0d. Pre-Download Early-Exit (Xác thực bài hát người làm trước tháng 11/2022)
+        # Bỏ qua hoàn toàn bước tải YouTube audio, phân tích Librosa và Gemini LLM để tiết kiệm thời gian (90s -> 1s)
+        if ENABLE_SPOTIFY_EARLY_EXIT:
+            rel_date_cand = str(
+                track.release_date
+                or (track.spotify_metadata.get("release_date") if track.spotify_metadata else "")
+                or ""
+            ).strip()
+            meta_cand = {
+                "title": track.track_title or track.raw_query,
+                "target_title": track.track_title,
+                "artist": track.artist,
+                "song_type": getattr(track, "song_type", None),
+                "distributor": getattr(track, "distributor", None),
+                "raw_query": track.raw_query,
+            }
+            is_deriv = is_derivative_or_remix_context(meta_cand)
+            w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                title=track.track_title or track.raw_query,
+                artist=track.artist or "",
+                metadata=meta_cand,
+            )
+            if not is_deriv and not is_cov and w_type not in (WorkType.COVER, WorkType.REMIX):
+                if len(rel_date_cand) >= 4:
+                    try:
+                        yr = int(rel_date_cand[:4])
+                        mo = (
+                            int(rel_date_cand[5:7])
+                            if len(rel_date_cand) >= 7 and rel_date_cand[5:7].isdigit()
+                            else 1
+                        )
+                        if yr < PRE_AI_CUTOFF_YEAR or (
+                            yr == PRE_AI_CUTOFF_YEAR and mo < PRE_AI_CUTOFF_MONTH
+                        ):
+                            is_en_lang = (
+                                str(language).strip().lower().startswith("en")
+                                or "anh" in str(language).strip().lower()
+                            )
+                            h_reason = (
+                                f"Official release in {yr} (prior to commercial generative AI music models). "
+                                "Verified via Spotify / Official Metadata."
+                                if is_en_lang
+                                else f"Bản phát hành chính thức năm {yr} (trước kỷ nguyên nhạc AI thương mại Suno/Udio). "
+                                "Xác thực qua siêu dữ liệu Spotify/Chính thống."
+                            )
+                            h_detail = (
+                                f"Verified via official source metadata: {h_reason}"
+                                if is_en_lang
+                                else f"Xác thực qua siêu dữ liệu nguồn chính thống: {h_reason}"
+                            )
+                            logger.info(
+                                "⚡ [PRE-DOWNLOAD EARLY-EXIT] Bài hát '%s' phát hành năm %d (trước 11/2022) -> "
+                                "Kết luận 100%% Người làm (Bỏ qua tải audio & Gemini API).",
+                                track.track_title or track.raw_query,
+                                yr,
+                            )
+                            source_url_val = (
+                                track.resolved_url
+                                or (
+                                    track.raw_query
+                                    if track.raw_query and track.raw_query.startswith("http")
+                                    else None
+                                )
+                            )
+                            early_human_result = DetectionResult(
+                                track_id=track.id,
+                                track_title=track.track_title or track.raw_query,
+                                source_url=source_url_val,
+                                input_type=track.input_type,
+                                raw_query=track.raw_query,
+                                is_ai=False,
+                                verdict_type=VerdictType.CONFIRMED_HUMAN,
+                                verdict_label="CONFIRMED HUMAN (Người làm)",
+                                confidence_score=0.99,
+                                suspected_engine="None",
+                                reasons=[h_reason],
+                                detailed_explanation=h_detail,
+                                acoustic_metrics=None,
+                                spectrogram_image_path=None,
+                                model_used="spotify-pre-ai-rule",
+                                ai_model_is_ai=False,
+                                ai_model_verdict="CONFIRMED_HUMAN (Pre-Download Heuristics)",
+                                consensus_is_ai=False,
+                                consensus_verdict="CONFIRMED_HUMAN",
+                                work_type=w_type,
+                                work_label=w_label,
+                                is_cover=False,
+                                original_artist=orig_a,
+                                original_song_title=orig_t,
+                                song_type=track.song_type
+                                or (w_type.value if w_type != WorkType.UNCERTAIN else None),
+                                distributor=track.distributor,
+                                release_date=track.release_date or rel_date_cand,
+                                spotify_url=track.spotify_url,
+                                spotify_metadata=track.spotify_metadata,
+                                duration_sec=track.duration_sec,
+                            )
+                            track.status = "COMPLETED"
+                            try:
+                                self.track_repo.save_track(track)
+                            except Exception:
+                                pass
+                            self.track_repo.save_result(early_human_result)
+                            return early_human_result
+                    except (ValueError, TypeError):
+                        pass
+
         self.track_repo.save_track(track)
 
         # 1. Tải và cắt phân đoạn âm thanh qua IAudioEngine
@@ -597,7 +770,10 @@ class DetectionService(IDetectionService):
             spec_image_path = None
             if audio_path and Path(audio_path).exists():
                 try:
-                    metrics, spec_image_path = self.signal_analyzer.analyze_audio(audio_path)
+                    metrics, spec_res = self.signal_analyzer.analyze_audio(
+                        audio_path, async_plot=False
+                    )
+                    spec_image_path = spec_res
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "Không thể tạo ảnh phổ/metrics cho bài '%s': %s",
@@ -665,20 +841,112 @@ class DetectionService(IDetectionService):
                 or (w_type.value if w_type != WorkType.UNCERTAIN else None),
                 distributor=track.distributor,
                 release_date=track.release_date,
+                spotify_url=track.spotify_url,
+                spotify_metadata=track.spotify_metadata,
             )
             self.track_repo.save_result(result)
             return result
 
         # 3. Phân tích âm học và tạo ảnh Forensic 2 tầng qua ISignalAnalyzer
-        metrics, spec_image_path = self.signal_analyzer.analyze_audio(audio_path)
+        metrics = None
+        plot_future_or_path = None
+        spec_image_path = None
+        if audio_path:
+            try:
+                metrics, plot_future_or_path = self.signal_analyzer.analyze_audio(audio_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Không thể tạo ảnh phổ/metrics cho bài '%s': %s",
+                    track.track_title or track.raw_query,
+                    exc,
+                )
+
+        # 3b. Early-Exit Triage: Bằng chứng Fourier Comb cực đoan (>= 0.85) VÀ Fakeprint cực đoan (>= 0.70)
+        # Giúp trả về kết quả 100% AI tức thì, tiết kiệm 1 lượt gọi Gemini API cho các bản thu neural vocoder rõ nét
+        from ..core.config import (
+            EARLY_EXIT_COMB_MIN,
+            EARLY_EXIT_FAKEPRINT_MIN,
+            EARLY_EXIT_TRIAGE_ENABLED,
+        )
+
+        if EARLY_EXIT_TRIAGE_ENABLED and metrics:
+            comb_val = getattr(metrics, "comb_signature_score", 0.0) or 0.0
+            fp_val = getattr(metrics, "fakeprint_score", 0.0) or 0.0
+            if comb_val >= EARLY_EXIT_COMB_MIN and fp_val >= EARLY_EXIT_FAKEPRINT_MIN:
+                logger.info(
+                    "⚡ [EARLY-EXIT TRIAGE] Phát hiện chữ ký Fourier Comb cực đoan (Comb: %.1f%%, FP: %.1f%%) trên '%s' -> Kết luận 100%% AI (Tiết kiệm Gemini API Quota).",
+                    comb_val * 100,
+                    fp_val * 100,
+                    track.track_title or track.raw_query,
+                )
+                w_type, w_label, is_cov, orig_a, orig_t = resolve_work_type_from_metadata(
+                    title=track.track_title or track.raw_query,
+                    artist=track.artist or "",
+                    metadata=metadata,
+                )
+                if hasattr(plot_future_or_path, "result"):
+                    try:
+                        spec_image_path = plot_future_or_path.result(timeout=15)
+                    except Exception:
+                        spec_image_path = None
+                else:
+                    spec_image_path = plot_future_or_path
+
+                early_result = DetectionResult(
+                    track_id=track.id,
+                    track_title=track.track_title or track.raw_query,
+                    source_url=source_url_val,
+                    input_type=track.input_type,
+                    raw_query=track.raw_query,
+                    is_ai=True,
+                    verdict_type=VerdictType.AI_GENERATED,
+                    verdict_label="AI-GENERATED (Nhạc AI tạo)",
+                    confidence_score=0.98,
+                    suspected_engine="Suno",
+                    reasons=[
+                        f"[EARLY-EXIT VẬT LÝ ÂM HỌC]: Phát hiện chữ ký răng lược Fourier Deconvolution cực đoan ({comb_val * 100:.1f}%) "
+                        f"kết hợp dấu vân Fakeprint ({fp_val * 100:.1f}%), xác nhận 100% bản thu tạo sinh từ mô hình neural diffusion/vocoder."
+                    ],
+                    detailed_explanation="Bản ghi xuất hiện chữ ký răng lược Fourier vượt ngưỡng an toàn cực đoan (ISMIR 2025), đặc trưng của các mạng nơ-ron tạo sinh âm thanh nguyên khối.",
+                    acoustic_metrics=metrics,
+                    spectrogram_image_path=str(spec_image_path) if spec_image_path else None,
+                    ai_model_is_ai=True,
+                    ai_model_verdict="AI_GENERATED (Early-Exit)",
+                    consensus_is_ai=True,
+                    consensus_verdict="AI_GENERATED",
+                    work_type=w_type,
+                    work_label=w_label,
+                    is_cover=is_cov,
+                    original_artist=orig_a,
+                    original_song_title=orig_t,
+                    song_type=track.song_type
+                    or (w_type.value if w_type != WorkType.UNCERTAIN else None),
+                    distributor=track.distributor,
+                    release_date=track.release_date,
+                    spotify_url=track.spotify_url,
+                    spotify_metadata=track.spotify_metadata,
+                )
+                self.track_repo.save_result(early_result)
+                return early_result
 
         # 4. Gửi lên IAIClassifier để phân loại
+        # Nếu ATTACH_SPECTROGRAM_TO_LLM=True, đợi ảnh vẽ xong; nếu False (mặc định), gửi Pure Text ngay lập tức!
+        spectrogram_for_classifier = None
+        if ATTACH_SPECTROGRAM_TO_LLM:
+            if hasattr(plot_future_or_path, "result"):
+                try:
+                    spectrogram_for_classifier = plot_future_or_path.result(timeout=15)
+                except Exception:
+                    spectrogram_for_classifier = None
+            else:
+                spectrogram_for_classifier = plot_future_or_path
+
         result = self.classifier.classify_track(
             track_id=track.id,
             track_title=track.track_title or track.raw_query,
             source_url=source_url_val,
             audio_path=audio_path,
-            spectrogram_path=spec_image_path,
+            spectrogram_path=spectrogram_for_classifier,
             metrics=metrics,
             model_override=model_override,
             metadata=metadata,
@@ -686,6 +954,21 @@ class DetectionService(IDetectionService):
             raw_query=track.raw_query,
             language=language,
         )
+        result.track_id = track.id
+
+        # Thu nhận ảnh phổ đã render ngầm trong background lúc chờ LLM phản hồi
+        if spectrogram_for_classifier:
+            spec_image_path = spectrogram_for_classifier
+        elif hasattr(plot_future_or_path, "result"):
+            try:
+                spec_image_path = plot_future_or_path.result(timeout=15)
+            except Exception as exc:
+                logger.warning("Lỗi khi render ảnh phổ nền: %s", exc)
+                spec_image_path = None
+        else:
+            spec_image_path = plot_future_or_path
+
+        result.spectrogram_image_path = str(spec_image_path) if spec_image_path else None
         result.track_id = track.id
 
         # Ghi nhận kết quả nguyên bản do Model AI đánh giá độc lập trước khi qua các tầng Trọng tài / Tiêu chí cứng
@@ -750,6 +1033,24 @@ class DetectionService(IDetectionService):
             if hasattr(result.verdict_type, "value")
             else str(result.verdict_type)
         )
+
+        # Tự động tìm kiếm & làm giàu link Spotify nếu chưa có
+        if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
+            if not track.spotify_url:
+                title_for_spotify = track.track_title or result.track_title or track.raw_query
+                if title_for_spotify and not title_for_spotify.startswith(("http://", "https://")):
+                    try:
+                        best_spot = self.spotify_service.find_best_match(
+                            title_for_spotify, artist=track.artist or ""
+                        )
+                        if best_spot and best_spot.get("spotify_url"):
+                            track.spotify_url = best_spot.get("spotify_url")
+                            track.spotify_metadata = best_spot
+                    except Exception as e:
+                        logger.debug("Spotify auto-enrichment error: %s", e)
+
+        result.spotify_url = track.spotify_url
+        result.spotify_metadata = track.spotify_metadata
 
         track.status = "COMPLETED"
         try:
@@ -844,6 +1145,9 @@ class DetectionService(IDetectionService):
 
         from ..core.config import (
             MAJOR_EXCLUSIVE_LABELS,
+            OPUS_STREAMING_FAKEPRINT_MIN,
+            OPUS_STREAMING_RIGIDITY_MIN,
+            OPUS_STREAMING_STEM_BLEED_MIN,
             SAFEGUARD_AUTOTUNE_FORMANT_MIN,
             SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED,
             SAFEGUARD_FAKEPRINT_MODERATE,
@@ -876,7 +1180,20 @@ class DetectionService(IDetectionService):
         ai_project_name = meta.get("suspected_ai_project", "")
         if not is_ai_artist_project:
             for pat, proj in ai_artist_regexes:
-                if re.search(pat, artist_str.lower()) or re.search(pat, title_str.lower()):
+                matched = False
+                for sub in sub_artists:
+                    if re.search(pat, sub.lower()):
+                        # BẢO VỆ CHỐNG TRÙNG TÊN HỌ: Nếu pattern trùng "hải đăng" nhưng sub-artist có họ "Đỗ", "Nguyễn", "Trần", "Lê"... -> Bỏ qua
+                        if "hải đăng" in proj.lower() and any(
+                            fn in sub.lower()
+                            for fn in ["đỗ", "nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "vũ", "võ"]
+                        ):
+                            continue
+                        matched = True
+                        break
+                if not matched and re.search(pat, title_str.lower()):
+                    matched = True
+                if matched:
                     is_ai_artist_project = True
                     ai_project_name = proj
                     break
@@ -888,12 +1205,36 @@ class DetectionService(IDetectionService):
             try:
                 for proj in self.track_repo.get_ai_artist_projects():
                     pname = str(proj.get("artist_name", "")).strip().lower()
-                    if pname and (pname in artist_str.lower() or pname in title_str.lower()):
-                        is_ai_artist_project = True
-                        ai_project_name = pname
-                        break
+                    if pname:
+                        patt = rf"\b{re.escape(pname)}\b"
+                        if re.search(patt, artist_str.lower()) or re.search(patt, title_str.lower()):
+                            if "hải đăng" in pname and any(
+                                fn in artist_str.lower()
+                                for fn in ["đỗ", "nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "vũ", "võ"]
+                            ):
+                                continue
+                            is_ai_artist_project = True
+                            ai_project_name = pname
+                            break
             except Exception:
                 pass
+
+        # BẢO VỆ CHỐNG VA CHẠM NAMESPACE NGHỆ SĨ NGƯỜI THẬT (Nhật Linh, Hải Đăng, JXCEZ):
+        if is_human_artist and is_ai_artist_project:
+            logger.info("Nghệ sĩ '%s' đã được xác thực là người thật. Bỏ qua cờ dự án AI.", artist_str)
+            is_ai_artist_project = False
+            ai_project_name = ""
+        elif is_ai_artist_project and any(amb in ai_project_name.lower() for amb in ["nhật linh", "nhat linh", "hải đăng", "hai dang", "jxcez"]):
+            uploader_str = str(meta.get("uploader") or meta.get("channel_name") or meta.get("channel_id") or "").lower()
+            has_explicit_context = (
+                is_ai_dist
+                or any(kw in uploader_str for kw in ["ai", "virtual", "studio ai", "voice clone", "bot", "music ai"])
+                or any(kw in title_str.lower() for kw in ["ai cover", "voice clone", "ai tạo sinh"])
+            )
+            if not has_explicit_context:
+                logger.info("Dự án AI '%s' trùng tên nghệ sĩ thông dụng nhưng thiếu bằng chứng Kênh/Nhà phát hành AI. Hủy cờ dự án AI.", ai_project_name)
+                is_ai_artist_project = False
+                ai_project_name = ""
 
         comb_sig = getattr(metrics, "comb_signature_score", 0.0) or 0.0
         stem_bleed_val = getattr(metrics, "stem_bleed_score", 0.0) or 0.0
@@ -912,14 +1253,27 @@ class DetectionService(IDetectionService):
             or (metrics.fakeprint_score >= 0.55 and stem_bleed_val >= 0.35)
             or (getattr(metrics, "modern_ai_vocal_suspect", False) and metrics.fakeprint_score >= 0.45)
         )
+        from ..core.config import OPUS_STREAMING_FAKEPRINT_THRESHOLD
+
         has_ai_audio_evidence = (
-            metrics.fakeprint_score >= 0.35
+            metrics.fakeprint_score >= OPUS_STREAMING_FAKEPRINT_THRESHOLD
             or comb_sig >= (0.75 if is_clipped else 0.70)
             or getattr(metrics, "ultrasonic_cutoff_detected", False)
-            or stem_bleed_val >= 0.32
+            or stem_bleed_val >= 0.35
             or (getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0) >= 0.40
             or getattr(metrics, "modern_ai_vocal_suspect", False)
             or phase_coh < 0.60
+        )
+
+        # Bằng chứng âm học thích ứng với định dạng nén lossy streaming (Opus/AAC/YouTube)
+        has_lossy_ai_evidence = (
+            metrics.fakeprint_score >= 0.15
+            or comb_sig >= 0.35
+            or getattr(metrics, "ultrasonic_cutoff_detected", False)
+            or stem_bleed_val >= 0.20
+            or (getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0) >= 0.35
+            or phase_coh < 0.75
+            or getattr(metrics, "modern_ai_vocal_suspect", False)
         )
 
         is_autotune = (
@@ -983,8 +1337,16 @@ class DetectionService(IDetectionService):
             )
 
             # 1b. Bảo vệ ca sĩ dùng Auto-Tune phòng thu xác thực (Formant biến thiên tự nhiên)
-            # QUAN TRỌNG: Nếu có chữ ký Fourier Deconvolution Comb cao (>= 78%) hoặc Stem Bleed AI nặng -> KHÔNG hạ cấp!
-            if is_autotune and not is_ai_dist and not is_catalog_or_batch_flag:
+            # QUAN TRỌNG:
+            # - Tuyệt đối không hạ cấp nếu là dự án AI (is_ai_artist_project) hoặc nhà phân phối AI (is_ai_dist).
+            # - Khóa 1 chiều (Bi-directional Lock): Nếu Model AI đã tự tin xác nhận dấu vết AI (confidence >= 0.88)
+            #   hoặc có cờ neural vocal suspect -> KHÔNG hạ cấp trừ khi là ca sĩ người thật trong Whitelist!
+            is_model_confident_ai = (
+                getattr(result, "ai_model_is_ai", False)
+                and result.confidence_score >= 0.88
+                and not is_human_artist
+            )
+            if is_autotune and not is_ai_dist and not is_ai_artist_project and not is_catalog_or_batch_flag and not is_model_confident_ai:
                 if is_heavy_neural_artifact:
                     logger.info(
                         "Phát hiện chữ ký Neural Comb / Fakeprint AI rõ nét (Comb: %.1f%%, FP: %.1f%%) trên '%s' -> Giữ nguyên kết luận AI.",
@@ -1021,7 +1383,15 @@ class DetectionService(IDetectionService):
             )
             # Bảo vệ Phonk / Clipped Master có giọng thật với phase coherence cao
             is_clean_phonk_vocal = is_clipped and phase_coh >= 0.75 and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_MODERATE
-            if (is_vocal_human_suspect_beat or is_clean_phonk_vocal) and not is_ai_dist and not is_heavy_neural_artifact and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_STRONG:
+            # KHÔNG HẠ CẤP nếu có bằng chứng tạo sinh đáng tin cậy (Stem Bleed cao, Fakeprint cao, hoặc AI Artist Project)
+            has_explicit_ai_vocal_evidence = (
+                is_heavy_neural_artifact
+                or is_ai_dist
+                or is_ai_artist_project
+                or (stem_bleed_val >= 0.32 and metrics.fakeprint_score >= 0.25)
+                or (getattr(metrics, "modern_ai_vocal_suspect", False) and metrics.fakeprint_score >= 0.30)
+            )
+            if (is_vocal_human_suspect_beat or is_clean_phonk_vocal) and not has_explicit_ai_vocal_evidence and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_STRONG:
                 logger.info(
                     "Kích hoạt Trọng tài Hậu kiểm (Anti-FP): Vocal con người trên beat điện tử/trap '%s', hạ cấp về PROCESSED_HUMAN.",
                     track.track_title,
@@ -1119,55 +1489,16 @@ class DetectionService(IDetectionService):
             has_cutoff = getattr(metrics, "ultrasonic_cutoff_detected", False)
             rolloff = metrics.spectral_rolloff_95_hz
 
-            # Kiểm tra xem AI Model có phát hiện bằng chứng sinh học thanh quản tự nhiên không
-            all_reasons_text = " ".join(
-                (result.reasons or []) + [result.detailed_explanation or ""]
-            ).lower()
-            has_human_bio_evidence = any(
-                kw in all_reasons_text
-                for kw in [
-                    "thanh quản sinh học",
-                    "sinh học tự nhiên",
-                    "đặc trưng sinh học",
-                    "vocal tract",
-                    "biological",
-                    "auto-tune phòng thu",
-                    "auto-tuned (natural vocal tract)",
-                    "natural vocal",
-                    "giọng người thật",
-                    "cấu trúc thanh quản",
-                    "thanh quản",
-                    "cộng hưởng ngực",
-                    "cộng hưởng lồng ngực",
-                    "cộng hưởng khoang ngực",
-                    "buồng vang ngực",
-                    "buồng vang",
-                    "buồng phổi",
-                    "mộc tự nhiên",
-                    "giọng hát mộc",
-                    "hơi thở hữu cơ",
-                    "khoảng ngắt hơi",
-                    "hơi thở chân thực",
-                    "hơi thở linh hoạt",
-                    "hơi thở sống động",
-                    "dao động vi mô",
-                    "biến đổi vi mô",
-                    "biến động vi mô",
-                    "micro-tremors",
-                    "micro-vibrato",
-                    "micro-fluctuations",
-                    "rung giọng (vibrato) tự nhiên",
-                    "vibrato tự nhiên",
-                    "quãng luyến láy chân thực",
-                    "sắc thái biểu cảm",
-                    "nghệ sĩ biểu diễn thật",
-                    "nghệ sĩ con người",
-                    "ca sĩ con người",
-                    "nghệ sĩ người thật",
-                    "giọng ca con người",
-                    "bản thu micro thực tế",
-                    "sinh lý giọng người",
-                ]
+            # Phân định bằng chứng sinh học thực tế từ đặc trưng âm học đo lường được
+            # Căn cứ trên độ biến thiên formant thực nghiệm (vocal_formant_variance) và độ cứng cao độ (rigidity)
+            # Không dùng văn bản hoa mỹ do LLM sinh ra để tránh bị tê liệt phán đoán âm học
+            has_real_physical_bio_evidence = (
+                is_human_artist
+                or (
+                    is_autotune
+                    and (getattr(metrics, "vocal_formant_variance", 0.0) or 0.0) >= SAFEGUARD_AUTOTUNE_FORMANT_MIN
+                    and (getattr(metrics, "pitch_rigidity_ratio", 0.0) or 0.0) <= 0.35
+                )
             )
 
             # 2a. Tiêu chí 1: AI thuần nhạc cụ / ambient (Chỉ áp dụng khi bản thu không có vocal)
@@ -1193,6 +1524,13 @@ class DetectionService(IDetectionService):
                 rigidity >= 0.47
                 and harm_ratio >= 0.80
                 and (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.32)
+            )
+
+            # 2e. Tiêu chí 5: Đồng thuận thích ứng nén Lossy Streaming (Opus/YouTube cho Suno v3.5/v4)
+            opus_streaming_consensus_ai = (
+                rigidity >= OPUS_STREAMING_RIGIDITY_MIN       # 0.42
+                and stem_bleed >= OPUS_STREAMING_STEM_BLEED_MIN  # 0.26
+                and metrics.fakeprint_score >= OPUS_STREAMING_FAKEPRINT_MIN  # 0.22
             )
 
             # 2d. Tiêu chí 4: AI Vocal thế hệ mới (Modern AI Vocal / Ultrasonic Cutoff)
@@ -1223,18 +1561,19 @@ class DetectionService(IDetectionService):
                             f"[CẢNH BÁO DANH MỤC AI]: Bản phát hành thuộc danh mục nhà phân phối AI. "
                             f"Chỉ số vật lý: Fakeprint {metrics.fakeprint_score * 100:.1f}%, Stem Bleed {stem_bleed:.2f}."
                         )
-                elif is_ai_artist_project and has_ai_audio_evidence:
-                    should_override_to_ai = True
-                    if is_en:
-                        override_reason = (
-                            f"[AI VIRTUAL PROJECT VERIFIED]: Artist '{artist_str or track.artist}' matches AI virtual project catalog ('{ai_project_name}') "
-                            f"and physical audio confirms AI artifacts (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
-                        )
-                    else:
-                        override_reason = (
-                            f"[DỰ ÁN AI ĐÃ ĐỐI SOÁT ÂM HỌC]: Nghệ sĩ '{artist_str or track.artist}' thuộc dự án âm nhạc AI '{ai_project_name}' "
-                            f"kết hợp bằng chứng âm học vật lý (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
-                        )
+                elif is_ai_artist_project:
+                    if has_lossy_ai_evidence or is_ai_dist or not is_human_artist:
+                        should_override_to_ai = True
+                        if is_en:
+                            override_reason = (
+                                f"[AI VIRTUAL PROJECT VERIFIED]: Artist '{artist_str or track.artist}' matches AI virtual project catalog ('{ai_project_name}') "
+                                f"with streaming-adapted acoustic evidence (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
+                            )
+                        else:
+                            override_reason = (
+                                f"[DỰ ÁN AI ĐÃ ĐỐI SOÁT CATALOG]: Nghệ sĩ '{artist_str or track.artist}' thuộc danh mục dự án AI đã xác thực ('{ai_project_name}') "
+                                f"kết hợp dấu hiệu âm học thích ứng (Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%)."
+                            )
                 elif is_instrumental_ai:
                     should_override_to_ai = True
                     if is_en:
@@ -1261,7 +1600,7 @@ class DetectionService(IDetectionService):
                             f"(Comb: {comb_sig * 100:.1f}%, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f}). "
                             "Dấu vết kỹ thuật deconvolution và intermodulation stem bleed áp đảo phán quyết ban đầu."
                         )
-                elif borderline_ai and not has_human_bio_evidence and not is_major_exclusive_label:
+                elif borderline_ai and not has_real_physical_bio_evidence and not is_major_exclusive_label:
                     should_override_to_ai = True
                     if is_en:
                         override_reason = (
@@ -1273,18 +1612,36 @@ class DetectionService(IDetectionService):
                             "[CẢNH BÁO ĐỒNG THUẬN ĐA TIÊU CHÍ]: Phát hiện đồng thuận các chỉ số vật lý AI "
                             f"(Rigidity: {rigidity:.2f}, Fakeprint: {metrics.fakeprint_score * 100:.1f}%, Stem Bleed: {stem_bleed:.2f})."
                         )
+                elif opus_streaming_consensus_ai and not has_real_physical_bio_evidence and not is_major_exclusive_label and not is_autotune:
+                    should_override_to_ai = True
+                    if is_en:
+                        override_reason = (
+                            "[OPUS STREAMING CONSENSUS ALERT]: Detected streaming-adapted consensus of AI physical metrics "
+                            f"(Rigidity: {rigidity:.2f} >= 0.42, Stem Bleed: {stem_bleed:.2f} >= 0.26, Fakeprint: {metrics.fakeprint_score * 100:.1f}% >= 22.0%)."
+                        )
+                    else:
+                        override_reason = (
+                            "[CẢNH BÁO ĐỒNG THUẬN OPUS STREAMING]: Phát hiện đồng thuận các chỉ số vật lý AI thích ứng nén mạng "
+                            f"(Rigidity: {rigidity:.2f} >= 0.42, Stem Bleed: {stem_bleed:.2f} >= 0.26, Fakeprint: {metrics.fakeprint_score * 100:.1f}% >= 22.0%)."
+                        )
                 elif is_autotune and not is_ai_dist and not is_heavy_neural_artifact and metrics.fakeprint_score < SAFEGUARD_FAKEPRINT_OVERRIDE_HIGH:
                     # BẢO VỆ MẠNH CHO AUTO-TUNE PHÒNG THU: Ngăn chặn override sang AI khi không có dấu hiệu nơ-ron nặng
                     logger.info("Phát hiện Auto-Tune phòng thu mộc trên '%s', bảo lưu phán quyết Người.", track.track_title)
                     should_override_to_ai = False
                 elif (
                     is_modern_ai_acoustic
-                    and not has_human_bio_evidence
+                    and not has_real_physical_bio_evidence
                     and not is_human_artist
                     and not is_major_exclusive_label
                 ):
-                    # CHỐNG VU OAN: Nếu có bằng chứng vật lý áp đảo hoặc catalog AI -> Nâng cấp AI
-                    if metrics.fakeprint_score >= 0.50 or stem_bleed >= 0.38 or is_ai_dist:
+                    # CHỐNG VU OAN: Yêu cầu bằng chứng đồng thuận kép hoặc catalog AI để tránh vu oan nhạc người lossy streaming
+                    has_verified_modern_ai = (
+                        (metrics.fakeprint_score >= 0.35 and stem_bleed >= 0.28)
+                        or (comb_sig >= 0.70)
+                        or is_ai_dist
+                        or is_ai_artist_project
+                    )
+                    if has_verified_modern_ai:
                         should_override_to_ai = True
                         if is_en:
                             override_reason = (
@@ -1300,7 +1657,7 @@ class DetectionService(IDetectionService):
                                 "đặc trưng của mô hình thanh nhạc neural diffusion (Suno/Udio). "
                                 "Phủ quyết nhận định nhầm lẫn ban đầu về thanh quản sinh học."
                             )
-                    elif metrics.fakeprint_score >= 0.30 or stem_bleed >= 0.28:
+                    elif metrics.fakeprint_score >= 0.32 and stem_bleed >= 0.28:
                         # Vùng mâu thuẫn tín hiệu -> VÙNG XÁM UNCERTAIN
                         logger.info("Kích hoạt Trọng tài Hậu kiểm: Mâu thuẫn tín hiệu biên trên '%s', gán nhãn UNCERTAIN.", track.track_title)
                         result.is_ai = False

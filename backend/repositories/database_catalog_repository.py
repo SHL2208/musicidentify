@@ -40,6 +40,87 @@ def remove_vietnamese_accents(text: str) -> str:
     return normalize_vietnamese_text(text).lower()
 
 
+# Danh sách hạt giống các nghệ sĩ người thật đã được xác thực
+SEED_VERIFIED_HUMAN_ARTISTS: set[str] = {
+    "chí thành danh",
+    "bảo thạch",
+    "2can",
+    "lâm chấn kiệt",
+    "thiên khôi",
+    "châu tuấn hùng",
+    "vương lâm",
+    "ivan tran",
+    "neit",
+    "thư thư",
+    "quách beem",
+    "ngọc hằng",
+    "lkt media",
+    "anh ba trứng",
+    "chí nhân",
+    "xuân thường",
+    "khả linh",
+    "dương trường giang",
+    "huệ ngọc nhã",
+    "khiêm quỳnh",
+    "võ trọng trí",
+    "long lee",
+    "bạch duy sơn",
+    "trần tuấn kiệt",
+    "tô hiếu",
+    "đinh tùng huy",
+    "chấn hào",
+    "wdm",
+}
+
+# Danh mục bài hát cover kinh điển hạt giống (tên bài -> nghệ sĩ gốc)
+SEED_FAMOUS_COVER_SONGS: dict[str, str] = {
+    "tuổi nàng 15": "Giao Linh",
+    "thuyền hoa": "Đoàn Bổng",
+    "tổ quốc gọi tên mình": "Đinh Trung Cẩn",
+    "winter wonderland": "Felix Bernard",
+    "cát bụi cuộc đời": "Hà Sơn",
+    "gấp đôi yêu thương": "Tuấn Hưng",
+    "vở kịch của em": "Huy Vạc",
+    "chẳng trách em đâu": "Giao Tiên",
+    "mình chia tay đi anh": "Huệ Ngọc Nhã",
+    "nhạc tàn người cũng tan": "Thư Thư",
+    "miền trung thức trắng": "Bạch Duy Sơn",
+    "chuyện cũ bỏ qua": "Bích Phương",
+    "ông hoàng bơ": "Hát Văn Dân Gian",
+    "chúng ta chỉ là đã từng yêu": "Khởi My",
+    "ai là người mong ta thành công": "Khả Linh",
+    "bông hồng cài áo": "Phạm Thế Mỹ",
+    "cao nguyên gió lạnh mưa mùa": "Trần Thiện Thanh",
+    "cứ bỏ mặc em đi": "Thanh Hưng",
+    "mưa chiều": "Anh Bằng",
+    "thương cánh sim tím": "Vinh Sử",
+    "xin đừng lặng im": "Soobin Hoàng Sơn",
+    "trong mắt em": "Huy Vạc",
+    "ăn tết văn minh": "Trúc Nhân",
+    "o christmas tree": "Traditional",
+    "jingle bells": "Traditional",
+    "silent night": "Traditional",
+    "sau lời từ khước": "Phan Mạnh Quỳnh",
+    "cắt đôi nỗi sầu": "Tăng Duy Tân",
+    "bên trên tầng lầu": "Tăng Duy Tân",
+    "hoa nở không màu": "Hoài Lâm",
+    "buồn làm chi em ơi": "Hoài Lâm",
+    "ai chung tình được mãi": "Đinh Tùng Huy",
+    "đế vương": "Đình Dũng",
+    "ngày mai người ta lấy chồng": "Thành Đạt",
+}
+
+# Danh mục dự án nghệ sĩ ảo AI hạt giống
+SEED_AI_ARTISTS: list[tuple[str, str]] = [
+    (r"\btrixie jane\b", "Trixie Jane"),
+    (r"\barlo fontaine\b", "Arlo Fontaine"),
+    (r"\bsolarix\b", "Solarix"),
+    (r"\bdj jin jin\b", "DJ JIN JIN"),
+    (r"\bsuka awalk\b", "Suka Awalk"),
+    (r"\btrapnova\b", "TrapNova"),
+]
+
+
 class DatabaseCatalogRepository(ICatalogRepository):
     """
     Repository truy xuất danh mục nghệ sĩ và nhà phân phối từ Database.
@@ -143,6 +224,27 @@ class DatabaseCatalogRepository(ICatalogRepository):
         except Exception as e:
             logger.warning("Không thể tự động ghi snapshot: %s", e)
 
+    def _apply_seed_catalogs(self) -> None:
+        """Hợp nhất danh mục hạt giống thiết yếu (chống rớt dữ liệu khi DB/snapshot offline)."""
+        if "human_artists" in self._cache:
+            self._cache["human_artists"].update(SEED_VERIFIED_HUMAN_ARTISTS)
+        if "human_artists_unaccented" in self._cache:
+            for h in SEED_VERIFIED_HUMAN_ARTISTS:
+                self._cache["human_artists_unaccented"].add(remove_vietnamese_accents(h))
+        if "famous_cover_songs" in self._cache:
+            for song, orig in SEED_FAMOUS_COVER_SONGS.items():
+                if song not in self._cache["famous_cover_songs"]:
+                    self._cache["famous_cover_songs"][song] = orig
+        if "ai_artists" in self._cache:
+            existing_ai = {
+                item[1].lower()
+                for item in self._cache["ai_artists"]
+                if isinstance(item, (list, tuple)) and len(item) > 1
+            }
+            for pat, name in SEED_AI_ARTISTS:
+                if name.lower() not in existing_ai:
+                    self._cache["ai_artists"].append((pat, name))
+
     def _ensure_cache(self, force: bool = False) -> None:
         """Kiểm tra và làm mới bộ nhớ đệm nếu đã hết thời gian hiệu lực (TTL)."""
         now = time.time()
@@ -231,14 +333,16 @@ class DatabaseCatalogRepository(ICatalogRepository):
                         self._cache["specialized_cover_channels"] = cover_chans
                         self._cache["timestamp"] = now
 
+                        self._apply_seed_catalogs()
+
                         # Tự động cập nhật snapshot cục bộ khi query DB thành công
                         self._save_snapshot(
-                            db_human_names,
-                            db_human_unacc,
-                            ai_artists,
+                            self._cache["human_artists"],
+                            self._cache["human_artists_unaccented"],
+                            self._cache["ai_artists"],
                             whitelist,
                             ai_dist,
-                            famous_covers,
+                            self._cache["famous_cover_songs"],
                             famous_remixes,
                             cover_chans,
                         )
@@ -266,6 +370,7 @@ class DatabaseCatalogRepository(ICatalogRepository):
                 "specialized_cover_channels", set()
             )
             self._cache["timestamp"] = now
+            self._apply_seed_catalogs()
 
     def reload_catalogs(self, force: bool = True) -> None:
         """Nạp lại danh mục từ DB hoặc Snapshot."""

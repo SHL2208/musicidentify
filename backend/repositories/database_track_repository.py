@@ -114,6 +114,17 @@ class DatabaseTrackRepository(ITrackRepository):
                     elif existing.distributor and not track.distributor:
                         track.distributor = existing.distributor
 
+                    # Spotify URL & Metadata
+                    if track.spotify_url:
+                        existing.spotify_url = track.spotify_url
+                    elif getattr(existing, "spotify_url", None) and not track.spotify_url:
+                        track.spotify_url = existing.spotify_url
+
+                    if track.spotify_metadata:
+                        existing.spotify_metadata = track.spotify_metadata
+                    elif getattr(existing, "spotify_metadata", None) and not track.spotify_metadata:
+                        track.spotify_metadata = existing.spotify_metadata
+
                     # Match score & verification
                     if track.is_verified_match is not None:
                         existing.is_verified_match = track.is_verified_match
@@ -145,6 +156,8 @@ class DatabaseTrackRepository(ITrackRepository):
                         song_type=track.song_type,
                         release_date=track.release_date,
                         distributor=track.distributor,
+                        spotify_url=track.spotify_url,
+                        spotify_metadata=track.spotify_metadata,
                         is_verified_match=track.is_verified_match,
                         match_score=track.match_score,
                         status=track.status,
@@ -182,6 +195,8 @@ class DatabaseTrackRepository(ITrackRepository):
                         song_type=tm.song_type,
                         release_date=tm.release_date,
                         distributor=tm.distributor,
+                        spotify_url=getattr(tm, "spotify_url", None),
+                        spotify_metadata=getattr(tm, "spotify_metadata", None),
                         is_verified_match=tm.is_verified_match,
                         match_score=tm.match_score,
                         status=tm.status or "PENDING",
@@ -279,6 +294,15 @@ class DatabaseTrackRepository(ITrackRepository):
                     existing_res.ai_model_verdict = result.ai_model_verdict
                     existing_res.consensus_is_ai = result.consensus_is_ai
                     existing_res.consensus_verdict = result.consensus_verdict
+                    if getattr(result, "spotify_url", None):
+                        existing_res.spotify_url = result.spotify_url
+                    elif getattr(existing_res, "spotify_url", None) and not getattr(result, "spotify_url", None):
+                        result.spotify_url = existing_res.spotify_url
+
+                    if getattr(result, "spotify_metadata", None):
+                        existing_res.spotify_metadata = result.spotify_metadata
+                    elif getattr(existing_res, "spotify_metadata", None) and not getattr(result, "spotify_metadata", None):
+                        result.spotify_metadata = existing_res.spotify_metadata
                     existing_res.processed_at = get_utc_now()
                 else:
                     existing_res = DetectionResultModel(
@@ -296,6 +320,8 @@ class DatabaseTrackRepository(ITrackRepository):
                         ai_model_verdict=result.ai_model_verdict,
                         consensus_is_ai=result.consensus_is_ai,
                         consensus_verdict=result.consensus_verdict,
+                        spotify_url=getattr(result, "spotify_url", None),
+                        spotify_metadata=getattr(result, "spotify_metadata", None),
                     )
                     session.add(existing_res)
                     session.flush()
@@ -800,4 +826,8 @@ class DatabaseTrackRepository(ITrackRepository):
             duration_sec=tm.duration_sec
             if (tm and tm.duration_sec is not None)
             else (metrics_obj.duration_sec if metrics_obj else None),
+            spotify_url=getattr(rm, "spotify_url", None)
+            or (getattr(tm, "spotify_url", None) if tm else None),
+            spotify_metadata=getattr(rm, "spotify_metadata", None)
+            or (getattr(tm, "spotify_metadata", None) if tm else None),
         )

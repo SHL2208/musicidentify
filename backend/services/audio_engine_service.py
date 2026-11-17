@@ -12,6 +12,10 @@ from ..core.config import (
     AUDIO_SAMPLE_DURATION,
     AUDIO_SAMPLE_OFFSET,
     ENABLE_RANGE_STREAM_DOWNLOAD,
+    MULTI_SEGMENT_CHORUS_DURATION_SEC,
+    MULTI_SEGMENT_INTRO_DURATION_SEC,
+    MULTI_SEGMENT_TOTAL_DURATION_SEC,
+    MULTI_SEGMENT_VERSE_DURATION_SEC,
     get_all_cookie_file_paths,
     get_cookie_file_path,
     get_ffmpeg_binary,
@@ -183,10 +187,28 @@ class AudioEngineService(IAudioEngine):
                 raw_audio_path = None
                 metadata = {}
                 err_str = ""
-                try:
-                    raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
-                except Exception as dl_err:
-                    err_str = str(dl_err).lower()
+                is_spotify = (
+                    "spotify.com" in url_to_download.lower()
+                    or "spotify:track" in url_to_download.lower()
+                )
+
+                if is_spotify:
+                    _safe_log(
+                        f"[AudioEngineService] [SPOTIFY BRIDGE] Phát hiện URL Spotify ({url_to_download}). "
+                        "Bỏ qua tải DRM trực tiếp, chủ động kích hoạt chuyển đổi sang YouTube..."
+                    )
+                    dl_err = Exception("Spotify DRM protected stream (Auto-Bridged)")
+                    should_run_fallback = True
+                else:
+                    try:
+                        raw_audio_path, metadata = self._download_audio(url_to_download, track.id)
+                        should_run_fallback = False
+                    except Exception as exc:
+                        dl_err = exc
+                        err_str = str(dl_err).lower()
+                        should_run_fallback = True
+
+                if should_run_fallback:
                     target_t = track.track_title or track.raw_query
                     target_a = track.artist or ""
 
@@ -197,22 +219,26 @@ class AudioEngineService(IAudioEngine):
                         or search_title.startswith("http")
                         or "youtu" in search_title
                         or "zing" in search_title
+                        or "spotify" in search_title
                     ):
                         from ..core.container import get_container
 
                         res_svc = get_container().resolver
-                        meta_title, _ = res_svc.get_url_metadata(url_to_download)
+                        meta_title, meta_dur = res_svc.get_url_metadata(url_to_download)
                         if meta_title and not meta_title.startswith("http"):
                             search_title = meta_title
                             track.track_title = search_title
+                        if meta_dur and not track.duration_sec:
+                            track.duration_sec = meta_dur
 
                     # Nhánh 1: Tự động chuyển đổi sang YouTube nếu tải từ nguồn gốc thất bại (Zing MP3 VIP/403/429 hoặc lỗi stream)
                     if not raw_audio_path and (
                         "youtube.com" not in url_to_download and "youtu.be" not in url_to_download
                     ):
-                        _safe_log(
-                            f"[AudioEngineService] [FALLBACK] Tải URL gốc thất bại ({url_to_download}: {dl_err}). Đang tìm kiếm và chuyển đổi sang YouTube..."
-                        )
+                        if not is_spotify:
+                            _safe_log(
+                                f"[AudioEngineService] [FALLBACK] Tải URL gốc thất bại ({url_to_download}: {dl_err}). Đang tìm kiếm và chuyển đổi sang YouTube..."
+                            )
                         from ..core.container import get_container
 
                         res_svc = get_container().resolver
@@ -230,7 +256,7 @@ class AudioEngineService(IAudioEngine):
                                 if raw_audio_path:
                                     metadata["is_fallback_audio"] = True
                                     metadata["fallback_from_url"] = url_to_download
-                                    metadata["fallback_platform"] = "youtube"
+                                    metadata["fallback_platform"] = "spotify_bridge" if is_spotify else "youtube"
                                     metadata["webpage_url"] = yt_url
                                     track.resolved_url = yt_url
                                     if yt_title and not track.track_title:
@@ -455,7 +481,12 @@ class AudioEngineService(IAudioEngine):
                 http_headers = info_dict.get("http_headers") or {}
                 ua = http_headers.get("User-Agent")
 
-                if dur <= 45.0:
+                target_total = MULTI_SEGMENT_TOTAL_DURATION_SEC
+                intro_dur = MULTI_SEGMENT_INTRO_DURATION_SEC
+                verse_dur = MULTI_SEGMENT_VERSE_DURATION_SEC
+                chorus_dur = MULTI_SEGMENT_CHORUS_DURATION_SEC
+
+                if dur <= target_total:
                     cmd = [
                         self.ffmpeg_path,
                         "-y",
@@ -481,15 +512,19 @@ class AudioEngineService(IAudioEngine):
                         ]
                     )
                 else:
-                    slice_dur = 15.0
-                    start_1 = max(0.0, min(dur * 0.20 - slice_dur / 2, dur - slice_dur))
-                    start_2 = max(0.0, min(dur * 0.50 - slice_dur / 2, dur - slice_dur))
-                    start_3 = max(0.0, min(dur * 0.75 - slice_dur / 2, dur - slice_dur))
+                    intro_start = 0.0
+                    intro_end = min(intro_dur, dur)
+
+                    start_v = max(intro_end, min(dur * 0.22 - verse_dur / 2.0, dur - chorus_dur - verse_dur))
+                    end_v = start_v + verse_dur
+
+                    start_c = max(end_v, min(dur * 0.50 - chorus_dur / 2.0, dur - chorus_dur))
+                    end_c = start_c + chorus_dur
 
                     filter_complex = (
-                        f"[0:a]atrim=start={start_1:.2f}:end={start_1 + slice_dur:.2f},asetpts=PTS-STARTPTS[a1];"
-                        f"[0:a]atrim=start={start_2:.2f}:end={start_2 + slice_dur:.2f},asetpts=PTS-STARTPTS[a2];"
-                        f"[0:a]atrim=start={start_3:.2f}:end={start_3 + slice_dur:.2f},asetpts=PTS-STARTPTS[a3];"
+                        f"[0:a]atrim=start={intro_start:.2f}:end={intro_end:.2f},asetpts=PTS-STARTPTS[a1];"
+                        f"[0:a]atrim=start={start_v:.2f}:end={end_v:.2f},asetpts=PTS-STARTPTS[a2];"
+                        f"[0:a]atrim=start={start_c:.2f}:end={end_c:.2f},asetpts=PTS-STARTPTS[a3];"
                         "[a1][a2][a3]concat=n=3:v=0:a=1[out]"
                     )
                     cmd = [
@@ -579,7 +614,12 @@ class AudioEngineService(IAudioEngine):
             "Chrome/131.0.0.0 Safari/537.36"
         )
 
-        is_youtube = ("youtube.com" in url) or ("youtu.be" in url)
+        is_youtube = (
+            ("youtube.com" in url)
+            or ("youtu.be" in url)
+            or url.lower().startswith("ytsearch")
+            or url.lower().startswith("youtube:")
+        )
 
         # Ma trận chiến lược tải đa tầng (Multi-tier Strategy Matrix)
         if is_youtube:
@@ -741,6 +781,8 @@ class AudioEngineService(IAudioEngine):
             # khi YouTube trả về SABR-only stream mà yt-dlp chưa hỗ trợ phân giải
             if is_youtube:
                 ydl_opts["check_formats"] = None  # --no-check-formats
+                if url.lower().startswith("ytsearch"):
+                    ydl_opts["playlist_items"] = "1"
 
             if is_youtube and client_pref:
                 ydl_opts["extractor_args"] = {"youtube": {"player_client": client_pref}}
@@ -822,10 +864,11 @@ class AudioEngineService(IAudioEngine):
         self, input_audio: Path, track_id: str, total_duration: float | None = None
     ) -> Path:
         """
-        Trích xuất đa phân đoạn đại diện toàn bài (Multi-Segment):
-        - Đoạn 1 (15s): Verse / Khúc đầu (20% thời lượng bài)
-        - Đoạn 2 (15s): Điệp khúc / Chorus chính (50% thời lượng bài)
-        - Đoạn 3 (15s): Chuyển đoạn / Climax / Bridge (75% thời lượng bài)
+        Trích xuất đa phân đoạn đại diện toàn bài (Multi-Segment Adaptive Slicing - 36s):
+        - Đoạn 1 (6s): Intro / Khởi đầu bài hát (0.0s - 6.0s) -> Bắt vết nhiễu khởi tạo latent noise
+        - Đoạn 2 (15s): Verse / Khúc đầu thân bài (~22% thời lượng bài) -> Soi âm mộc và phụ âm thanh quản
+        - Đoạn 3 (15s): Điệp khúc / Chorus chính (~50% thời lượng bài) -> Soi độ bết dính stem bleed
+        Tổng thời lượng composite sample: 36.0 giây.
         """
         output_sample = self.temp_dir / f"{track_id}_multisegment.wav"
 
@@ -837,8 +880,9 @@ class AudioEngineService(IAudioEngine):
         except Exception:
             file_dur = self._get_audio_duration_ffmpeg(input_audio)
 
-        # 2. Nếu file đầu vào đã là mẫu cắt (<= 48s) từ stream slice hoặc slice trước đó:
-        if 0.0 < file_dur <= 48.0:
+        # 2. Nếu file đầu vào đã là mẫu cắt (<= 38s) từ slice trước đó:
+        target_total = MULTI_SEGMENT_TOTAL_DURATION_SEC
+        if 0.0 < file_dur <= (target_total + 2.0):
             if input_audio.resolve() == output_sample.resolve() and output_sample.exists():
                 return output_sample
             try:
@@ -865,7 +909,7 @@ class AudioEngineService(IAudioEngine):
             except Exception:
                 pass
 
-        # 3. Với file dài (> 48s), xác định mốc cắt an toàn dựa trên độ dài thực tế
+        # 3. Với file dài (> 38s), xác định mốc cắt 3 phân đoạn an toàn
         dur = (
             file_dur
             if file_dur > 0.0
@@ -874,9 +918,13 @@ class AudioEngineService(IAudioEngine):
         if file_dur > 0.0 and dur > file_dur:
             dur = file_dur
 
+        intro_dur = MULTI_SEGMENT_INTRO_DURATION_SEC
+        verse_dur = MULTI_SEGMENT_VERSE_DURATION_SEC
+        chorus_dur = MULTI_SEGMENT_CHORUS_DURATION_SEC
+
         if dur > 0.0:
             try:
-                if dur <= 45.0:
+                if dur <= target_total:
                     cmd = [
                         self.ffmpeg_path,
                         "-y",
@@ -894,15 +942,21 @@ class AudioEngineService(IAudioEngine):
                     if res.returncode == 0 and output_sample.exists():
                         return output_sample
                 else:
-                    slice_dur = 15.0
-                    start_1 = max(0.0, min(dur * 0.20 - slice_dur / 2, dur - slice_dur))
-                    start_2 = max(0.0, min(dur * 0.50 - slice_dur / 2, dur - slice_dur))
-                    start_3 = max(0.0, min(dur * 0.75 - slice_dur / 2, dur - slice_dur))
+                    intro_start = 0.0
+                    intro_end = min(intro_dur, dur)
+
+                    # Verse bắt đầu từ ~22% thời lượng bài, tránh đè lên Intro
+                    start_v = max(intro_end, min(dur * 0.22 - verse_dur / 2.0, dur - chorus_dur - verse_dur))
+                    end_v = start_v + verse_dur
+
+                    # Chorus bắt đầu từ ~50% thời lượng bài, tránh đè lên Verse
+                    start_c = max(end_v, min(dur * 0.50 - chorus_dur / 2.0, dur - chorus_dur))
+                    end_c = start_c + chorus_dur
 
                     filter_complex = (
-                        f"[0:a]atrim=start={start_1:.2f}:end={start_1 + slice_dur:.2f},asetpts=PTS-STARTPTS[a1];"
-                        f"[0:a]atrim=start={start_2:.2f}:end={start_2 + slice_dur:.2f},asetpts=PTS-STARTPTS[a2];"
-                        f"[0:a]atrim=start={start_3:.2f}:end={start_3 + slice_dur:.2f},asetpts=PTS-STARTPTS[a3];"
+                        f"[0:a]atrim=start={intro_start:.2f}:end={intro_end:.2f},asetpts=PTS-STARTPTS[a1];"
+                        f"[0:a]atrim=start={start_v:.2f}:end={end_v:.2f},asetpts=PTS-STARTPTS[a2];"
+                        f"[0:a]atrim=start={start_c:.2f}:end={end_c:.2f},asetpts=PTS-STARTPTS[a3];"
                         "[a1][a2][a3]concat=n=3:v=0:a=1[out]"
                     )
                     cmd = [
@@ -938,32 +992,32 @@ class AudioEngineService(IAudioEngine):
             total_frames = len(data)
             duration = total_frames / sr
 
-            if duration <= 45.0:
+            if duration <= target_total:
                 sf.write(str(output_sample), data, sr)
                 return output_sample
 
-            slice_dur = 15.0
-            slice_frames = int(slice_dur * sr)
             fade_len = int(0.05 * sr)
             fade_in = np.linspace(0, 1, fade_len)[:, np.newaxis]
             fade_out = np.linspace(1, 0, fade_len)[:, np.newaxis]
 
-            def extract_slice(center_ratio: float) -> np.ndarray:
-                center_frame = int(center_ratio * total_frames)
-                start_frame = max(0, center_frame - slice_frames // 2)
-                end_frame = min(total_frames, start_frame + slice_frames)
-                if end_frame - start_frame < slice_frames:
-                    start_frame = max(0, end_frame - slice_frames)
-
-                segment = data[start_frame:end_frame].copy()
+            def extract_frame_range(s_time: float, e_time: float) -> np.ndarray:
+                s_frame = max(0, int(s_time * sr))
+                e_frame = min(total_frames, int(e_time * sr))
+                segment = data[s_frame:e_frame].copy()
                 if len(segment) >= fade_len * 2:
                     segment[:fade_len] *= fade_in
                     segment[-fade_len:] *= fade_out
                 return segment
 
-            seg1 = extract_slice(0.20)
-            seg2 = extract_slice(0.50)
-            seg3 = extract_slice(0.75)
+            intro_end_val = min(intro_dur, duration)
+            start_v_val = max(intro_end_val, min(duration * 0.22 - verse_dur / 2.0, duration - chorus_dur - verse_dur))
+            end_v_val = start_v_val + verse_dur
+            start_c_val = max(end_v_val, min(duration * 0.50 - chorus_dur / 2.0, duration - chorus_dur))
+            end_c_val = start_c_val + chorus_dur
+
+            seg1 = extract_frame_range(0.0, intro_end_val)
+            seg2 = extract_frame_range(start_v_val, end_v_val)
+            seg3 = extract_frame_range(start_c_val, end_c_val)
 
             composite = np.concatenate([seg1, seg2, seg3], axis=0)
             sf.write(str(output_sample), composite, sr)

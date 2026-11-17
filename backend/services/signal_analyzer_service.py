@@ -1,4 +1,6 @@
+import concurrent.futures
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ import matplotlib.pyplot as plt
 
 from ..core.config import (
     AI_CONTEXT_PATTERN,
+    ASYNC_SPECTROGRAM_RENDERING,
     BATCH_AI_KEYWORDS_PATTERN,
     BATCH_AI_NUMBER_PATTERN,
     COMPRESSION_LOSSY_ROLLOFF_MAX,
@@ -51,6 +54,7 @@ from ..core.config import (
     SPECTRAL_STFT_HOP_LENGTH,
     SPECTRAL_STFT_N_FFT,
     SPECTROGRAM_DPI,
+    SPECTROGRAM_PLOTTER_WORKERS,
     STEM_BLEED_HOP_LENGTH,
     STEM_BLEED_THRESHOLD,
     STEM_BLEED_WINDOW_SEC,
@@ -62,6 +66,11 @@ from ..core.config import (
     ULTRASONIC_SHELF_DROP_DB_THRESHOLD,
     VOCAL_BAND_FREQ_MAX,
     VOCAL_BAND_FREQ_MIN,
+)
+
+_plot_lock = threading.Lock()
+_plot_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=SPECTROGRAM_PLOTTER_WORKERS, thread_name_prefix="spectrogram_plotter"
 )
 from ..core.exceptions import AudioProcessingException
 from ..core.interfaces.repositories.catalog_repository_interface import (
@@ -285,6 +294,15 @@ class SignalAnalyzerService(ISignalAnalyzer):
             try:
                 if re.search(pat, artist_lower):
                     metadata["suspected_ai_project"] = proj_name
+                    # Ưu tiên Catalog AI nếu không phải nghệ sĩ người thật đã xác thực
+                    if not self.is_verified_human_artist(artist_lower, title):
+                        return {
+                            "is_ai": True,
+                            "verdict_type": VerdictType.AI_GENERATED,
+                            "confidence": 0.95,
+                            "engine": "AI Virtual Project",
+                            "reason": f"Nghệ sĩ '{proj_name}' thuộc danh mục dự án âm nhạc AI đã xác thực.",
+                        }
                     break
             except Exception:
                 continue
@@ -462,11 +480,15 @@ class SignalAnalyzerService(ISignalAnalyzer):
         except Exception:  # noqa: BLE001
             return {"stem_bleed_score": 0.0, "stem_bleed_detected": False}
 
-    def analyze_audio(self, audio_path: Path) -> tuple[AcousticMetrics, Path | None]:
+    def analyze_audio(
+        self, audio_path: Path, async_plot: bool | None = None
+    ) -> tuple[AcousticMetrics, Any]:
         """
         Phân tích dạng sóng âm thanh và xuất biểu đồ phổ 2 tầng:
         Tầng 1: Mel-Spectrogram toàn diện
         Tầng 2: Phổ vân Fourier Deconvolution (Deezer ISMIR 2025)
+        Nếu async_plot=True (mặc định theo ASYNC_SPECTROGRAM_RENDERING), trả về (metrics, plot_future)
+        để luồng chính lập tức gửi số liệu sang LLM trong khi background thread vẽ ảnh ngầm.
         """
         try:
             data, sr = sf.read(str(audio_path))
@@ -628,19 +650,42 @@ class SignalAnalyzerService(ISignalAnalyzer):
                 is_clipped_master=is_clipped_master,
             )
 
-            # 7. Vẽ biểu đồ Forensic 3 tầng
-            image_path = self._generate_forensic_plot(
-                mono_y=mono_y,
-                mono_harm=mono_harm,
-                sr=sr,
-                audio_stem=audio_path.stem,
-                metrics=metrics,
-                fakeprint_res=fakeprint_res,
-                stft_mag=stft,
-                harm_stft_mag=np.abs(H),
+            # 7. Vẽ biểu đồ Forensic 3 tầng (chạy ngầm bất đồng bộ nếu bật async_plot)
+            should_async = (
+                async_plot if async_plot is not None else ASYNC_SPECTROGRAM_RENDERING
             )
-
-            return metrics, image_path
+            if should_async:
+                m_y_copy = mono_y.copy() if hasattr(mono_y, "copy") else mono_y
+                m_h_copy = (
+                    mono_harm.copy()
+                    if (mono_harm is not None and hasattr(mono_harm, "copy"))
+                    else mono_harm
+                )
+                h_mag = np.abs(H) if H is not None else None
+                plot_future = _plot_executor.submit(
+                    self._generate_forensic_plot,
+                    mono_y=m_y_copy,
+                    mono_harm=m_h_copy,
+                    sr=sr,
+                    audio_stem=audio_path.stem,
+                    metrics=metrics,
+                    fakeprint_res=fakeprint_res,
+                    stft_mag=stft,
+                    harm_stft_mag=h_mag,
+                )
+                return metrics, plot_future
+            else:
+                image_path = self._generate_forensic_plot(
+                    mono_y=mono_y,
+                    mono_harm=mono_harm,
+                    sr=sr,
+                    audio_stem=audio_path.stem,
+                    metrics=metrics,
+                    fakeprint_res=fakeprint_res,
+                    stft_mag=stft,
+                    harm_stft_mag=np.abs(H),
+                )
+                return metrics, image_path
 
         except Exception as e:
             raise AudioProcessingException(
@@ -716,112 +761,116 @@ class SignalAnalyzerService(ISignalAnalyzer):
     ) -> Path | None:
         """Tạo biểu đồ phổ hình 3 tầng chuyên nghiệp chống hiện tượng che mờ âm học."""
         out_image_path = self.temp_dir / f"{audio_stem}_forensic.png"
-        try:
-            out_image_path.parent.mkdir(parents=True, exist_ok=True)
-            fig, (ax1, ax2, ax3) = plt.subplots(
-                3, 1, figsize=(11, 9.8), gridspec_kw={"height_ratios": [1.5, 1.5, 1.1]}
-            )
-            fig.patch.set_facecolor("#0F172A")
-
-            # TẦNG 1: Mel-Spectrogram toàn dải (Full Mix)
-            if stft_mag is not None:
-                S = librosa.feature.melspectrogram(S=stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2)
-            else:
-                S = librosa.feature.melspectrogram(y=mono_y, sr=sr, n_mels=128, fmax=sr // 2)
-            S_dB = librosa.power_to_db(S, ref=np.max)
-            img1 = librosa.display.specshow(
-                S_dB, x_axis="time", y_axis="mel", sr=sr, fmax=sr // 2, ax=ax1, cmap="magma"
-            )
-            ax1.set_title(
-                f"TẦNG 1: QUANG PHỔ TOÀN DẢI (FULL AUDIO MIX) | Rolloff 95%: {metrics.spectral_rolloff_95_hz:.0f} Hz | {metrics.compression_source}",
-                color="#38BDF8",
-                fontsize=10.5,
-                fontweight="bold",
-                pad=8,
-            )
-            ax1.set_facecolor("#0B0F19")
-            ax1.tick_params(colors="#94A3B8")
-            ax1.yaxis.label.set_color("#94A3B8")
-            ax1.xaxis.label.set_color("#94A3B8")
-            cbar1 = fig.colorbar(img1, ax=ax1, format="%+2.0f dB", pad=0.02)
-            cbar1.ax.tick_params(colors="#94A3B8")
-
-            # TẦNG 2: Mel-Spectrogram sóng hài
-            if harm_stft_mag is not None:
-                S_harm = librosa.feature.melspectrogram(
-                    S=harm_stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2
+        with _plot_lock:
+            try:
+                out_image_path.parent.mkdir(parents=True, exist_ok=True)
+                fig, (ax1, ax2, ax3) = plt.subplots(
+                    3, 1, figsize=(11, 9.8), gridspec_kw={"height_ratios": [1.5, 1.5, 1.1]}
                 )
-            else:
-                target_harm = mono_harm if mono_harm is not None else mono_y
-                S_harm = librosa.feature.melspectrogram(
-                    y=target_harm, sr=sr, n_mels=128, fmax=sr // 2
+                fig.patch.set_facecolor("#0F172A")
+
+                # TẦNG 1: Mel-Spectrogram toàn dải (Full Mix)
+                if stft_mag is not None:
+                    S = librosa.feature.melspectrogram(S=stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2)
+                else:
+                    S = librosa.feature.melspectrogram(y=mono_y, sr=sr, n_mels=128, fmax=sr // 2)
+                S_dB = librosa.power_to_db(S, ref=np.max)
+                img1 = librosa.display.specshow(
+                    S_dB, x_axis="time", y_axis="mel", sr=sr, fmax=sr // 2, ax=ax1, cmap="magma"
                 )
-            S_harm_dB = librosa.power_to_db(S_harm, ref=np.max)
-            img2 = librosa.display.specshow(
-                S_harm_dB, x_axis="time", y_axis="mel", sr=sr, fmax=sr // 2, ax=ax2, cmap="inferno"
-            )
-            ax2.set_title(
-                "TẦNG 2: PHỔ SÓNG HÀI VOCAL (KHỬ TRỐNG / BỘ GÕ QUA HPSS) | Bóc tách giọng mộc, chống che mờ âm học",
-                color="#A78BFA",
-                fontsize=10.5,
-                fontweight="bold",
-                pad=8,
-            )
-            ax2.set_facecolor("#0B0F19")
-            ax2.tick_params(colors="#94A3B8")
-            ax2.yaxis.label.set_color("#94A3B8")
-            ax2.xaxis.label.set_color("#94A3B8")
-            cbar2 = fig.colorbar(img2, ax=ax2, format="%+2.0f dB", pad=0.02)
-            cbar2.ax.tick_params(colors="#94A3B8")
-
-            # TẦNG 3: Phổ vân Fourier Deconvolution ISMIR 2025
-            sub_freqs = fakeprint_res.get("freqs", np.array([]))
-            residual = fakeprint_res.get("residual_spectrum", np.array([]))
-
-            if len(sub_freqs) > 0 and len(residual) > 0:
-                ax3.plot(
-                    sub_freqs / 1000.0,
-                    residual,
-                    color="#EC4899",
-                    linewidth=1.2,
-                    label="Fourier Comb Residue",
-                )
-                ax3.set_xlim(sub_freqs[0] / 1000.0, sub_freqs[-1] / 1000.0)
-                ax3.set_xlabel("Tần số (kHz)", color="#94A3B8", fontsize=9.5)
-                ax3.set_ylabel("Cường độ vân", color="#94A3B8", fontsize=9.5)
-                ax3.grid(True, linestyle="--", alpha=0.3, color="#475569")
-
-                ax3.set_title(
-                    self._get_tier3_spectrogram_title(metrics),
+                ax1.set_title(
+                    f"TẦNG 1: QUANG PHỔ TOÀN DẢI (FULL AUDIO MIX) | Rolloff 95%: {metrics.spectral_rolloff_95_hz:.0f} Hz | {metrics.compression_source}",
                     color="#38BDF8",
-                    fontsize=10.0,
+                    fontsize=10.5,
                     fontweight="bold",
                     pad=8,
                 )
-            else:
-                ax3.text(
-                    0.5,
-                    0.5,
-                    "Không đủ dữ liệu Fourier để vẽ tầng 3",
-                    color="#94A3B8",
-                    ha="center",
-                    va="center",
+                ax1.set_facecolor("#0B0F19")
+                ax1.tick_params(colors="#94A3B8")
+                ax1.yaxis.label.set_color("#94A3B8")
+                ax1.xaxis.label.set_color("#94A3B8")
+                cbar1 = fig.colorbar(img1, ax=ax1, format="%+2.0f dB", pad=0.02)
+                cbar1.ax.tick_params(colors="#94A3B8")
+
+                # TẦNG 2: Mel-Spectrogram sóng hài
+                if harm_stft_mag is not None:
+                    S_harm = librosa.feature.melspectrogram(
+                        S=harm_stft_mag**2, sr=sr, n_mels=128, fmax=sr // 2
+                    )
+                else:
+                    target_harm = mono_harm if mono_harm is not None else mono_y
+                    S_harm = librosa.feature.melspectrogram(
+                        y=target_harm, sr=sr, n_mels=128, fmax=sr // 2
+                    )
+                S_harm_dB = librosa.power_to_db(S_harm, ref=np.max)
+                img2 = librosa.display.specshow(
+                    S_harm_dB, x_axis="time", y_axis="mel", sr=sr, fmax=sr // 2, ax=ax2, cmap="inferno"
                 )
+                ax2.set_title(
+                    "TẦNG 2: PHỔ SÓNG HÀI VOCAL (KHỬ TRỐNG / BỘ GÕ QUA HPSS) | Bóc tách giọng mộc, chống che mờ âm học",
+                    color="#A78BFA",
+                    fontsize=10.5,
+                    fontweight="bold",
+                    pad=8,
+                )
+                ax2.set_facecolor("#0B0F19")
+                ax2.tick_params(colors="#94A3B8")
+                ax2.yaxis.label.set_color("#94A3B8")
+                ax2.xaxis.label.set_color("#94A3B8")
+                cbar2 = fig.colorbar(img2, ax=ax2, format="%+2.0f dB", pad=0.02)
+                cbar2.ax.tick_params(colors="#94A3B8")
 
-            ax3.set_facecolor("#0B0F19")
-            ax3.tick_params(colors="#94A3B8")
+                # TẦNG 3: Phổ vân Fourier Deconvolution ISMIR 2025
+                sub_freqs = fakeprint_res.get("freqs", np.array([]))
+                residual = fakeprint_res.get("residual_spectrum", np.array([]))
 
-            plt.tight_layout()
-            plt.savefig(
-                str(out_image_path),
-                dpi=SPECTROGRAM_DPI,
-                facecolor=fig.get_facecolor(),
-                edgecolor="none",
-            )
-            plt.close(fig)
-            return out_image_path
+                if len(sub_freqs) > 0 and len(residual) > 0:
+                    ax3.plot(
+                        sub_freqs / 1000.0,
+                        residual,
+                        color="#EC4899",
+                        linewidth=1.2,
+                        label="Fourier Comb Residue",
+                    )
+                    ax3.set_xlim(sub_freqs[0] / 1000.0, sub_freqs[-1] / 1000.0)
+                    ax3.set_xlabel("Tần số (kHz)", color="#94A3B8", fontsize=9.5)
+                    ax3.set_ylabel("Cường độ vân", color="#94A3B8", fontsize=9.5)
+                    ax3.grid(True, linestyle="--", alpha=0.3, color="#475569")
 
-        except Exception as e:  # noqa: BLE001
-            print(f"[SignalAnalyzerService] Không thể tạo ảnh phổ: {e}")
-            plt.close("all")
-            return None
+                    ax3.set_title(
+                        self._get_tier3_spectrogram_title(metrics),
+                        color="#38BDF8",
+                        fontsize=10.0,
+                        fontweight="bold",
+                        pad=8,
+                    )
+                else:
+                    ax3.text(
+                        0.5,
+                        0.5,
+                        "Không đủ dữ liệu Fourier để vẽ tầng 3",
+                        color="#94A3B8",
+                        ha="center",
+                        va="center",
+                    )
+
+                ax3.set_facecolor("#0B0F19")
+                ax3.tick_params(colors="#94A3B8")
+
+                plt.tight_layout()
+                plt.savefig(
+                    str(out_image_path),
+                    dpi=SPECTROGRAM_DPI,
+                    facecolor=fig.get_facecolor(),
+                    edgecolor="none",
+                )
+                plt.close(fig)
+                return out_image_path
+
+            except Exception as e:  # noqa: BLE001
+                print(f"[SignalAnalyzerService] Không thể tạo ảnh phổ: {e}")
+                try:
+                    plt.close("all")
+                except Exception:
+                    pass
+                return None

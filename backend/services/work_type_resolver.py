@@ -26,10 +26,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 REMIX_PATTERN = re.compile(
     r"\b("
     r"remix|remake|lofi|lo-fi|slowed|speed\s*up|sped\s*up|vinahouse|"
-    r"club\s*mix|drill|nightcore|bass\s*boosted|dance\s*ver|house\s*ver|"
+    r"club\s*mix|drill|nightcore|bass\s*boosted|dance\s*ver(?:sion)?|house\s*ver|"
     r"ver\s*\d+|version|rap\s*ver(?:sion)?|dj\s*remix|prod\s*remix|"
     r"wdm|soaking\s*piano|piano\s*ver(?:sion)?|acoustic\s*ver(?:sion)?|"
     r"full\s*ver(?:sion)?|extended(?:\s*ver)?|instrumental|beat(?:\s*(?:nam|nữ))?|"
+    r"liên\s*khúc|lien\s*khuc|\bmix\b|remastered|remaster|deep\s*house|"
+    r"latino|latin\s*dance|"
     r"ver\s+[a-zà-ỹ0-9]+"
     r")\b|_full\b",
     re.IGNORECASE,
@@ -38,8 +40,10 @@ REMIX_PATTERN = re.compile(
 # 2. Các từ khóa đặc trưng nhận diện Cover
 COVER_KEYWORD_PATTERN = re.compile(
     r"\b("
-    r"cover|hát\s*lại|cover\s*by|ft\.?\s*cover|hát\s*karaoke|acoustic\s*cover|"
-    r"tập\s*hát|hát\s*nhép|ai\s*cover|cover\s*version|người\s*hát\s*sau"
+    r"cover|hát\s*lại|hat\s*lai|cover\s*by|ft\.?\s*cover|hát\s*karaoke|acoustic\s*cover|"
+    r"tập\s*hát|hát\s*nhép|ai\s*cover|cover\s*version|người\s*hát\s*sau|tone\s*(?:nam|nữ|nu)|"
+    r"giọng\s*(?:nam|nữ|nu)|ca\s*sĩ\s*giấu\s*mặt|hát\s*giấu\s*mặt|hát\s*thử|"
+    r"phòng\s*trà|acoustic\s*ver(?:sion)?|live\s*acoustic"
     r")\b",
     re.IGNORECASE,
 )
@@ -112,13 +116,8 @@ def resolve_work_type_from_metadata(
     title_lower = t_clean.lower()
     title_unacc = remove_accents(t_clean)
 
-    # 1. Kiểm tra nhãn trực tiếp từ Song Type trong metadata nếu có (Catalog / Ground Truth)
-    direct_song_type = (
-        meta.get("song_type")
-        or meta.get("Song Type")
-        or meta.get("work_type")
-        or meta.get("Work Type")
-    )
+    # 1. Chỉ sử dụng nhãn trực tiếp nếu là nhãn tác phẩm đã được xác thực chính thức từ Verified Catalog
+    direct_song_type = meta.get("verified_catalog_work_type")
     if direct_song_type:
         mapped = map_song_type_to_work_type(str(direct_song_type))
         if mapped == "COVER":
@@ -189,6 +188,34 @@ def resolve_work_type_from_metadata(
                 None,
                 t_clean,
             )
+
+    # 6b. Đối soát nghệ sĩ ảo / AI Voice Clone hát lại bài người thật (AI Cover)
+    if re.search(r"\b(ai|virtual|voice\s*clone)\b", a_clean.lower()):
+        return (
+            WorkType.COVER,
+            "COVER (Bản hát lại - AI Voice)",
+            True,
+            None,
+            t_clean,
+        )
+
+    # 6c. Đối soát thực thể qua Spotify Metadata (nếu có sẵn trong metadata)
+    spot_meta = meta.get("spotify_metadata")
+    if spot_meta and isinstance(spot_meta, dict):
+        spot_artist = str(spot_meta.get("artist") or "").strip()
+        spot_artist_unacc = remove_accents(spot_artist)
+        if spot_artist and len(spot_artist_unacc) >= 3 and a_clean:
+            sub_a = [remove_accents(s.strip()) for s in re.split(r"[,&/]|feat\.?|ft\.?|\bx\b", a_clean) if s.strip()]
+            is_same = any(spot_artist_unacc in s or s in spot_artist_unacc for s in sub_a)
+            if not is_same and not is_title_cover:
+                orig_t = spot_meta.get("title") or t_clean
+                return (
+                    WorkType.COVER,
+                    f"COVER (Bản hát lại - Gốc: {spot_artist})",
+                    True,
+                    spot_artist,
+                    orig_t,
+                )
 
     # 7. Tham chiếu phán đoán của Gemini nếu Gemini đưa ra kết quả cụ thể khác UNCERTAIN
     if raw_gemini_work_type:

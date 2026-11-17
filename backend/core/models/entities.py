@@ -47,6 +47,9 @@ class TrackItem(BaseModel):
     song_type: str | None = None
     release_date: str | None = None
     distributor: str | None = None
+    spotify_url: str | None = None
+    spotify_metadata: dict | None = None
+
 
 
 class AcousticMetrics(BaseModel):
@@ -206,6 +209,14 @@ class DetectionResult(BaseModel):
         default=None,
         description="Nhãn phân loại nguyên bản từ mô hình AI (VD: AI_GENERATED, PROCESSED_HUMAN, N/A)",
     )
+    vocal_ai_score: int | None = Field(
+        default=None,
+        description="Điểm thành phần giọng hát AI (1-5)",
+    )
+    beat_ai_score: int | None = Field(
+        default=None,
+        description="Điểm thành phần hòa âm beat AI (1-5)",
+    )
     consensus_is_ai: bool | None = Field(
         default=None,
         description="Kết luận tổng hợp từ tiêu chí cứng ở code và mô hình AI (True=AI, False=Human)",
@@ -257,6 +268,14 @@ class DetectionResult(BaseModel):
     duration_sec: float | None = Field(
         default=None,
         description="Thời lượng toàn bài hát tính bằng giây",
+    )
+    spotify_url: str | None = Field(
+        default=None,
+        description="Đường link chính thức của bài hát trên Spotify (https://open.spotify.com/track/...)",
+    )
+    spotify_metadata: dict | None = Field(
+        default=None,
+        description="Siêu dữ liệu phong phú lấy từ Spotify (album, cover, isrc, embed_url...)",
     )
 
     @model_validator(mode="after")

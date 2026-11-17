@@ -43,6 +43,10 @@ CATALOG_SNAPSHOT_DIR = BASE_DIR / "data" / "catalogs"
 CATALOG_SNAPSHOT_PATH = CATALOG_SNAPSHOT_DIR / "catalog_snapshot.json"
 CATALOG_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Tối ưu cache Matplotlib tránh cảnh báo quyền hạn thư mục trên Windows
+os.environ.setdefault("MPLCONFIGDIR", str(TEMP_DIR / "matplotlib"))
+(TEMP_DIR / "matplotlib").mkdir(parents=True, exist_ok=True)
+
 
 def get_configured_gemini_api_keys() -> list[str]:
     """
@@ -91,18 +95,52 @@ def get_configured_gemini_api_keys() -> list[str]:
 GEMINI_API_KEYS: list[str] = get_configured_gemini_api_keys()
 GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
+# ==============================================================================
+# SECTION 2.1: LOCAL MODEL / OPENAI-COMPATIBLE PROXY CONFIGURATION
+# ==============================================================================
+USE_LOCAL_MODEL: bool = os.getenv("USE_LOCAL_MODEL", "false").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+LOCAL_MODEL_BASE_URL: str = os.getenv(
+    "LOCAL_MODEL_BASE_URL", "http://localhost:20128/v1"
+).strip().rstrip("/")
+LOCAL_MODEL_API_KEY: str = os.getenv("LOCAL_MODEL_API_KEY", "").strip()
+LOCAL_DEFAULT_MODEL: str = os.getenv(
+    "LOCAL_MODEL_NAME", "antigravity/gemini-3.8-flash-high"
+).strip()
+
+_local_fallback_env = os.getenv("LOCAL_MODEL_FALLBACKS", "").strip()
+if _local_fallback_env:
+    LOCAL_FALLBACK_MODELS: list[str] = [
+        m.strip() for m in _local_fallback_env.split(",") if m.strip()
+    ]
+else:
+    LOCAL_FALLBACK_MODELS = [
+        "antigravity/gemini-3.8-flash-high",
+        "antigravity/gemini-3.8-flash-medium",
+        "antigravity/gemini-3.7-flash-tiered",
+        "antigravity/gemini-3.1-flash-lite",
+    ]
+
 # Model Selection: Gemini 3.8 Flash (chính) -> Gemini 3.7 Flash -> Gemini 3.6 Flash (dự phòng)
 DEFAULT_GEMINI_MODEL = (
-    os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
+    os.getenv("DEFAULT_GEMINI_MODEL", LOCAL_DEFAULT_MODEL if USE_LOCAL_MODEL else "gemini-3.8-flash")
+    or (LOCAL_DEFAULT_MODEL if USE_LOCAL_MODEL else "gemini-3.8-flash")
 ).strip()
 
 # Thứ tự mô hình dự phòng tự động khi cạn Quota hoặc lỗi (Multi-tier Model Failover)
-DEFAULT_FALLBACK_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-flash-lite",
-]
+DEFAULT_FALLBACK_MODELS = (
+    LOCAL_FALLBACK_MODELS
+    if USE_LOCAL_MODEL
+    else [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
+    ]
+)
 
 _env_fallback = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
 if _env_fallback:
@@ -110,19 +148,18 @@ if _env_fallback:
 else:
     GEMINI_FALLBACK_MODELS = DEFAULT_FALLBACK_MODELS
 
-AVAILABLE_MODELS = list(
-    dict.fromkeys(
-        GEMINI_FALLBACK_MODELS
-        + [
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite",
-        ]
-    )
-)
+_base_models = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+]
+if USE_LOCAL_MODEL:
+    AVAILABLE_MODELS = list(dict.fromkeys(LOCAL_FALLBACK_MODELS + _base_models))
+else:
+    AVAILABLE_MODELS = list(dict.fromkeys(GEMINI_FALLBACK_MODELS + _base_models + LOCAL_FALLBACK_MODELS))
 
 # ==============================================================================
 # SECTION 3: AUDIO ENGINE CONFIGURATION
@@ -133,9 +170,24 @@ AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "44100"))
 AUDIO_CHANNELS = int(os.getenv("AUDIO_CHANNELS", "2"))
 MULTI_SEGMENT_SLICE_DURATION = float(os.getenv("MULTI_SEGMENT_SLICE_DURATION", "15.0"))
 MULTI_SEGMENT_POSITIONS = (0.20, 0.50, 0.75)
+# Cấu hình Chiến lược 5: Đa mẫu âm thanh thông minh 3 Lát Cắt (Intro 6s + Verse 15s + Chorus 15s = 36s)
+MULTI_SEGMENT_INTRO_DURATION_SEC = float(os.getenv("MULTI_SEGMENT_INTRO_DURATION_SEC", "6.0"))
+MULTI_SEGMENT_VERSE_DURATION_SEC = float(os.getenv("MULTI_SEGMENT_VERSE_DURATION_SEC", "15.0"))
+MULTI_SEGMENT_CHORUS_DURATION_SEC = float(os.getenv("MULTI_SEGMENT_CHORUS_DURATION_SEC", "15.0"))
+MULTI_SEGMENT_TOTAL_DURATION_SEC = (
+    MULTI_SEGMENT_INTRO_DURATION_SEC
+    + MULTI_SEGMENT_VERSE_DURATION_SEC
+    + MULTI_SEGMENT_CHORUS_DURATION_SEC
+)
 BATCH_SLEEP_INTERVAL = float(os.getenv("BATCH_SLEEP_INTERVAL", "0.5"))
 PIPED_TIMEOUT_SECONDS = float(os.getenv("PIPED_TIMEOUT_SECONDS", "4.0"))
 SPECTROGRAM_DPI = int(os.getenv("SPECTROGRAM_DPI", "80"))
+ATTACH_SPECTROGRAM_TO_LLM = os.getenv(
+    "ATTACH_SPECTROGRAM_TO_LLM", "true"
+).strip().lower() in ("true", "1", "yes")
+ASYNC_SPECTROGRAM_RENDERING = os.getenv(
+    "ASYNC_SPECTROGRAM_RENDERING", "true"
+).strip().lower() in ("true", "1", "yes")
 ENABLE_CASCADED_EVALUATION = os.getenv("ENABLE_CASCADED_EVALUATION", "true").strip().lower() in (
     "true",
     "1",
@@ -214,6 +266,18 @@ UNCERTAIN_CONFIDENCE_MIN = float(os.getenv("UNCERTAIN_CONFIDENCE_MIN", "0.48"))
 UNCERTAIN_CONFIDENCE_MAX = float(os.getenv("UNCERTAIN_CONFIDENCE_MAX", "0.65"))
 SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED = os.getenv("SAFEGUARD_AUTOTUNE_PROTECTION_ENABLED", "true").lower() in ("true", "1", "yes")
 SAFEGUARD_AUTOTUNE_FORMANT_MIN = float(os.getenv("SAFEGUARD_AUTOTUNE_FORMANT_MIN", "150000.0"))
+
+# 4.9. Early-Exit Triage & Adaptive Flash-Lite Optimization
+EARLY_EXIT_TRIAGE_ENABLED = os.getenv("EARLY_EXIT_TRIAGE_ENABLED", "true").lower() in ("true", "1", "yes")
+EARLY_EXIT_COMB_MIN = float(os.getenv("EARLY_EXIT_COMB_MIN", "0.85"))
+EARLY_EXIT_FAKEPRINT_MIN = float(os.getenv("EARLY_EXIT_FAKEPRINT_MIN", "0.70"))
+FLASH_LITE_CHORUS_START_SEC = float(os.getenv("FLASH_LITE_CHORUS_START_SEC", "15.0"))
+FLASH_LITE_CHORUS_DURATION_SEC = float(os.getenv("FLASH_LITE_CHORUS_DURATION_SEC", "18.0"))
+OPUS_STREAMING_FAKEPRINT_THRESHOLD = float(os.getenv("OPUS_STREAMING_FAKEPRINT_THRESHOLD", "0.50"))
+# Ngưỡng thích ứng nén mạng Lossy Streaming (Opus/AAC/YouTube) cho Suno v3.5/v4
+OPUS_STREAMING_RIGIDITY_MIN = float(os.getenv("OPUS_STREAMING_RIGIDITY_MIN", "0.42"))
+OPUS_STREAMING_STEM_BLEED_MIN = float(os.getenv("OPUS_STREAMING_STEM_BLEED_MIN", "0.26"))
+OPUS_STREAMING_FAKEPRINT_MIN = float(os.getenv("OPUS_STREAMING_FAKEPRINT_MIN", "0.22"))
 
 # ==============================================================================
 # SECTION 5: HEURISTICS & RULES CONFIGURATION
@@ -780,3 +844,34 @@ def get_youtube_proxy() -> str | None:
         pass
 
     return None
+
+
+# ==============================================================================
+# SECTION 8: SPOTIFY WEB API & SEARCH CONFIGURATION
+# ==============================================================================
+SPOTIFY_CLIENT_ID: str = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET: str = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+ENABLE_SPOTIFY_SEARCH: bool = os.getenv("ENABLE_SPOTIFY_SEARCH", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ENABLE_SPOTIFY_PRE_SEARCH: bool = os.getenv("ENABLE_SPOTIFY_PRE_SEARCH", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ENABLE_SPOTIFY_EARLY_EXIT: bool = os.getenv("ENABLE_SPOTIFY_EARLY_EXIT", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+
+# ==============================================================================
+# SECTION 9: WORKER & CONCURRENCY POOLS CONFIGURATION
+# ==============================================================================
+SPOTIFY_BATCH_WORKERS: int = int(os.getenv("SPOTIFY_BATCH_WORKERS", "4"))
+SPECTROGRAM_PLOTTER_WORKERS: int = int(os.getenv("SPECTROGRAM_PLOTTER_WORKERS", "2"))
+BENCHMARK_WORKERS: int = int(os.getenv("BENCHMARK_WORKERS", "2"))
+

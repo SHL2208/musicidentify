@@ -1,4 +1,7 @@
+import re
+
 import streamlit as st
+import streamlit.components.v1 as components
 
 from backend.core.models.entities import DetectionResult, VerdictType, WorkType
 
@@ -190,6 +193,67 @@ def render_verdict_card(result: DetectionResult):
         """,
         unsafe_allow_html=True,
     )
+
+    # 3b. Khối Bản Ghi & Trình Phát Spotify (Spotify Card & Embed Player)
+    spotify_url = getattr(result, "spotify_url", None)
+    spotify_meta = getattr(result, "spotify_metadata", {}) or {}
+    if spotify_url:
+        spot_title = spotify_meta.get("title") or result.track_title
+        spot_artist = (
+            spotify_meta.get("artist")
+            or getattr(result, "original_artist", None)
+            or getattr(result, "cover_performer", None)
+            or ""
+        )
+        spot_album = spotify_meta.get("album")
+        spot_cover = spotify_meta.get("cover_url")
+        album_text = f" | Album: <i>{spot_album}</i>" if spot_album else ""
+
+        cover_img_html = ""
+        if spot_cover:
+            cover_img_html = f'<img src="{spot_cover}" style="width: 58px; height: 58px; border-radius: 8px; object-fit: cover; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">'
+
+        st.markdown(
+            f"""
+        <div style="margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; background: rgba(30, 215, 96, 0.08); border: 1px solid rgba(30, 215, 96, 0.35);">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    {cover_img_html}
+                    <div>
+                        <div style="font-size: 0.85rem; font-weight: 700; text-transform: uppercase; color: #1DB954; letter-spacing: 0.05em;">
+                            🟢 Bản Ghi Spotify Chính Thức
+                        </div>
+                        <div style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF; margin-top: 0.15rem;">
+                            🎧 {spot_title}
+                        </div>
+                        <div style="font-size: 0.9rem; color: #CBD5E1; margin-top: 0.15rem;">
+                            Nghệ sĩ: <b>{spot_artist or "Chính chủ"}</b>{album_text}
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <a href="{spotify_url}" target="_blank" style="text-decoration: none;">
+                        <button style="background: #1DB954; color: #000000; font-weight: 700; border: none; border-radius: 20px; padding: 8px 18px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 4px 14px rgba(30, 215, 96, 0.35);">
+                            <span>Mở trên Spotify</span> ↗
+                        </button>
+                    </a>
+                </div>
+            </div>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+        st.caption("🔗 **Link Spotify (dạng text để sao chép):**")
+        st.code(spotify_url, language=None)
+
+        # Nhúng Spotify Embed iFrame nếu có link bài hát (track id)
+        track_match = re.search(r"track/([a-zA-Z0-9]+)", spotify_url)
+        if track_match:
+            tr_id = track_match.group(1)
+            embed_url = f"https://open.spotify.com/embed/track/{tr_id}?utm_source=generator&theme=0"
+            st.write("")
+            components.iframe(embed_url, height=152, scrolling=False)
 
     # 4. Phản hồi con người & Gắn nhãn nhanh vào Database
     candidate_artist = ""

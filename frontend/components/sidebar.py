@@ -4,6 +4,8 @@ from backend.core.config import (
     AUDIO_SAMPLE_DURATION,
     AVAILABLE_MODELS,
     DEFAULT_GEMINI_MODEL,
+    LOCAL_MODEL_BASE_URL,
+    USE_LOCAL_MODEL,
 )
 
 

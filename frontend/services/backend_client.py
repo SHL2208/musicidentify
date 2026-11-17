@@ -42,6 +42,41 @@ class BackendClient:
             raise RuntimeError(resp.error or resp.message)
         return resp.data
 
+    def search_spotify_tracks(
+        self, query: str, artist: str = "", limit: int = 5
+    ) -> list[dict]:
+        """Gọi Controller tìm kiếm danh sách bài hát trên Spotify."""
+        resp = self.track_controller.search_spotify(query=query, artist=artist, limit=limit)
+        if not resp.success:
+            return []
+        return resp.data or []
+
+    def batch_search_spotify_tracks(
+        self,
+        queries: list[dict | str],
+        max_workers: int = 4,
+        on_progress: Callable[[int, int, dict], None] | None = None,
+    ) -> list[dict]:
+        """Gọi Controller tìm kiếm hàng loạt bài hát trên Spotify qua multi-threading."""
+        resp = self.track_controller.batch_search_spotify(
+            queries=queries, max_workers=max_workers, on_progress=on_progress
+        )
+        if not resp.success:
+            return []
+        return resp.data or []
+
+    def parse_spotify_batch_input(self, input_data: str | Path) -> tuple[list[dict], Any]:
+        """Bóc tách danh sách bài hát từ file hoặc text."""
+        return self.container.resolver.parse_spotify_batch_input(input_data)
+
+    def export_spotify_batch_report(
+        self, original_df: Any, results: list[dict], format: str = "xlsx"
+    ) -> bytes:
+        """Xuất file báo cáo đối soát 1-1 cho danh sách Spotify tra cứu được."""
+        return self.container.report_service.export_spotify_batch_report(
+            original_df=original_df, results=results, format=format
+        )
+
     def correct_verdict(
         self,
         track_id: str,

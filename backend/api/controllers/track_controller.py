@@ -1,6 +1,11 @@
+from typing import Any
+
+from backend.core.config import SPOTIFY_BATCH_WORKERS
+
 from backend.core.interfaces.repositories.track_repository_interface import ITrackRepository
 from backend.core.interfaces.services.detection_service_interface import IDetectionService
 from backend.core.interfaces.services.resolver_interface import IInputResolver
+from backend.core.interfaces.services.spotify_service_interface import ISpotifyService
 from backend.core.models.entities import DetectionResult, TrackItem
 
 from ..schemas.dtos import StandardResponse, TrackCorrectionRequest, TrackDetectRequest
@@ -17,10 +22,12 @@ class TrackController:
         detection_service: IDetectionService,
         resolver: IInputResolver,
         track_repo: ITrackRepository | None = None,
+        spotify_service: ISpotifyService | None = None,
     ):
         self.detection_service = detection_service
         self.resolver = resolver
         self.track_repo = track_repo
+        self.spotify_service = spotify_service
 
     def detect_track(self, request: TrackDetectRequest) -> StandardResponse[DetectionResult]:
         """Tiếp nhận yêu cầu giám định một bài hát (hỗ trợ Cache & Force Re-scan)."""
@@ -94,4 +101,59 @@ class TrackController:
         except Exception as e:
             return StandardResponse[TrackItem](
                 success=False, message="Lỗi khi phân giải bài hát", error=str(e)
+            )
+
+    def search_spotify(
+        self, query: str, artist: str = "", limit: int = 5
+    ) -> StandardResponse[list[dict[str, Any]]]:
+        """Tiếp nhận yêu cầu tìm kiếm các bài hát trên Spotify."""
+        try:
+            if not self.spotify_service:
+                return StandardResponse[list[dict[str, Any]]](
+                    success=False,
+                    message="SpotifyService chưa được khởi tạo",
+                    data=[],
+                )
+            results = self.spotify_service.search_tracks(query=query, artist=artist, limit=limit)
+            return StandardResponse[list[dict[str, Any]]](
+                success=True,
+                message=f"Đã tìm thấy {len(results)} kết quả trên Spotify",
+                data=results,
+            )
+        except Exception as e:
+            return StandardResponse[list[dict[str, Any]]](
+                success=False,
+                message=f"Lỗi khi tìm kiếm Spotify: {e}",
+                data=[],
+                error=str(e),
+            )
+
+    def batch_search_spotify(
+        self,
+        queries: list[dict[str, Any] | str],
+        max_workers: int = SPOTIFY_BATCH_WORKERS,
+        on_progress: Any = None,
+    ) -> StandardResponse[list[dict[str, Any]]]:
+        """Tiếp nhận yêu cầu tìm kiếm hàng loạt bài hát trên Spotify."""
+        try:
+            if not self.spotify_service:
+                return StandardResponse[list[dict[str, Any]]](
+                    success=False,
+                    message="SpotifyService chưa được khởi tạo",
+                    data=[],
+                )
+            results = self.spotify_service.batch_search_tracks(
+                queries=queries, max_workers=max_workers, on_progress=on_progress
+            )
+            return StandardResponse[list[dict[str, Any]]](
+                success=True,
+                message=f"Đã tra cứu xong {len(results)} bài hát trên Spotify",
+                data=results,
+            )
+        except Exception as e:
+            return StandardResponse[list[dict[str, Any]]](
+                success=False,
+                message=f"Lỗi khi tra cứu hàng loạt Spotify: {e}",
+                data=[],
+                error=str(e),
             )

@@ -22,3 +22,12 @@ def detect_single_track(request: TrackDetectRequest, controller=Depends(get_trac
 def resolve_track_metadata(query: str, controller=Depends(get_track_controller)):
     """Tìm kiếm và phân giải siêu dữ liệu bài hát."""
     return controller.resolve_track_info(query)
+
+
+@router.get("/spotify/search")
+def search_spotify_tracks(
+    query: str, artist: str = "", limit: int = 5, controller=Depends(get_track_controller)
+):
+    """Tìm kiếm danh sách bài hát trên Spotify theo tên bài hoặc ca sĩ."""
+    return controller.search_spotify(query=query, artist=artist, limit=limit)
+

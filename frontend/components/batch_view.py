@@ -399,7 +399,28 @@ def render_batch_view(client: BackendClient):
                 df_rows["STT"] = range(1, len(df_rows) + 1)
                 cols = ["STT"] + [c for c in df_rows.columns if c != "STT"]
                 df_rows = df_rows[cols]
-            st.dataframe(df_rows, hide_index=True, **get_width_kwargs(st.dataframe))
+            st.dataframe(
+                df_rows,
+                column_config={
+                    "Link Spotify": st.column_config.LinkColumn(
+                        "Link Spotify",
+                        help="Link bài hát Spotify (nhấp đúp để sao chép hoặc nhấp để mở)",
+                    )
+                },
+                hide_index=True,
+                **get_width_kwargs(st.dataframe),
+            )
+
+            # Khối hiển thị toàn bộ danh sách Link Spotify dạng Text để sao chép nhanh
+            spot_links = [
+                str(r.get("Link Spotify")).strip()
+                for r in curr_snap.live_rows
+                if r.get("Link Spotify") and r.get("Link Spotify") != "-"
+            ]
+            if spot_links:
+                with st.expander("📋 Xem & Sao chép nhanh danh sách Link Spotify (Dạng Text)", expanded=False):
+                    st.caption("Danh sách toàn bộ Link Spotify tìm được từ quá trình Quét AI:")
+                    st.code("\n".join(spot_links), language=None)
         else:
             st.dataframe(
                 pd.DataFrame(curr_snap.live_rows), hide_index=True, **get_width_kwargs(st.dataframe)

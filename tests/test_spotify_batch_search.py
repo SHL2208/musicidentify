@@ -195,7 +195,7 @@ class TestSpotifyBatchSearch(unittest.TestCase):
 
         # Hàng 2 không tìm thấy
         self.assertEqual(read_df.iloc[1]["Spotify Tìm thấy"], "Không ⚪")
-        self.assertEqual(read_df.iloc[1]["Link Spotify"], "N/A")
+        self.assertEqual(read_df.iloc[1]["Link Spotify"], "")
 
         # 2. Xuất file CSV
         csv_bytes = self.report_service.export_spotify_batch_report(original_df, results, format="csv")

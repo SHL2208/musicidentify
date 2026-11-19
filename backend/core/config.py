@@ -851,6 +851,7 @@ def get_youtube_proxy() -> str | None:
 # ==============================================================================
 SPOTIFY_CLIENT_ID: str = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
 SPOTIFY_CLIENT_SECRET: str = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SPOTIFY_SEARCH_LIMIT: int = int(os.getenv("SPOTIFY_SEARCH_LIMIT", "5"))
 ENABLE_SPOTIFY_SEARCH: bool = os.getenv("ENABLE_SPOTIFY_SEARCH", "true").strip().lower() in (
     "true",
     "1",
@@ -865,6 +866,12 @@ ENABLE_SPOTIFY_EARLY_EXIT: bool = os.getenv("ENABLE_SPOTIFY_EARLY_EXIT", "true")
     "true",
     "1",
     "yes",
+)
+SPOTIFY_CACHE_TTL_DAYS: int = int(os.getenv("SPOTIFY_CACHE_TTL_DAYS", "7"))
+SPOTIFY_NEGATIVE_CACHE_TTL_DAYS: int = int(os.getenv("SPOTIFY_NEGATIVE_CACHE_TTL_DAYS", "3"))
+SPOTIFY_MAX_CALLS_PER_SECOND: float = float(os.getenv("SPOTIFY_MAX_CALLS_PER_SECOND", "5.0"))
+SPOTIFY_CACHE_DB_PATH: Path = Path(
+    os.getenv("SPOTIFY_CACHE_DB_PATH", str(BASE_DIR / "data" / "spotify_cache.sqlite"))
 )
 
 

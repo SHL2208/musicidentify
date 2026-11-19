@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -11,9 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from typing import Any
 
-from ..core.config import SPOTIFY_BATCH_WORKERS, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+from ..core.config import (
+    SPOTIFY_BATCH_WORKERS,
+    SPOTIFY_CLIENT_ID,
+    SPOTIFY_CLIENT_SECRET,
+    SPOTIFY_MAX_CALLS_PER_SECOND,
+    SPOTIFY_SEARCH_LIMIT,
+)
 from ..core.interfaces.services.spotify_service_interface import ISpotifyService
 from ..core.utils import normalize_vietnamese_text
+from .spotify_cache_service import SpotifyCacheService
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +30,49 @@ SPOTIFY_TRACK_ID_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+# Regex lọc bỏ các từ khóa nhiễu trong tiêu đề bài hát khi so khớp
+NOISE_TITLE_REGEX = re.compile(
+    r"(?i)\s*(?:[\(\[\{][^\)\]\}]*(?:official|music\s*video|mv|audio|lyric|video|remix|cover|live|beat|karaoke|prod)[^\)\]\}]*[\)\]\}]|\b(?:ft\.?|feat\.?)\s+.*$)",
+    re.IGNORECASE,
+)
+
 
 def _clean_str(text: str) -> str:
     """Loại bỏ dấu tiếng Việt và ký tự đặc biệt để so khớp chuỗi chuẩn xác."""
-    return normalize_vietnamese_text(text, remove_special_chars=True).lower()
+    return normalize_vietnamese_text(text, remove_special_chars=True).lower().strip()
+
+
+def _strip_noise(text: str) -> str:
+    """Loại bỏ các từ khóa nhiễu phổ biến khỏi tên bài hát."""
+    if not text:
+        return ""
+    cleaned = NOISE_TITLE_REGEX.sub(" ", text)
+    return " ".join(cleaned.split()).strip()
+
+
+class _CallPacer:
+    """Bộ điều tiết nhịp độ (Rate Limiting Pacer) tránh gửi request dồn dập vào Spotify API."""
+
+    def __init__(self, max_rate: float = 5.0):
+        self.min_interval = 1.0 / max(0.1, max_rate)
+        self.last_call = 0.0
+        self.lock = threading.Lock()
+
+    def pace(self) -> None:
+        """Tạm dừng nếu khoảng cách giữa các lần gọi quá ngắn."""
+        with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self.last_call = time.time()
 
 
 class SpotifyService(ISpotifyService):
     """
     Hiện thực ISpotifyService kết nối Spotify Web API (Client Credentials Flow)
-    kèm cơ chế Hybrid dự phòng tự động (Fallback to Public / Web Search) nếu chưa cấu hình API Keys.
+    kèm bộ đệm SQLite Cache cục bộ (Positive + Negative Cache), điều tiết nhịp độ (Pacer),
+    thuật toán so khớp độ tin cậy cao (High Precision Matching) và cơ chế Hybrid dự phòng.
     """
 
     def __init__(
@@ -39,6 +80,7 @@ class SpotifyService(ISpotifyService):
         client_id: str | None = None,
         client_secret: str | None = None,
         timeout_seconds: float = 4.0,
+        cache_service: SpotifyCacheService | None = None,
     ):
         self.client_id = (client_id if client_id is not None else SPOTIFY_CLIENT_ID).strip()
         self.client_secret = (
@@ -53,6 +95,9 @@ class SpotifyService(ISpotifyService):
         self._premium_warning_logged: bool = False
         self._quota_exceeded: bool = False
         self._quota_warning_logged: bool = False
+
+        self.cache_service = cache_service or SpotifyCacheService()
+        self._pacer = _CallPacer(max_rate=SPOTIFY_MAX_CALLS_PER_SECOND)
 
     def _get_access_token(self) -> str | None:
         """
@@ -164,6 +209,7 @@ class SpotifyService(ISpotifyService):
             "id": track_id,
             "title": name,
             "artist": artist_str,
+            "artists_list": artists_list,
             "album": album_name,
             "release_date": release_date,
             "spotify_url": spotify_url,
@@ -177,12 +223,11 @@ class SpotifyService(ISpotifyService):
         }
 
     def search_tracks(
-        self, query: str, artist: str = "", limit: int = 5
+        self, query: str, artist: str = "", limit: int = SPOTIFY_SEARCH_LIMIT
     ) -> list[dict[str, Any]]:
         """
-        Tìm kiếm danh sách bài hát trên Spotify.
-        Nếu có token API: Gọi Spotify Search API.
-        Nếu không có token / lỗi mạng: Trả về mục fallback có link mở Spotify Web Search.
+        Tìm kiếm danh sách bài hát trên Spotify qua Web API.
+        Tích hợp Rate Limiting Pacer và tự động phục hồi khi gặp HTTP 429 Retry-After.
         """
         clean_q = query.strip()
         if not clean_q:
@@ -199,60 +244,93 @@ class SpotifyService(ISpotifyService):
 
         token = self._get_access_token()
         if token and not self._premium_required and not self._quota_exceeded:
-            try:
-                encoded_q = urllib.parse.quote(search_term)
-                search_url = (
-                    f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={limit}"
-                )
-                req = urllib.request.Request(
-                    search_url,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "User-Agent": "MusicIdentify-SpotifyService/1.0",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    items = (data.get("tracks") or {}).get("items") or []
-                    results = [self._parse_track_item(it) for it in items if it]
-                    if results:
-                        return results
-            except urllib.error.HTTPError as e:
-                err_body = ""
+            max_retries = 2
+            for attempt in range(max_retries + 1):
                 try:
-                    err_body = e.read().decode("utf-8", errors="replace")
-                except Exception:
-                    pass
-                if e.code == 429 or "quota_exceeded" in err_body.lower() or "too many requests" in err_body.lower():
-                    self._quota_exceeded = True
-                    if not self._quota_warning_logged:
-                        self._quota_warning_logged = True
-                        logger.warning(
-                            "⚠️ [SpotifyService] Spotify API thông báo hết hạn mức (HTTP 429: QUOTA_EXCEEDED). "
-                            "Hệ thống tự động kích hoạt Circuit Breaker: Tạm dừng gọi Spotify API trong phiên này "
-                            "để tối ưu tốc độ và chuyển sang chế độ Search Link Fallback."
-                        )
-                elif e.code == 403 and "premium" in err_body.lower():
-                    self._premium_required = True
-                    if not self._premium_warning_logged:
-                        self._premium_warning_logged = True
-                        logger.info(
-                            "💡 [SpotifyService] Tài khoản chủ sở hữu App là bản Free. "
-                            "Spotify yêu cầu gói Premium để gọi Web API danh mục bài hát. "
-                            "Hệ thống đã tự động chuyển sang chế độ Search Link Fallback."
-                        )
-                else:
-                    logger.warning("⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s (%s)", e, err_body.strip())
-            except Exception as e:
-                logger.warning("⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s", e)
+                    # Áp dụng Pacer điều tiết nhịp độ gọi API
+                    self._pacer.pace()
 
-        # Fallback an toàn: Trả về mục tìm kiếm web để người dùng có thể nhấp mở trực tiếp
+                    encoded_q = urllib.parse.quote(search_term)
+                    search_url = (
+                        f"https://api.spotify.com/v1/search?q={encoded_q}&type=track&limit={limit}"
+                    )
+                    req = urllib.request.Request(
+                        search_url,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "User-Agent": "MusicIdentify-SpotifyService/1.0",
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        items = (data.get("tracks") or {}).get("items") or []
+                        results = [self._parse_track_item(it) for it in items if it]
+                        if results:
+                            return results
+                        return []
+                except urllib.error.HTTPError as e:
+                    err_body = ""
+                    try:
+                        err_body = e.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+
+                    # Xử lý HTTP 429 Too Many Requests thông minh với Retry-After
+                    if e.code == 429 or "quota_exceeded" in err_body.lower() or "too many requests" in err_body.lower():
+                        retry_after = 2
+                        if getattr(e, "headers", None):
+                            try:
+                                retry_after = max(1, int(e.headers.get("Retry-After", 2)))
+                            except (ValueError, TypeError):
+                                retry_after = 2
+
+                        # Nếu retry_after hợp lý và còn lượt thử, chờ và retry
+                        if attempt < max_retries and retry_after <= 10:
+                            logger.info(
+                                "⏳ [SpotifyService] HTTP 429 Rate Limit: Tạm dừng %ss theo Retry-After (Thử lại %s/%s)...",
+                                retry_after,
+                                attempt + 1,
+                                max_retries,
+                            )
+                            time.sleep(retry_after + 0.2)
+                            continue
+                        else:
+                            self._quota_exceeded = True
+                            if not self._quota_warning_logged:
+                                self._quota_warning_logged = True
+                                logger.warning(
+                                    "⚠️ [SpotifyService] Spotify API thông báo hết hạn mức (HTTP 429: QUOTA_EXCEEDED). "
+                                    "Hệ thống tự động kích hoạt Circuit Breaker: Tạm dừng gọi Spotify API trong phiên này."
+                                )
+                            break
+                    elif e.code == 403 and "premium" in err_body.lower():
+                        self._premium_required = True
+                        if not self._premium_warning_logged:
+                            self._premium_warning_logged = True
+                            logger.info(
+                                "💡 [SpotifyService] Tài khoản chủ sở hữu App là bản Free. "
+                                "Spotify yêu cầu gói Premium để gọi Web API danh mục bài hát."
+                            )
+                        break
+                    else:
+                        logger.warning(
+                            "⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s (%s)",
+                            e,
+                            err_body.strip(),
+                        )
+                        break
+                except Exception as e:
+                    logger.warning("⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s", e)
+                    break
+
+        # Khi không có kết quả hợp lệ hoặc cạn quota, trả về fallback an toàn
         encoded_web = urllib.parse.quote(search_term)
         return [
             {
                 "id": "search_fallback",
                 "title": clean_q,
                 "artist": artist or "",
+                "artists_list": [artist] if artist else [],
                 "album": "Spotify Web Search",
                 "release_date": "",
                 "spotify_url": f"https://open.spotify.com/search/{encoded_web}",
@@ -276,6 +354,7 @@ class SpotifyService(ISpotifyService):
         token = self._get_access_token()
         if token and track_id and not self._quota_exceeded:
             try:
+                self._pacer.pace()
                 api_url = f"https://api.spotify.com/v1/tracks/{track_id}"
                 req = urllib.request.Request(
                     api_url,
@@ -312,6 +391,7 @@ class SpotifyService(ISpotifyService):
                     "id": track_id or "",
                     "title": title or url,
                     "artist": artist,
+                    "artists_list": [artist] if artist else [],
                     "album": "",
                     "release_date": "",
                     "spotify_url": url,
@@ -330,55 +410,110 @@ class SpotifyService(ISpotifyService):
 
         return None
 
-    def find_best_match(self, title: str, artist: str = "") -> dict[str, Any] | None:
+    def find_best_match(
+        self, title: str, artist: str = "", limit: int = SPOTIFY_SEARCH_LIMIT
+    ) -> dict[str, Any] | None:
         """
         Tìm kiếm và xếp hạng kết quả để chọn ra bài hát Spotify khớp nhất.
-        Sử dụng SequenceMatcher tính toán độ tương đồng giữa (Title, Artist) mục tiêu
-        và các ứng viên trả về từ Spotify.
+        Tích hợp:
+        - Kiểm tra Persistent SQLite Cache trước (kể cả Negative Cache).
+        - Tìm kiếm có cấu trúc `track:... artist:...` nếu có ca sĩ.
+        - Bộ lọc so khớp chính xác cao (High Precision Matching Engine).
+        - Tuyệt đối KHÔNG trả về candidates ngẫu nhiên nếu không đạt ngưỡng tối thiểu (trả về None).
+        - Lưu kết quả vào Cache (TTL 7 ngày nếu tìm thấy, 3 ngày nếu không tìm thấy).
         """
         clean_title = title.strip()
         if not clean_title:
             return None
 
-        candidates = self.search_tracks(query=clean_title, artist=artist, limit=5)
+        # 1. BƯỚC 1: Kiểm tra Persistent Cache (SQLite)
+        is_hit, cached_result = self.cache_service.get(clean_title, artist=artist)
+        if is_hit:
+            # Hit cache: Trả về kết quả (dict) hoặc None (Negative cache)
+            return cached_result
+
+        # 2. BƯỚC 2: Gọi Spotify Search API
+        candidates: list[dict[str, Any]] = []
+
+        # Nếu có cả tên bài và ca sĩ, thử tìm kiếm có trường chính xác (Field Filters) trước
+        if artist and artist.strip():
+            structured_query = f'track:"{clean_title}" artist:"{artist.strip()}"'
+            candidates = self.search_tracks(query=structured_query, limit=limit)
+            # Lọc bỏ fallback search nếu API trả về fallback
+            candidates = [c for c in candidates if c.get("is_official_api")]
+
+        # Nếu chưa tìm thấy candidates qua structured query, gọi search tự do
         if not candidates:
+            candidates = self.search_tracks(query=clean_title, artist=artist, limit=limit)
+
+        # Lọc bỏ ứng viên fallback search
+        official_candidates = [c for c in candidates if c.get("is_official_api")]
+        if not official_candidates:
+            # Không có bản thu chính thức nào -> Lưu Negative Cache và trả về None
+            self.cache_service.set(clean_title, artist=artist, data=None, is_found=False)
             return None
 
-        # Nếu chỉ có 1 ứng viên fallback
-        if len(candidates) == 1 and not candidates[0].get("is_official_api"):
-            return candidates[0]
-
-        target_title_norm = _clean_str(clean_title)
-        target_artist_norm = _clean_str(artist) if artist else ""
+        # 3. BƯỚC 3: So khớp xếp hạng bằng High Precision Matching Engine
+        target_title_clean = _strip_noise(clean_title)
+        target_artist_clean = _strip_noise(artist) if artist else ""
+        target_title_norm = _clean_str(target_title_clean)
+        target_artist_norm = _clean_str(target_artist_clean)
 
         best_score = -1.0
         best_cand: dict[str, Any] | None = None
 
-        for cand in candidates:
-            cand_title_norm = _clean_str(cand.get("title", ""))
-            cand_artist_norm = _clean_str(cand.get("artist", ""))
+        for cand in official_candidates:
+            cand_title_clean = _strip_noise(cand.get("title", ""))
+            cand_artist_clean = _strip_noise(cand.get("artist", ""))
+            cand_title_norm = _clean_str(cand_title_clean)
+            cand_artist_norm = _clean_str(cand_artist_clean)
+            cand_artists_list = [
+                _clean_str(_strip_noise(a)) for a in cand.get("artists_list", []) if a
+            ]
 
-            # So khớp tên bài hát
+            # 3.1. So khớp tên bài hát
             title_score = SequenceMatcher(None, target_title_norm, cand_title_norm).ratio()
-            # Khớp chuỗi con (nếu tên nằm trọn trong nhau)
+            # Khớp chuỗi con: Chỉ ưu tiên nếu độ dài chuỗi con chiếm ít nhất 60% độ dài chuỗi mẹ
             if target_title_norm in cand_title_norm or cand_title_norm in target_title_norm:
-                title_score = max(title_score, 0.85)
+                len_min = min(len(target_title_norm), len(cand_title_norm))
+                len_max = max(len(target_title_norm), len(cand_title_norm))
+                if len_max > 0 and (len_min / len_max) >= 0.60:
+                    title_score = max(title_score, 0.85)
 
-            # So khớp nghệ sĩ nếu có
+            # 3.2. So khớp nghệ sĩ nếu có
             if target_artist_norm:
                 artist_score = SequenceMatcher(
                     None, target_artist_norm, cand_artist_norm
                 ).ratio()
-                if (
+                # Kiểm tra nếu ca sĩ mục tiêu nằm trong danh sách ca sĩ của bài
+                is_artist_matched = any(
+                    target_artist_norm in a or a in target_artist_norm
+                    for a in cand_artists_list
+                    if a
+                )
+                if is_artist_matched:
+                    artist_score = max(artist_score, 0.85)
+                elif (
                     target_artist_norm in cand_artist_norm
                     or cand_artist_norm in target_artist_norm
                 ):
-                    artist_score = max(artist_score, 0.85)
+                    len_a_min = min(len(target_artist_norm), len(cand_artist_norm))
+                    len_a_max = max(len(target_artist_norm), len(cand_artist_norm))
+                    if len_a_max > 0 and (len_a_min / len_a_max) >= 0.60:
+                        artist_score = max(artist_score, 0.85)
+
+                # RÀNG BUỘC NGHIÊM NGẶT: Nếu có artist, cả Tên bài lẫn Nghệ sĩ phải đạt ngưỡng cơ sở
+                if title_score < 0.65 or artist_score < 0.50:
+                    continue
+
                 combined_score = title_score * 0.65 + artist_score * 0.35
             else:
+                # Không có artist: Title score bắt buộc phải cao (>= 0.75) để tránh nhầm bài
+                if title_score < 0.75:
+                    continue
                 combined_score = title_score
 
-            # Ưu tiên cộng điểm nếu có độ phổ biến cao
+            # Ưu tiên cộng điểm nhẹ cho bài có độ phổ biến cao (tối đa 0.05)
             popularity = cand.get("popularity", 0)
             combined_score += (popularity / 100.0) * 0.05
 
@@ -386,12 +521,19 @@ class SpotifyService(ISpotifyService):
                 best_score = combined_score
                 best_cand = cand
 
-        # Nếu điểm so khớp đạt ngưỡng tối thiểu >= 0.40
-        if best_cand and best_score >= 0.40:
+        # 4. BƯỚC 4: Kiểm tra ngưỡng điểm tối thiểu để công nhận
+        min_required_score = 0.68 if target_artist_norm else 0.75
+
+        if best_cand and best_score >= min_required_score:
             best_cand["match_score"] = round(best_score, 2)
+            # Lưu Positive Cache (TTL 7 ngày)
+            self.cache_service.set(clean_title, artist=artist, data=best_cand, is_found=True)
             return best_cand
 
-        return candidates[0] if candidates else None
+        # KHÔNG ĐẠT NGƯỠNG: Tuyệt đối KHÔNG trả về candidates[0]!
+        # Lưu Negative Cache (TTL 3 ngày) để không gọi lặp lại API
+        self.cache_service.set(clean_title, artist=artist, data=None, is_found=False)
+        return None
 
     def batch_search_tracks(
         self,
@@ -401,7 +543,8 @@ class SpotifyService(ISpotifyService):
     ) -> list[dict[str, Any]]:
         """
         Tra cứu hàng loạt danh sách bài hát trên Spotify bằng Multi-threading Pool.
-        Bảo toàn 100% thứ tự bài hát ban đầu và cập nhật tiến trình liên tục.
+        Bảo toàn 100% thứ tự bài hát ban đầu, tích hợp Cache và chuẩn hóa trạng thái rõ ràng.
+        Nếu không tìm thấy bài hát: Để trống link và ghi nhận rõ trạng thái Chưa tìm thấy.
         """
         if not queries:
             return []
@@ -411,7 +554,12 @@ class SpotifyService(ISpotifyService):
         for idx, item in enumerate(queries):
             raw_meta: dict[str, Any] = {}
             if isinstance(item, dict):
-                q = str(item.get("query") or item.get("title") or item.get("track_title") or "").strip()
+                q = str(
+                    item.get("query")
+                    or item.get("title")
+                    or item.get("track_title")
+                    or ""
+                ).strip()
                 artist = str(item.get("artist") or "").strip()
                 raw_meta = dict(item)
             else:
@@ -443,41 +591,47 @@ class SpotifyService(ISpotifyService):
             except Exception as exc:
                 logger.warning("Lỗi tra cứu Spotify bài '%s': %s", query_val, exc)
 
-            is_found = bool(
+            # Xác định cờ tìm thấy hợp lệ (chỉ True khi có URL bản thu chính thức)
+            is_official_found = bool(
                 match_res
                 and match_res.get("spotify_url")
-                and not match_res.get("id", "").startswith("search_fallback")
+                and not str(match_res.get("id", "")).startswith("search_fallback")
             )
-            is_search_link = bool(
-                match_res
-                and match_res.get("spotify_url")
-                and match_res.get("id", "").startswith("search_fallback")
-            )
+
+            # Nếu không tìm thấy hoặc là fallback search link: Để trống link và không gán thông tin bài lạ
+            final_spotify_url = match_res.get("spotify_url") if is_official_found else None
+            final_spotify_id = match_res.get("id") if is_official_found else None
+            final_spotify_title = match_res.get("title") if is_official_found else None
+            final_spotify_artist = match_res.get("artist") if is_official_found else None
+            final_spotify_album = match_res.get("album") if is_official_found else None
+            final_release_date = match_res.get("release_date") if is_official_found else None
+            final_isrc = match_res.get("isrc") if is_official_found else None
+            final_score = match_res.get("match_score", 1.0) if is_official_found else 0.0
 
             res_record: dict[str, Any] = {
                 "index": i + 1,
                 "input_query": query_val,
                 "input_artist": artist_val,
-                "spotify_id": match_res.get("id") if match_res else None,
-                "spotify_title": match_res.get("title") if match_res else None,
-                "spotify_artist": match_res.get("artist") if match_res else None,
-                "spotify_album": match_res.get("album") if match_res else None,
-                "spotify_release_date": match_res.get("release_date") if match_res else None,
-                "spotify_url": match_res.get("spotify_url") if match_res else None,
-                "spotify_isrc": match_res.get("isrc") if match_res else None,
-                "match_score": match_res.get("match_score", 1.0 if is_found else 0.0) if match_res else 0.0,
-                "cover_url": match_res.get("cover_url") if match_res else None,
-                "duration_sec": match_res.get("duration_sec", 0.0) if match_res else 0.0,
-                "popularity": match_res.get("popularity", 0) if match_res else 0,
-                "embed_url": match_res.get("embed_url") if match_res else None,
-                "is_found": is_found,
-                "is_search_link": is_search_link,
+                "spotify_id": final_spotify_id,
+                "spotify_title": final_spotify_title,
+                "spotify_artist": final_spotify_artist,
+                "spotify_album": final_spotify_album,
+                "spotify_release_date": final_release_date,
+                "spotify_url": final_spotify_url,
+                "spotify_isrc": final_isrc,
+                "match_score": final_score,
+                "cover_url": match_res.get("cover_url") if is_official_found else None,
+                "duration_sec": match_res.get("duration_sec", 0.0) if is_official_found else 0.0,
+                "popularity": match_res.get("popularity", 0) if is_official_found else 0,
+                "embed_url": match_res.get("embed_url") if is_official_found else None,
+                "is_found": is_official_found,
+                "is_search_link": False,
                 "raw_input_meta": raw_m,
             }
             return i, res_record
 
         # Thực thi đa luồng với ThreadPoolExecutor
-        workers = max(1, min(max_workers, 16))
+        workers = max(1, min(max_workers, 8))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_idx = {executor.submit(_worker, inp): inp[0] for inp in normalized_inputs}
             for future in as_completed(future_to_idx):

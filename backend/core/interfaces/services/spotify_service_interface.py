@@ -24,7 +24,9 @@ class ISpotifyService(ABC):
         pass
 
     @abstractmethod
-    def find_best_match(self, title: str, artist: str = "") -> dict[str, Any] | None:
+    def find_best_match(
+        self, title: str, artist: str = "", limit: int = 5
+    ) -> dict[str, Any] | None:
         """
         Tìm kiếm và chọn ra bài hát khớp nhất (Best Match) dựa trên tên bài hát và nghệ sĩ.
         Sử dụng thuật toán so khớp chuỗi mờ (Fuzzy matching) để tối ưu độ chính xác.

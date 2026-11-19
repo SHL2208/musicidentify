@@ -49,6 +49,7 @@ class TrackItem(BaseModel):
     distributor: str | None = None
     spotify_url: str | None = None
     spotify_metadata: dict | None = None
+    spotify_searched: bool = False
 
 
 

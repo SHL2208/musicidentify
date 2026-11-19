@@ -214,10 +214,12 @@ class DetectionService(IDetectionService):
                     not getattr(existing_result, "spotify_url", None)
                     and getattr(self, "spotify_service", None)
                     and ENABLE_SPOTIFY_SEARCH
+                    and not getattr(track, "spotify_searched", False)
                 ):
                     title_q = track.track_title or existing_result.track_title or track.raw_query
                     if title_q and not title_q.startswith(("http://", "https://")):
                         try:
+                            track.spotify_searched = True
                             spot = self.spotify_service.find_best_match(
                                 title_q, artist=track.artist or ""
                             )
@@ -494,9 +496,10 @@ class DetectionService(IDetectionService):
                     resolve_err,
                 )
 
-        # 0c. Tự động tra cứu Spotify làm giàu siêu dữ liệu (nếu chưa có)
+        # 0c. Tự động tra cứu Spotify làm giàu siêu dữ liệu (nếu chưa có và chưa từng tra cứu)
         if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
-            if not track.spotify_url:
+            if not track.spotify_url and not getattr(track, "spotify_searched", False):
+                track.spotify_searched = True
                 title_for_spotify = track.track_title or track.raw_query
                 if title_for_spotify and not title_for_spotify.startswith(("http://", "https://")):
                     try:
@@ -1034,9 +1037,10 @@ class DetectionService(IDetectionService):
             else str(result.verdict_type)
         )
 
-        # Tự động tìm kiếm & làm giàu link Spotify nếu chưa có
+        # Tự động tìm kiếm & làm giàu link Spotify nếu chưa có và chưa từng tra cứu
         if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
-            if not track.spotify_url:
+            if not track.spotify_url and not getattr(track, "spotify_searched", False):
+                track.spotify_searched = True
                 title_for_spotify = track.track_title or result.track_title or track.raw_query
                 if title_for_spotify and not title_for_spotify.startswith(("http://", "https://")):
                     try:

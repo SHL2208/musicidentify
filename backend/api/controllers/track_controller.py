@@ -1,6 +1,6 @@
 from typing import Any
 
-from backend.core.config import SPOTIFY_BATCH_WORKERS
+from backend.core.config import SPOTIFY_BATCH_WORKERS, SPOTIFY_SEARCH_LIMIT
 
 from backend.core.interfaces.repositories.track_repository_interface import ITrackRepository
 from backend.core.interfaces.services.detection_service_interface import IDetectionService
@@ -104,7 +104,7 @@ class TrackController:
             )
 
     def search_spotify(
-        self, query: str, artist: str = "", limit: int = 5
+        self, query: str, artist: str = "", limit: int = SPOTIFY_SEARCH_LIMIT
     ) -> StandardResponse[list[dict[str, Any]]]:
         """Tiếp nhận yêu cầu tìm kiếm các bài hát trên Spotify."""
         try:

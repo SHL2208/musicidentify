@@ -2,6 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from backend.api.schemas.dtos import BatchDetectRequest, ExportReportRequest, TrackDetectRequest
+from backend.core.config import SPOTIFY_SEARCH_LIMIT
 from backend.core.container import get_container
 from backend.core.models.entities import BatchReport, DetectionResult, TrackItem
 
@@ -43,7 +44,7 @@ class BackendClient:
         return resp.data
 
     def search_spotify_tracks(
-        self, query: str, artist: str = "", limit: int = 5
+        self, query: str, artist: str = "", limit: int = SPOTIFY_SEARCH_LIMIT
     ) -> list[dict]:
         """Gọi Controller tìm kiếm danh sách bài hát trên Spotify."""
         resp = self.track_controller.search_spotify(query=query, artist=artist, limit=limit)

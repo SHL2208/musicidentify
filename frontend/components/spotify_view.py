@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from backend.core.config import TEMP_DIR
+from backend.core.config import SPOTIFY_SEARCH_LIMIT, TEMP_DIR
 from frontend.components.ui_compat import get_width_kwargs
 from frontend.services.backend_client import BackendClient
 
@@ -44,10 +44,16 @@ def render_spotify_view(client: BackendClient):
                 key="spotify_tab_query",
             )
         with col_limit:
+            limit_options = [2, 5, 10, 15]
+            default_index = (
+                limit_options.index(SPOTIFY_SEARCH_LIMIT)
+                if SPOTIFY_SEARCH_LIMIT in limit_options
+                else 0
+            )
             limit = st.selectbox(
                 "Số lượng kết quả:",
-                options=[5, 10, 15],
-                index=0,
+                options=limit_options,
+                index=default_index,
                 key="spotify_tab_limit",
             )
         with col_btn:
@@ -298,19 +304,7 @@ def render_spotify_view(client: BackendClient):
         if batch_results:
             st.divider()
             found_count = sum(1 for r in batch_results if r.get("is_found"))
-            search_link_count = sum(
-                1 for r in batch_results if not r.get("is_found") and r.get("spotify_url")
-            )
-            not_found_count = len(batch_results) - found_count - search_link_count
-
-            if search_link_count > 0 and found_count == 0:
-                st.info(
-                    "💡 **Lưu ý về tài khoản Spotify:** Tài khoản Spotify tạo App hiện tại là tài khoản **Miễn phí (Free)**. "
-                    "Theo chính sách mới của Spotify, máy chủ Spotify yêu cầu tài khoản chủ App phải có gói **Spotify Premium** "
-                    "mới cấp quyền truy xuất Web API phòng thu (ảnh bìa, ISRC, thời lượng). "
-                    "Hệ thống đã **tự động tạo sẵn đường link tìm kiếm Spotify chính xác 100%** cho từng bài hát dưới đây — "
-                    "bạn có thể bấm vào link để mở nghe trực tiếp bài hát trên Spotify!"
-                )
+            not_found_count = len(batch_results) - found_count
 
             # Thẻ thống kê nhanh
             m_col1, m_col2, m_col3, m_col4 = st.columns(4)
@@ -319,7 +313,7 @@ def render_spotify_view(client: BackendClient):
             with m_col2:
                 st.metric("Bản thu chính thức 🟢", found_count)
             with m_col3:
-                st.metric("Link tìm kiếm sẵn 🔍", search_link_count)
+                st.metric("Không tìm thấy ⚪", not_found_count)
             with m_col4:
                 st.metric("Thời gian xử lý ⏱️", f"{elapsed}s")
 
@@ -333,10 +327,8 @@ def render_spotify_view(client: BackendClient):
 
                 if r.get("is_found"):
                     row_status = "🟢 Tìm thấy"
-                elif r.get("spotify_url") and "open.spotify.com/search" in r.get("spotify_url", ""):
-                    row_status = "🔍 Link tìm kiếm sẵn"
                 else:
-                    row_status = "⚪ Chưa khớp"
+                    row_status = "⚪ Không tìm thấy"
 
                 display_rows.append(
                     {
@@ -373,7 +365,7 @@ def render_spotify_view(client: BackendClient):
                 links_text = "\n".join(
                     str(r.get("spotify_url", "")).strip()
                     for r in batch_results
-                    if r.get("spotify_url")
+                    if r.get("is_found") and r.get("spotify_url")
                 )
                 st.caption(
                     "Toàn bộ đường link đầy đủ dạng text (mỗi dòng 1 link). "

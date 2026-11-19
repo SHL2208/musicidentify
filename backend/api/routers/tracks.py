@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 
+from backend.core.config import SPOTIFY_SEARCH_LIMIT
 from backend.core.container import get_container
 from backend.core.models.entities import DetectionResult, TrackItem
 
@@ -26,7 +27,10 @@ def resolve_track_metadata(query: str, controller=Depends(get_track_controller))
 
 @router.get("/spotify/search")
 def search_spotify_tracks(
-    query: str, artist: str = "", limit: int = 5, controller=Depends(get_track_controller)
+    query: str,
+    artist: str = "",
+    limit: int = SPOTIFY_SEARCH_LIMIT,
+    controller=Depends(get_track_controller),
 ):
     """Tìm kiếm danh sách bài hát trên Spotify theo tên bài hoặc ca sĩ."""
     return controller.search_spotify(query=query, artist=artist, limit=limit)

@@ -276,11 +276,11 @@ class ReportService(IReportService):
             spot_rows.append(
                 {
                     "Spotify Tìm thấy": status_text,
-                    "Link Spotify": r.get("spotify_url") or "N/A",
-                    "Tên bài trên Spotify": r.get("spotify_title") or "N/A",
-                    "Nghệ sĩ trên Spotify": r.get("spotify_artist") or "N/A",
-                    "Album": r.get("spotify_album") or "N/A",
-                    "Ngày phát hành": r.get("spotify_release_date") or "N/A",
+                    "Link Spotify": r.get("spotify_url") or "",
+                    "Tên bài trên Spotify": r.get("spotify_title") or "-",
+                    "Nghệ sĩ trên Spotify": r.get("spotify_artist") or "-",
+                    "Album": r.get("spotify_album") or "-",
+                    "Ngày phát hành": r.get("spotify_release_date") or "-",
                     "Thời lượng Spotify": dur_str,
                     "Độ tương đồng": score_str,
                     "Mã ISRC": r.get("spotify_isrc") or "N/A",

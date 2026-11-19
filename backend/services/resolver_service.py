@@ -1358,7 +1358,9 @@ class InputResolverService(IInputResolver):
 
         # TẦNG 0: Tiền trích xuất & làm sạch siêu dữ liệu qua Spotify (nếu bật ENABLE_SPOTIFY_PRE_SEARCH)
         spotify_pre_meta = None
+        spotify_did_pre_search = False
         if ENABLE_SPOTIFY_PRE_SEARCH and hasattr(self, "spotify_service") and self.spotify_service:
+            spotify_did_pre_search = True
             try:
                 spot_match = self.search_spotify(target_title, target_artist=target_artist)
                 if (
@@ -1391,6 +1393,7 @@ class InputResolverService(IInputResolver):
                 platform="youtube_search",
                 is_verified_match=True,
                 match_score=yt_score,
+                spotify_searched=spotify_did_pre_search,
             )
             if spotify_pre_meta:
                 resolved_track.spotify_url = spotify_pre_meta.get("spotify_url") or spotify_pre_meta.get("track_url")

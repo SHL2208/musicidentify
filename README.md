@@ -62,6 +62,40 @@ uv run main.py --query "Sơn Tùng M-TP - Đừng Làm Trái Tim Anh Đau"
 uv run main.py --file "sample_songs.xlsx"
 ```
 
+### 4. Triển khai bằng Docker & Docker Compose 🐳
+
+Toàn bộ môi trường đã được đóng gói sẵn sàng gồm Python 3.11, FFmpeg, libsndfile và Deno runtime (xử lý YouTube n-challenge mà không bị lỗi bot):
+
+#### Cách 1: Sử dụng Docker Compose (Khuyên dùng)
+```bash
+# 1. Khởi chạy Web UI Streamlit (cổng 8501):
+docker-compose up -d web
+
+# 2. Hoặc khởi chạy REST API FastAPI (cổng 8000, Swagger: http://localhost:8000/docs):
+docker-compose up -d api
+
+# 3. Hoặc khởi chạy cả Web UI & REST API cùng lúc:
+docker-compose up -d
+
+# Xem log hoạt động:
+docker-compose logs -f web
+
+# Dừng hệ thống:
+docker-compose down
+```
+
+#### Cách 2: Sử dụng Docker CLI thuần
+```bash
+# 1. Build image:
+docker build -t musicidentify .
+
+# 2. Chạy Web UI (truy cập http://localhost:8501):
+docker run -d --name musicidentify-web -p 8501:8501 --env-file .env -v "$(pwd)/data:/app/data" musicidentify
+
+# 3. Hoặc chạy lệnh phân tích CLI nhanh trong container:
+docker run --rm --env-file .env -v "$(pwd)/data:/app/data" musicidentify python main.py --query "Tên bài hát hoặc URL"
+```
+
 ---
 
 ## 📂 Kiến Trúc Hệ Thống Chuẩn Quốc Tế (FAANG Enterprise Architecture)

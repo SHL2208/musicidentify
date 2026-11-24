@@ -1,0 +1,61 @@
+services:
+  # ============================================================================
+  # Streamlit Web UI (Giao diện trực quan chính)
+  # ============================================================================
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: musicidentify:latest
+    container_name: musicidentify-web
+    command: ["streamlit", "run", "frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "${WEB_PORT:-8501}:8501"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    volumes:
+      # Mount thư mục data để lưu trữ báo cáo, sqlite cache và file tạm bền vững
+      - ./data:/app/data
+      # (Tùy chọn) Bỏ comment dòng dưới nếu bạn có file cookies.txt để yt-dlp vượt bot challenge
+      # - ./cookies.txt:/app/cookies.txt:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8501/_stcore/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ============================================================================
+  # FastAPI REST API Server (Dành cho Swagger UI / Tích hợp hệ thống khác)
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: musicidentify:latest
+    container_name: musicidentify-api
+    command: ["uvicorn", "backend.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      - ./data:/app/data
+      # (Tùy chọn) Bỏ comment dòng dưới nếu bạn có file cookies.txt
+      # - ./cookies.txt:/app/cookies.txt:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

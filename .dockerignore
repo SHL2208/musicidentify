@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Linters
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+tests/
+
+# Sensitive files & Environment variables
+.env
+*.env
+cookies*.txt
+cookie*.txt
+
+# IDE & Editor files
+.agents/
+.vscode/
+.idea/
+.devcontainer/
+
+# Temporary data & caches (managed via Docker volume)
+data/temp/
+data/outputs/
+data/audio_cache/
+data/spotify_cache.sqlite
+temp/
+edge_temp/
+
+# Excel testcases & large sample files
+sample_songs.*
+sample_songs.xlsx
+sample_songs.txt
+testcase*.xlsx
+
+# Windows scripts & Docker config
+run_app.bat
+Dockerfile*
+docker-compose*.yml

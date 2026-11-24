@@ -95,6 +95,8 @@ class SpotifyService(ISpotifyService):
         self._premium_warning_logged: bool = False
         self._quota_exceeded: bool = False
         self._quota_warning_logged: bool = False
+        self._quota_reset_at: float = 0.0
+        self.api_call_count: int = 0
 
         self.cache_service = cache_service or SpotifyCacheService()
         self._pacer = _CallPacer(max_rate=SPOTIFY_MAX_CALLS_PER_SECOND)
@@ -135,6 +137,7 @@ class SpotifyService(ISpotifyService):
                         method="POST",
                     )
 
+                    self.api_call_count += 1
                     with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                         res_json = json.loads(resp.read().decode("utf-8"))
                         self._access_token = res_json.get("access_token")
@@ -160,6 +163,7 @@ class SpotifyService(ISpotifyService):
                         )
                     },
                 )
+                self.api_call_count += 1
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                     res_json = json.loads(resp.read().decode("utf-8"))
                     anon_token = res_json.get("accessToken")
@@ -242,6 +246,13 @@ class SpotifyService(ISpotifyService):
         if artist and artist.lower() not in clean_q.lower():
             search_term = f"{clean_q} {artist}".strip()
 
+        now = time.time()
+        # Tự động mở lại Circuit Breaker nếu đã hết thời gian phạt từ Spotify (Auto-reset after Retry-After)
+        if self._quota_exceeded and now >= self._quota_reset_at:
+            self._quota_exceeded = False
+            self._quota_warning_logged = False
+            logger.info("🟢 [SpotifyService] Circuit Breaker: Hết thời gian phạt 429, tự động mở lại kết nối Spotify API.")
+
         token = self._get_access_token()
         if token and not self._premium_required and not self._quota_exceeded:
             max_retries = 2
@@ -261,6 +272,7 @@ class SpotifyService(ISpotifyService):
                             "User-Agent": "MusicIdentify-SpotifyService/1.0",
                         },
                     )
+                    self.api_call_count += 1
                     with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                         data = json.loads(resp.read().decode("utf-8"))
                         items = (data.get("tracks") or {}).get("items") or []
@@ -284,8 +296,8 @@ class SpotifyService(ISpotifyService):
                             except (ValueError, TypeError):
                                 retry_after = 2
 
-                        # Nếu retry_after hợp lý và còn lượt thử, chờ và retry
-                        if attempt < max_retries and retry_after <= 10:
+                        # Nếu retry_after hợp lý (<= 30s) và còn lượt thử, chờ và retry
+                        if attempt < max_retries and retry_after <= 30:
                             logger.info(
                                 "⏳ [SpotifyService] HTTP 429 Rate Limit: Tạm dừng %ss theo Retry-After (Thử lại %s/%s)...",
                                 retry_after,
@@ -296,11 +308,13 @@ class SpotifyService(ISpotifyService):
                             continue
                         else:
                             self._quota_exceeded = True
+                            self._quota_reset_at = time.time() + max(retry_after, 15.0)
                             if not self._quota_warning_logged:
                                 self._quota_warning_logged = True
                                 logger.warning(
                                     "⚠️ [SpotifyService] Spotify API thông báo hết hạn mức (HTTP 429: QUOTA_EXCEEDED). "
-                                    "Hệ thống tự động kích hoạt Circuit Breaker: Tạm dừng gọi Spotify API trong phiên này."
+                                    "Tạm dừng gọi Spotify API trong %s giây (tự động hồi phục sau thời gian này).",
+                                    max(retry_after, 15.0)
                                 )
                             break
                     elif e.code == 403 and "premium" in err_body.lower():
@@ -351,6 +365,11 @@ class SpotifyService(ISpotifyService):
         track_id = match.group(1) if match else None
 
         # 1. Thử lấy qua Spotify API nếu có token và track_id (khi chưa cạn quota)
+        now = time.time()
+        if self._quota_exceeded and now >= self._quota_reset_at:
+            self._quota_exceeded = False
+            self._quota_warning_logged = False
+
         token = self._get_access_token()
         if token and track_id and not self._quota_exceeded:
             try:
@@ -363,6 +382,7 @@ class SpotifyService(ISpotifyService):
                         "User-Agent": "MusicIdentify-SpotifyService/1.0",
                     },
                 )
+                self.api_call_count += 1
                 with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     if data:
@@ -432,19 +452,10 @@ class SpotifyService(ISpotifyService):
             # Hit cache: Trả về kết quả (dict) hoặc None (Negative cache)
             return cached_result
 
-        # 2. BƯỚC 2: Gọi Spotify Search API
-        candidates: list[dict[str, Any]] = []
-
-        # Nếu có cả tên bài và ca sĩ, thử tìm kiếm có trường chính xác (Field Filters) trước
-        if artist and artist.strip():
-            structured_query = f'track:"{clean_title}" artist:"{artist.strip()}"'
-            candidates = self.search_tracks(query=structured_query, limit=limit)
-            # Lọc bỏ fallback search nếu API trả về fallback
-            candidates = [c for c in candidates if c.get("is_official_api")]
-
-        # Nếu chưa tìm thấy candidates qua structured query, gọi search tự do
-        if not candidates:
-            candidates = self.search_tracks(query=clean_title, artist=artist, limit=limit)
+        # 2. BƯỚC 2: Gọi Spotify Search API (Tối ưu 1-Shot Search: 1 bài = 1 request duy nhất)
+        # Sử dụng tìm kiếm tự do kết hợp tên bài và ca sĩ để Spotify kích hoạt Fuzzy Token Search.
+        # Tránh việc gọi 2 lần (structured query + fallback) làm hao tổn 50% quota không cần thiết.
+        candidates = self.search_tracks(query=clean_title, artist=artist, limit=limit)
 
         # Lọc bỏ ứng viên fallback search
         official_candidates = [c for c in candidates if c.get("is_official_api")]

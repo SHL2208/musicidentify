@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from backend.api.schemas.dtos import BatchDetectRequest, ExportReportRequest, TrackDetectRequest
 from backend.core.config import SPOTIFY_SEARCH_LIMIT

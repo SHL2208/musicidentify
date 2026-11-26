@@ -30,16 +30,78 @@ SPOTIFY_TRACK_ID_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Regex lọc bỏ các từ khóa nhiễu trong tiêu đề bài hát khi so khớp
+# Regex lọc bỏ các từ khóa nhiễu trong tiêu đề bài hát khi so khớp (giữ lại hàm _strip_noise cho tương thích ngược)
 NOISE_TITLE_REGEX = re.compile(
-    r"(?i)\s*(?:[\(\[\{][^\)\]\}]*(?:official|music\s*video|mv|audio|lyric|video|remix|cover|live|beat|karaoke|prod)[^\)\]\}]*[\)\]\}]|\b(?:ft\.?|feat\.?)\s+.*$)",
+    r"(?i)\s*(?:[\(\[\{][^\)\]\}]*(?:official|music\s*video|mv|audio|lyric|video|remix|cover|live|beat|karaoke|prod|ft\.?|feat\.?)[^\)\]\}]*[\)\]\}]|\b(?:ft\.?|feat\.?)\s+.*$)",
     re.IGNORECASE,
 )
+
+# Regex trích xuất các cụm ngoặc (...), [...], {...} và phần phụ sau dấu ' - '
+BRACKET_CHUNK_REGEX = re.compile(r"[\(\[\{]([^\)\]\}]*)[\)\]\}]")
+FEATURED_SUFFIX_REGEX = re.compile(r"(?i)\s+\b(?:ft\.?|feat\.?)\s+.*$")
+PACKAGING_ONLY_WORDS = {
+    "official",
+    "music",
+    "video",
+    "mv",
+    "audio",
+    "lyric",
+    "lyrics",
+    "visualizer",
+    "teaser",
+    "trailer",
+    "hd",
+    "4k",
+    "full",
+    "remaster",
+    "remastered",
+}
+BEAT_KEYWORDS = {"beat", "instrumental", "inst", "karaoke", "playback"}
+VARIANT_KEYWORDS = {
+    "remix",
+    "mix",
+    "drill",
+    "lofi",
+    "acoustic",
+    "live",
+    "session",
+    "cover",
+    "ballad",
+    "chacha",
+    "speed",
+    "slowed",
+    "piano",
+    "guitar",
+    "remake",
+    "vip",
+    "edit",
+    "mashup",
+    "version",
+    "ver",
+    "pt",
+    "part",
+    "p2",
+}
+MODIFIER_STOPWORDS = (
+    PACKAGING_ONLY_WORDS
+    | BEAT_KEYWORDS
+    | VARIANT_KEYWORDS
+    | {"ft", "feat", "prod", "with", "by", "x", "va", "and", "the", "of", "nu", "nam", "up"}
+)
+VERSION_DECIMAL_ZERO_REGEX = re.compile(r"(\d+)\.0+\b")
+ARTIST_SPLIT_REGEX = re.compile(r"(?i)\s*(?:,|;|&|\bx\b|\bft\.?\b|\bfeat\.?\b)\s*")
 
 
 def _clean_str(text: str) -> str:
     """Loại bỏ dấu tiếng Việt và ký tự đặc biệt để so khớp chuỗi chuẩn xác."""
     return normalize_vietnamese_text(text, remove_special_chars=True).lower().strip()
+
+
+def _normalize_version_str(text: str) -> str:
+    """Chuẩn hóa số phiên bản dạng '2.0' thành '2' để khớp khi người dùng bỏ '.0'."""
+    if not text:
+        return ""
+    return VERSION_DECIMAL_ZERO_REGEX.sub(r"\1", text)
 
 
 def _strip_noise(text: str) -> str:
@@ -48,6 +110,348 @@ def _strip_noise(text: str) -> str:
         return ""
     cleaned = NOISE_TITLE_REGEX.sub(" ", text)
     return " ".join(cleaned.split()).strip()
+
+
+def _normalize_qualifier_tokens(text: str) -> list[str]:
+    """Chuẩn hóa cụm mô tả phiên bản (ví dụ: 'Cha Cha Cha' -> 'chacha')."""
+    norm = _clean_str(text)
+    if not norm:
+        return []
+    norm = re.sub(r"\bcha\s+cha(?:\s+cha)?\b", "chacha", norm)
+    norm = re.sub(r"\bchachacha\b", "chacha", norm)
+    norm = re.sub(r"\blo\s+fi\b", "lofi", norm)
+    norm = re.sub(r"\b(?:part|pt)\s+(\d+)\b", r"p\1", norm)
+    norm = re.sub(r"\b(?:version|ver)\s+(\d+)\b", r"version \1", norm)
+    return norm.split()
+
+
+def _extract_version_profile(title: str) -> dict[str, Any]:
+    """Tách tên bài hát gốc (base title) và hồ sơ phiên bản (Beat, Remix, Live Session, Remixer).
+
+    Giúp phân biệt rạch ròi giữa Bản gốc, Beat/Instrumental, Live Session và các bản Remix khác nhau,
+    tránh xóa nhầm thông tin phiên bản khi đối soát.
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return {
+            "base_title": "",
+            "base_norm": "",
+            "base_vnorm": "",
+            "is_beat": False,
+            "variant_tags": set(),
+            "specific_modifiers": set(),
+            "all_qualifier_tokens": set(),
+        }
+
+    qualifier_chunks: list[str] = []
+
+    def _collect_bracket(match: re.Match[str]) -> str:
+        inner = match.group(1).strip()
+        if not inner:
+            return " "
+        inner_tokens = _normalize_qualifier_tokens(inner)
+        # Bỏ qua credit ft./feat. (không làm thay đổi phiên bản bài hát)
+        if inner_tokens and inner_tokens[0] in ("ft", "feat"):
+            return " "
+        # Bỏ qua nếu chỉ toàn là từ khóa đóng gói MV/Official/Audio/Remaster
+        if inner_tokens and all(t in PACKAGING_ONLY_WORDS for t in inner_tokens):
+            return " "
+        # Chỉ tách thành qualifier phiên bản nếu chứa từ khóa phiên bản/beat/remix/live/part
+        if any(t in BEAT_KEYWORDS or t in VARIANT_KEYWORDS for t in inner_tokens):
+            qualifier_chunks.append(inner)
+            return " "
+        # Giữ nguyên phụ đề trong ngoặc vào tên bài gốc (vd: 'Kẻ Say Tình 3 (Ngày Gió Giông)')
+        return f" {inner} "
+
+    base_work = BRACKET_CHUNK_REGEX.sub(_collect_bracket, raw)
+    base_work = FEATURED_SUFFIX_REGEX.sub(" ", base_work).strip()
+
+    # Tách phần mô tả phiên bản sau dấu ' - ' (vd: 'Sai Ngay Từ Đầu - Beat', 'Mừng Ngày Em Cưới - Am Remix - Beat')
+    if " - " in base_work:
+        parts = [p.strip() for p in base_work.split(" - ") if p.strip()]
+        if len(parts) >= 2:
+            kept_parts = [parts[0]]
+            for seg in parts[1:]:
+                seg_tokens = _normalize_qualifier_tokens(seg)
+                if seg_tokens and all(t in PACKAGING_ONLY_WORDS for t in seg_tokens):
+                    continue
+                if any(t in BEAT_KEYWORDS or t in VARIANT_KEYWORDS for t in seg_tokens):
+                    qualifier_chunks.append(seg)
+                else:
+                    kept_parts.append(seg)
+            base_work = " - ".join(kept_parts)
+
+    # Xử lý hậu tố phiên bản đứng cuối câu không có ngoặc/gạch (vd: 'Tên Bài Remix', 'Tên Bài Beat')
+    base_tokens_raw = _normalize_qualifier_tokens(base_work)
+    while len(base_tokens_raw) >= 2 and base_tokens_raw[-1] in (
+        BEAT_KEYWORDS | {"remix", "mix", "karaoke", "instrumental", "lofi", "acoustic"}
+    ):
+        qualifier_chunks.append(base_tokens_raw.pop())
+        base_work = " ".join(base_tokens_raw)
+
+    all_q_tokens: list[str] = []
+    for chunk in qualifier_chunks:
+        all_q_tokens.extend(_normalize_qualifier_tokens(chunk))
+
+    q_token_set = set(all_q_tokens)
+    is_beat = bool(q_token_set & BEAT_KEYWORDS)
+    variant_tags = q_token_set & VARIANT_KEYWORDS
+    specific_modifiers = {
+        t
+        for t in q_token_set
+        if t not in MODIFIER_STOPWORDS and (len(t) >= 2 or t.isdigit())
+    }
+
+    base_title = " ".join(base_work.split()).strip()
+    base_norm = _clean_str(base_title)
+    base_vnorm = _clean_str(_normalize_version_str(base_title))
+
+    return {
+        "base_title": base_title,
+        "base_norm": base_norm,
+        "base_vnorm": base_vnorm,
+        "is_beat": is_beat,
+        "variant_tags": variant_tags,
+        "specific_modifiers": specific_modifiers,
+        "all_qualifier_tokens": q_token_set,
+    }
+
+
+def _are_version_profiles_compatible(
+    q_prof: dict[str, Any],
+    c_prof: dict[str, Any],
+    cand_artist_tokens: set[str],
+    cand_artists_nospace: set[str],
+) -> tuple[bool, float]:
+    """Kiểm tra mức độ tương thích phiên bản (Bản gốc / Beat / Remix / Live Session / Remixer).
+
+    Trả về: (có tương thích hay không, điểm thưởng/phạt phụ trội).
+    """
+    # 1. Ràng buộc cứng Beat/Instrumental: Beat chỉ khớp Beat, Vocal chỉ khớp Vocal
+    if q_prof["is_beat"] != c_prof["is_beat"]:
+        return False, 0.0
+
+    q_vars: set[str] = q_prof["variant_tags"]
+    c_vars: set[str] = c_prof["variant_tags"]
+    q_mods: set[str] = q_prof["specific_modifiers"]
+    c_mods: set[str] = c_prof["specific_modifiers"]
+
+    # 2. Người dùng tìm bản gốc (không yêu cầu remix/live/cover/version...) -> từ chối bản phái sinh
+    if not q_vars and not q_mods and not q_prof["is_beat"]:
+        if c_vars or c_mods:
+            return False, 0.0
+        return True, 0.02
+
+    # 3. Người dùng yêu cầu phiên bản cụ thể
+    # 3a. Live / Session phải khớp Live / Session
+    if q_vars & {"live", "session"}:
+        if not (c_vars & {"live", "session"}) and not (q_mods & c_mods):
+            return False, 0.0
+
+    # 3b. Remix / Mix / Drill / Chacha / Cover / Lofi / Acoustic / Ballad / Version / P2
+    if "chacha" in q_vars and "chacha" not in c_vars:
+        return False, 0.0
+    if (q_vars & {"remix", "mix"}) and not (
+        c_vars & {"remix", "mix", "drill", "chacha", "lofi", "edit", "vip", "remake"}
+    ) and not (q_mods & (c_mods | cand_artist_tokens | cand_artists_nospace)):
+        return False, 0.0
+    for strict_tag in ("cover", "acoustic", "lofi", "drill", "piano", "guitar", "p2"):
+        if strict_tag in q_vars and strict_tag not in c_vars:
+            return False, 0.0
+    if (q_vars & {"version", "ver"}) and not (c_vars & {"version", "ver"}):
+        return False, 0.0
+
+    # Ngược lại: nếu query KHÔNG phải remix/live/cover nhưng candidate lại là bản phái sinh khác hẳn
+    if not (q_vars & {"live", "session"}) and (c_vars & {"live", "session"}):
+        return False, 0.0
+    if not (q_vars & {"cover"}) and ("cover" in c_vars):
+        return False, 0.0
+
+    # 3c. Kiểm tra tên remixer / tên phiên bản cụ thể (vd: VANTRI vs MVS, NVT x Quann vs Tón, AM vs Original)
+    if q_mods:
+        cand_pool = c_prof["all_qualifier_tokens"] | cand_artist_tokens | cand_artists_nospace
+        cand_joined = "".join(sorted(cand_pool))
+        for mod in q_mods:
+            if mod in cand_pool:
+                continue
+            # Hỗ trợ viết liền/cách (vd: 'indam' trong 'indamstage')
+            if len(mod) >= 4 and mod in cand_joined:
+                continue
+            return False, 0.0
+
+    # Thưởng nhẹ nếu khớp chính xác cả tập modifier (vd: (KTH Remix) khớp Beat KTH Remix thay vì KTH x ABC)
+    bonus = 0.03 if (q_mods == c_mods and q_vars == c_vars) else 0.0
+    return True, bonus
+
+
+def _split_artists(artist_text: str) -> list[str]:
+    """Tách chuỗi nhiều nghệ sĩ thành danh sách chuẩn hóa."""
+    if not artist_text:
+        return []
+    parts = ARTIST_SPLIT_REGEX.split(artist_text)
+    cleaned = [_clean_str(p) for p in parts if p and p.strip()]
+    return [c for c in cleaned if c]
+
+
+def _compute_artist_score(
+    target_artist: str, cand_artist_str: str, cand_artists_raw: list[str]
+) -> float:
+    """Tính điểm khớp nghệ sĩ hỗ trợ danh sách nhiều nghệ sĩ và tên viết liền/cách."""
+    target_norm = _clean_str(target_artist)
+    cand_norm = _clean_str(cand_artist_str)
+    if not target_norm:
+        return 0.0
+
+    base_seq_score = SequenceMatcher(None, target_norm, cand_norm).ratio()
+    target_list = _split_artists(target_artist)
+    cand_list = [_clean_str(a) for a in cand_artists_raw if _clean_str(a)]
+    if not cand_list:
+        cand_list = _split_artists(cand_artist_str)
+    if not target_list or not cand_list:
+        return base_seq_score
+
+    def _pair_sim(t_a: str, c_a: str) -> float:
+        if t_a == c_a:
+            return 1.0
+        t_ns = t_a.replace(" ", "")
+        c_ns = c_a.replace(" ", "")
+        if len(t_ns) >= 3 and len(c_ns) >= 3 and t_ns == c_ns:
+            return 0.98
+        if t_a in c_a or c_a in t_a:
+            len_min = min(len(t_a), len(c_a))
+            len_max = max(len(t_a), len(c_a))
+            if len_max > 0 and (len_min / len_max) >= 0.60:
+                return 0.88
+        if len(t_ns) >= 4 and len(c_ns) >= 4 and (t_ns in c_ns or c_ns in t_ns):
+            len_min = min(len(t_ns), len(c_ns))
+            len_max = max(len(t_ns), len(c_ns))
+            if len_max > 0 and (len_min / len_max) >= 0.70:
+                return 0.85
+        return SequenceMatcher(None, t_a, c_a).ratio()
+
+    # Kiểm tra nghệ sĩ chính (vị trí đầu tiên) và tỷ lệ bao phủ
+    primary_best = max(_pair_sim(target_list[0], ca) for ca in cand_list)
+    matched_targets = sum(1 for ta in target_list if max(_pair_sim(ta, ca) for ca in cand_list) >= 0.80)
+    matched_cands = sum(1 for ca in cand_list if max(_pair_sim(ta, ca) for ta in target_list) >= 0.80)
+
+    target_cov = matched_targets / len(target_list)
+    cand_cov = matched_cands / len(cand_list)
+
+    # Nếu nghệ sĩ chính khớp hoặc đa số nghệ sĩ ứng viên khớp trong danh sách đầu vào
+    if primary_best >= 0.85 and (cand_cov >= 0.50 or target_cov >= 0.50):
+        overlap_score = 0.75 + 0.25 * max(cand_cov, target_cov)
+        return max(base_seq_score, overlap_score)
+
+    if matched_cands > 0 and cand_cov >= 0.50:
+        return max(base_seq_score, 0.70 + 0.25 * cand_cov)
+
+    return base_seq_score
+
+
+def _contains_token_sequence(haystack_tokens: list[str], needle_tokens: list[str]) -> bool:
+    """Kiểm tra danh sách token `needle_tokens` có xuất hiện liên tiếp trong `haystack_tokens` không."""
+    if not needle_tokens or len(needle_tokens) > len(haystack_tokens):
+        return False
+    n_len = len(needle_tokens)
+    for i in range(len(haystack_tokens) - n_len + 1):
+        if haystack_tokens[i : i + n_len] == needle_tokens:
+            return True
+    return False
+
+
+def _remove_matched_artist_tokens(
+    query_norm: str, cand_artists_list: list[str]
+) -> tuple[str, bool]:
+    """Tách các token nghệ sĩ xuất hiện trong chuỗi truy vấn tự do (khi không có cột artist riêng).
+
+    Hỗ trợ khớp cả tên nghệ sĩ liền/cách (ví dụ: 'richchoi' <-> 'Rich Choi').
+    Trả về: (chuỗi truy vấn còn lại sau khi tách nghệ sĩ, cờ có khớp nghệ sĩ hay không).
+    """
+    q_tokens = query_norm.split()
+    if len(q_tokens) < 2 or not cand_artists_list:
+        return query_norm, False
+
+    matched_indices: set[int] = set()
+    matched_any = False
+
+    # Ưu tiên khớp tên nghệ sĩ dài trước để tránh khớp nhầm từ ngắn
+    sorted_artists = sorted(
+        (a for a in cand_artists_list if a),
+        key=lambda x: len(x.replace(" ", "")),
+        reverse=True,
+    )
+
+    for art in sorted_artists:
+        art_tokens = art.split()
+        art_nospace = art.replace(" ", "")
+        if len(art_nospace) < 3:
+            continue
+
+        # 1. Khớp cụm token liên tiếp của tên nghệ sĩ
+        n_art = len(art_tokens)
+        found_phrase = False
+        if n_art <= len(q_tokens):
+            for i in range(len(q_tokens) - n_art + 1):
+                if any(idx in matched_indices for idx in range(i, i + n_art)):
+                    continue
+                if q_tokens[i : i + n_art] == art_tokens:
+                    # Không xóa hết toàn bộ query nếu làm rỗng hoàn toàn
+                    if len(matched_indices) + n_art < len(q_tokens):
+                        matched_indices.update(range(i, i + n_art))
+                        matched_any = True
+                        found_phrase = True
+                        break
+
+        if found_phrase or len(art_nospace) < 4:
+            continue
+
+        # 2. Khớp tên nghệ sĩ viết liền không dấu cách (vd: 'richchoi' <-> 'Rich Choi')
+        for i, tok in enumerate(q_tokens):
+            if i in matched_indices or len(tok) < 4:
+                continue
+            if tok == art_nospace and len(matched_indices) + 1 < len(q_tokens):
+                matched_indices.add(i)
+                matched_any = True
+                break
+
+    if not matched_any:
+        return query_norm, False
+
+    remaining = [tok for i, tok in enumerate(q_tokens) if i not in matched_indices]
+    return " ".join(remaining).strip(), True
+
+
+def _compute_title_score(
+    target_norm: str,
+    target_vnorm: str,
+    cand_norm: str,
+    cand_vnorm: str,
+    min_sub_ratio: float = 0.60,
+) -> float:
+    """Tính điểm tương đồng tiêu đề bài hát trên cả bản chuẩn hóa gốc và bản chuẩn hóa số phiên bản."""
+    if not target_norm or not cand_norm:
+        return 0.0
+
+    score = max(
+        SequenceMatcher(None, target_norm, cand_norm).ratio(),
+        SequenceMatcher(None, target_vnorm, cand_vnorm).ratio(),
+    )
+
+    for t_str, c_str in ((target_norm, cand_norm), (target_vnorm, cand_vnorm)):
+        if not t_str or not c_str:
+            continue
+        if t_str in c_str or c_str in t_str:
+            len_min = min(len(t_str), len(c_str))
+            len_max = max(len(t_str), len(c_str))
+            if len_max > 0 and (len_min / len_max) >= min_sub_ratio:
+                # Xác nhận ranh giới token để tránh khớp một phần từ (vd 'an' trong 'anh')
+                t_tokens = t_str.split()
+                c_tokens = c_str.split()
+                if _contains_token_sequence(t_tokens, c_tokens) or _contains_token_sequence(
+                    c_tokens, t_tokens
+                ):
+                    score = max(score, 0.85)
+    return score
 
 
 class _CallPacer:
@@ -287,6 +691,17 @@ class SpotifyService(ISpotifyService):
                     except Exception:
                         pass
 
+                    # Xử lý HTTP 401 Unauthorized (token hết hạn/bị thu hồi): làm mới token và thử lại
+                    if e.code == 401 and attempt < max_retries:
+                        logger.info("🔄 [SpotifyService] HTTP 401: Làm mới Access Token và thử lại...")
+                        with self._token_lock:
+                            self._access_token = None
+                            self._token_expires_at = 0.0
+                        refreshed = self._get_access_token()
+                        if refreshed:
+                            token = refreshed
+                            continue
+
                     # Xử lý HTTP 429 Too Many Requests thông minh với Retry-After
                     if e.code == 429 or "quota_exceeded" in err_body.lower() or "too many requests" in err_body.lower():
                         retry_after = 2
@@ -317,6 +732,17 @@ class SpotifyService(ISpotifyService):
                                     max(retry_after, 15.0)
                                 )
                             break
+                    elif e.code in (500, 502, 503, 504) and attempt < max_retries:
+                        wait_s = 0.6 * (attempt + 1)
+                        logger.info(
+                            "⏳ [SpotifyService] HTTP %s tạm thời từ Spotify API. Thử lại sau %.1fs (%s/%s)...",
+                            e.code,
+                            wait_s,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        time.sleep(wait_s)
+                        continue
                     elif e.code == 403 and "premium" in err_body.lower():
                         self._premium_required = True
                         if not self._premium_warning_logged:
@@ -333,6 +759,20 @@ class SpotifyService(ISpotifyService):
                             err_body.strip(),
                         )
                         break
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    if attempt < max_retries:
+                        wait_s = 0.5 * (attempt + 1)
+                        logger.info(
+                            "⏳ [SpotifyService] Lỗi kết nối tạm thời (%s). Thử lại sau %.1fs (%s/%s)...",
+                            e,
+                            wait_s,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        time.sleep(wait_s)
+                        continue
+                    logger.warning("⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s", e)
+                    break
                 except Exception as e:
                     logger.warning("⚠️ [SpotifyService] Lỗi khi gọi Spotify Search API: %s", e)
                     break
@@ -430,6 +870,113 @@ class SpotifyService(ISpotifyService):
 
         return None
 
+    def _score_candidates(
+        self,
+        official_candidates: list[dict[str, Any]],
+        title: str,
+        artist: str = "",
+    ) -> tuple[dict[str, Any] | None, float]:
+        """Chấm điểm và chọn ứng viên khớp nhất theo tiêu chuẩn High Precision + Version-Aware Matching."""
+        q_prof = _extract_version_profile(title)
+        target_title_norm = q_prof["base_norm"] or _clean_str(title)
+        target_title_vnorm = q_prof["base_vnorm"] or _clean_str(_normalize_version_str(title))
+        target_artist_norm = _clean_str(artist) if artist else ""
+
+        best_score = -1.0
+        best_cand: dict[str, Any] | None = None
+
+        for cand in official_candidates:
+            raw_cand_title = cand.get("title", "")
+            c_prof = _extract_version_profile(raw_cand_title)
+            cand_title_norm = c_prof["base_norm"] or _clean_str(raw_cand_title)
+            cand_title_vnorm = c_prof["base_vnorm"] or _clean_str(
+                _normalize_version_str(raw_cand_title)
+            )
+
+            raw_artists = cand.get("artists_list") or [
+                p.strip() for p in str(cand.get("artist", "")).split(",") if p.strip()
+            ]
+            cand_artists_list = [_clean_str(a) for a in raw_artists if _clean_str(a)]
+            cand_artist_tokens: set[str] = set()
+            cand_artists_nospace: set[str] = set()
+            for a in cand_artists_list:
+                cand_artist_tokens.update(a.split())
+                cand_artists_nospace.add(a.replace(" ", ""))
+
+            # Kiểm tra tương thích phiên bản (Original vs Beat vs Remix vs Live Session vs Remixer)
+            is_compatible, version_bonus = _are_version_profiles_compatible(
+                q_prof, c_prof, cand_artist_tokens, cand_artists_nospace
+            )
+            if not is_compatible:
+                continue
+
+            if target_artist_norm:
+                # Chế độ 1: Có ca sĩ mục tiêu rõ ràng
+                title_score = _compute_title_score(
+                    target_title_norm,
+                    target_title_vnorm,
+                    cand_title_norm,
+                    cand_title_vnorm,
+                    min_sub_ratio=0.55,
+                )
+                artist_score = _compute_artist_score(
+                    artist, cand.get("artist", ""), raw_artists
+                )
+
+                # RÀNG BUỘC NGHIÊM NGẶT: Nếu có artist, cả Tên bài gốc lẫn Nghệ sĩ phải đạt ngưỡng cơ sở
+                if title_score < 0.70 or artist_score < 0.55:
+                    continue
+
+                combined_score = title_score * 0.65 + artist_score * 0.35 + version_bonus
+            else:
+                # Chế độ 2: Truy vấn tự do không tách cột ca sĩ (vd: "panorama obito", "binh xăng to xuanpac")
+                stripped_q_norm, artist_in_query = _remove_matched_artist_tokens(
+                    target_title_norm, cand_artists_list
+                )
+                stripped_q_vnorm, artist_in_vquery = _remove_matched_artist_tokens(
+                    target_title_vnorm, cand_artists_list
+                )
+                has_embedded_artist = artist_in_query or artist_in_vquery
+
+                base_title_score = _compute_title_score(
+                    target_title_norm,
+                    target_title_vnorm,
+                    cand_title_norm,
+                    cand_title_vnorm,
+                    min_sub_ratio=0.60,
+                )
+
+                if has_embedded_artist:
+                    embedded_title_score = _compute_title_score(
+                        stripped_q_norm,
+                        stripped_q_vnorm,
+                        cand_title_norm,
+                        cand_title_vnorm,
+                        min_sub_ratio=0.50,
+                    )
+                    title_score = max(base_title_score, embedded_title_score)
+                    if title_score < 0.75:
+                        continue
+                    combined_score = title_score * 0.70 + 0.30 + version_bonus
+                else:
+                    title_score = base_title_score
+                    if title_score < 0.75:
+                        continue
+                    combined_score = title_score + version_bonus
+
+            # Ưu tiên cộng điểm nhẹ cho bài có độ phổ biến cao (tối đa 0.03)
+            popularity = cand.get("popularity", 0)
+            combined_score += (popularity / 100.0) * 0.03
+
+            if combined_score > best_score:
+                best_score = combined_score
+                best_cand = cand
+
+        min_required_score = 0.70 if target_artist_norm else 0.75
+        if best_cand and best_score >= min_required_score:
+            return best_cand, min(1.0, best_score)
+        return None, 0.0
+
     def find_best_match(
         self, title: str, artist: str = "", limit: int = SPOTIFY_SEARCH_LIMIT
     ) -> dict[str, Any] | None:
@@ -437,10 +984,10 @@ class SpotifyService(ISpotifyService):
         Tìm kiếm và xếp hạng kết quả để chọn ra bài hát Spotify khớp nhất.
         Tích hợp:
         - Kiểm tra Persistent SQLite Cache trước (kể cả Negative Cache).
-        - Tìm kiếm có cấu trúc `track:... artist:...` nếu có ca sĩ.
-        - Bộ lọc so khớp chính xác cao (High Precision Matching Engine).
+        - Tìm kiếm 1-Shot tối ưu kết hợp fallback có cấu trúc (`track:"..." artist:"..."` và `track:"..."`).
+        - Bộ lọc so khớp chính xác cao nhận diện phiên bản (Original / Beat / Remix / Remixer / Live Session).
         - Tuyệt đối KHÔNG trả về candidates ngẫu nhiên nếu không đạt ngưỡng tối thiểu (trả về None).
-        - Lưu kết quả vào Cache (TTL 7 ngày nếu tìm thấy, 3 ngày nếu không tìm thấy).
+        - Chỉ lưu Negative Cache khi API phản hồi hợp lệ (không lưu khi lỗi mạng/503/429).
         """
         clean_title = title.strip()
         if not clean_title:
@@ -449,101 +996,92 @@ class SpotifyService(ISpotifyService):
         # 1. BƯỚC 1: Kiểm tra Persistent Cache (SQLite)
         is_hit, cached_result = self.cache_service.get(clean_title, artist=artist)
         if is_hit:
-            # Hit cache: Trả về kết quả (dict) hoặc None (Negative cache)
             return cached_result
 
-        # 2. BƯỚC 2: Gọi Spotify Search API (Tối ưu 1-Shot Search: 1 bài = 1 request duy nhất)
-        # Sử dụng tìm kiếm tự do kết hợp tên bài và ca sĩ để Spotify kích hoạt Fuzzy Token Search.
-        # Tránh việc gọi 2 lần (structured query + fallback) làm hao tổn 50% quota không cần thiết.
-        candidates = self.search_tracks(query=clean_title, artist=artist, limit=limit)
+        # 2. BƯỚC 2: Gọi Spotify Search API (Mặc định lấy tối thiểu 10 ứng viên trong 1 request)
+        search_limit = max(limit, 10)
+        candidates = self.search_tracks(query=clean_title, artist=artist, limit=search_limit)
 
-        # Lọc bỏ ứng viên fallback search
+        # Kiểm tra xem có phải lỗi API/hết quota/mất mạng không
+        had_api_failure = any(c.get("id") == "search_fallback" for c in candidates)
         official_candidates = [c for c in candidates if c.get("is_official_api")]
-        if not official_candidates:
-            # Không có bản thu chính thức nào -> Lưu Negative Cache và trả về None
-            self.cache_service.set(clean_title, artist=artist, data=None, is_found=False)
-            return None
 
         # 3. BƯỚC 3: So khớp xếp hạng bằng High Precision Matching Engine
-        target_title_clean = _strip_noise(clean_title)
-        target_artist_clean = _strip_noise(artist) if artist else ""
-        target_title_norm = _clean_str(target_title_clean)
-        target_artist_norm = _clean_str(target_artist_clean)
-
-        best_score = -1.0
         best_cand: dict[str, Any] | None = None
+        best_score = 0.0
 
-        for cand in official_candidates:
-            cand_title_clean = _strip_noise(cand.get("title", ""))
-            cand_artist_clean = _strip_noise(cand.get("artist", ""))
-            cand_title_norm = _clean_str(cand_title_clean)
-            cand_artist_norm = _clean_str(cand_artist_clean)
-            cand_artists_list = [
-                _clean_str(_strip_noise(a)) for a in cand.get("artists_list", []) if a
-            ]
-
-            # 3.1. So khớp tên bài hát
-            title_score = SequenceMatcher(None, target_title_norm, cand_title_norm).ratio()
-            # Khớp chuỗi con: Chỉ ưu tiên nếu độ dài chuỗi con chiếm ít nhất 60% độ dài chuỗi mẹ
-            if target_title_norm in cand_title_norm or cand_title_norm in target_title_norm:
-                len_min = min(len(target_title_norm), len(cand_title_norm))
-                len_max = max(len(target_title_norm), len(cand_title_norm))
-                if len_max > 0 and (len_min / len_max) >= 0.60:
-                    title_score = max(title_score, 0.85)
-
-            # 3.2. So khớp nghệ sĩ nếu có
-            if target_artist_norm:
-                artist_score = SequenceMatcher(
-                    None, target_artist_norm, cand_artist_norm
-                ).ratio()
-                # Kiểm tra nếu ca sĩ mục tiêu nằm trong danh sách ca sĩ của bài
-                is_artist_matched = any(
-                    target_artist_norm in a or a in target_artist_norm
-                    for a in cand_artists_list
-                    if a
+        if official_candidates:
+            best_cand, best_score = self._score_candidates(
+                official_candidates, title=clean_title, artist=artist
+            )
+            # Thử hoán đổi Title <-> Artist trên chính tập ứng viên sẵn có (0 extra API calls)
+            # Hỗ trợ trường hợp người dùng nhập 'Ca sĩ - Tên bài'
+            if not best_cand and artist.strip():
+                best_cand, best_score = self._score_candidates(
+                    official_candidates, title=artist.strip(), artist=clean_title
                 )
-                if is_artist_matched:
-                    artist_score = max(artist_score, 0.85)
-                elif (
-                    target_artist_norm in cand_artist_norm
-                    or cand_artist_norm in target_artist_norm
-                ):
-                    len_a_min = min(len(target_artist_norm), len(cand_artist_norm))
-                    len_a_max = max(len(target_artist_norm), len(cand_artist_norm))
-                    if len_a_max > 0 and (len_a_min / len_a_max) >= 0.60:
-                        artist_score = max(artist_score, 0.85)
 
-                # RÀNG BUỘC NGHIÊM NGẶT: Nếu có artist, cả Tên bài lẫn Nghệ sĩ phải đạt ngưỡng cơ sở
-                if title_score < 0.65 or artist_score < 0.50:
-                    continue
+        # 4. BƯỚC 4: Smart Structured Fallback Search
+        # Chỉ chạy khi 1-shot không lỗi API nhưng chưa khớp được ứng viên nào
+        if not best_cand and not had_api_failure and not self._quota_exceeded and not self._premium_required:
+            fallback_queries: list[tuple[str, str]] = []
+            q_prof = _extract_version_profile(clean_title)
+            base_q = (q_prof["base_title"] or _strip_noise(clean_title) or clean_title).replace('"', "").strip()
+            split_artists = _split_artists(artist) if artist.strip() else []
+            primary_artist = split_artists[0] if split_artists else ""
 
-                combined_score = title_score * 0.65 + artist_score * 0.35
+            if artist.strip():
+                # Ưu tiên 1: Tìm chính xác theo track:"..." + artist chính đầu tiên
+                # Khắc phục trường hợp cột Ca sĩ có thêm tên kênh/đơn vị (vd: 'InĐậm.Stage', 'ThuyDung Bolero')
+                if base_q and primary_artist:
+                    fallback_queries.append((f'track:"{base_q}" artist:"{primary_artist}"', ""))
+                # Ưu tiên 2: Tìm chính xác theo track:"..." (lấy toàn bộ phiên bản Remix/Beat/Live của bài)
+                if base_q:
+                    fallback_queries.append((f'track:"{base_q}"', ""))
             else:
-                # Không có artist: Title score bắt buộc phải cao (>= 0.75) để tránh nhầm bài
-                if title_score < 0.75:
+                if base_q and base_q != clean_title:
+                    fallback_queries.append((f'track:"{base_q}"', ""))
+                words = base_q.split()
+                if len(words) >= 5:
+                    prefix_len = min(4, max(3, len(words) // 2 + 1))
+                    fallback_queries.append((" ".join(words[:prefix_len]), ""))
+
+            seen_fb: set[tuple[str, str]] = {(clean_title.lower(), artist.lower())}
+            for fb_q, fb_a in fallback_queries:
+                key_pair = (fb_q.lower(), fb_a.lower())
+                if not fb_q or key_pair in seen_fb:
                     continue
-                combined_score = title_score
+                seen_fb.add(key_pair)
 
-            # Ưu tiên cộng điểm nhẹ cho bài có độ phổ biến cao (tối đa 0.05)
-            popularity = cand.get("popularity", 0)
-            combined_score += (popularity / 100.0) * 0.05
+                fb_cands = self.search_tracks(query=fb_q, artist=fb_a, limit=search_limit)
+                if any(c.get("id") == "search_fallback" for c in fb_cands):
+                    had_api_failure = True
+                    continue
+                fb_official = [c for c in fb_cands if c.get("is_official_api")]
+                if not fb_official:
+                    continue
 
-            if combined_score > best_score:
-                best_score = combined_score
-                best_cand = cand
+                # Luôn đối soát lại trên clean_title & artist gốc để giữ nguyên độ chính xác cao
+                best_cand, best_score = self._score_candidates(
+                    fb_official, title=clean_title, artist=artist
+                )
+                if not best_cand and artist.strip():
+                    best_cand, best_score = self._score_candidates(
+                        fb_official, title=artist.strip(), artist=clean_title
+                    )
+                if best_cand:
+                    break
 
-        # 4. BƯỚC 4: Kiểm tra ngưỡng điểm tối thiểu để công nhận
-        min_required_score = 0.68 if target_artist_norm else 0.75
-
-        if best_cand and best_score >= min_required_score:
+        if best_cand:
             best_cand["match_score"] = round(best_score, 2)
             # Lưu Positive Cache (TTL 7 ngày)
             self.cache_service.set(clean_title, artist=artist, data=best_cand, is_found=True)
             return best_cand
 
         # KHÔNG ĐẠT NGƯỠNG: Tuyệt đối KHÔNG trả về candidates[0]!
-        # Lưu Negative Cache (TTL 3 ngày) để không gọi lặp lại API
-        self.cache_service.set(clean_title, artist=artist, data=None, is_found=False)
+        # Chỉ lưu Negative Cache nếu API không bị lỗi (tránh cache nhầm lỗi 503/429/timeout)
+        if not had_api_failure:
+            self.cache_service.set(clean_title, artist=artist, data=None, is_found=False)
         return None
 
     def batch_search_tracks(

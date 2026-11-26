@@ -88,7 +88,7 @@ class SpotifyCacheService:
         """Tạo khóa băm SHA-256 từ tên bài và nghệ sĩ đã chuẩn hóa."""
         norm_q = _normalize_key_component(query)
         norm_a = _normalize_key_component(artist) if artist else ""
-        raw_key = f"{norm_q}___{norm_a}"
+        raw_key = f"v3___{norm_q}___{norm_a}"
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:32]
 
     def get(self, query: str, artist: str = "") -> tuple[bool, dict[str, Any] | None]:

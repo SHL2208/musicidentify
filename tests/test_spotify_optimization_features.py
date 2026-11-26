@@ -129,6 +129,278 @@ class TestSpotifyOptimizationFeatures(unittest.TestCase):
             self.assertEqual(result["id"], "correct_track")
             self.assertGreaterEqual(result["match_score"], 0.70)
 
+    def test_find_best_match_with_embedded_artist_in_query(self) -> None:
+        """Truy vấn gộp 'Tên bài Ca sĩ' không có dấu '-' vẫn phải khớp đúng bài có ca sĩ đó và loại bài cùng tên khác ca sĩ."""
+        mock_candidates = [
+            {
+                "id": "kpop_panorama",
+                "title": "Panorama",
+                "artist": "IZ*ONE",
+                "artists_list": ["IZ*ONE"],
+                "popularity": 85,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/kpop_panorama",
+            },
+            {
+                "id": "vn_panorama",
+                "title": "Panorama",
+                "artist": "Richie D. ICY, Obito",
+                "artists_list": ["Richie D. ICY", "Obito"],
+                "popularity": 60,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/vn_panorama",
+            },
+        ]
+        with patch.object(self.service, "search_tracks", return_value=mock_candidates):
+            result = self.service.find_best_match("panorama obito")
+            self.assertIsNotNone(result)
+            self.assertEqual(result["id"], "vn_panorama")
+
+            # Đảm bảo không khớp nhầm bài IZ*ONE nếu không có Obito
+            only_kpop = [mock_candidates[0]]
+            with patch.object(self.service, "search_tracks", return_value=only_kpop):
+                wrong_res = self.service.find_best_match("panorama obito 2")
+                self.assertIsNone(wrong_res)
+
+    def test_find_best_match_version_dot_zero_and_collapsed_artist(self) -> None:
+        """Hỗ trợ khớp '2' với '2.0' và nghệ sĩ viết liền 'richchoi' với 'Rich Choi' khi có từ khóa phụ."""
+        mock_candidates = [
+            {
+                "id": "ntcc_1",
+                "title": "Nâng Tầm Cuộc Chơi",
+                "artist": "Rocky CDE, Cậu Phát",
+                "artists_list": ["Rocky CDE", "Cậu Phát"],
+                "popularity": 30,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/ntcc_1",
+            },
+            {
+                "id": "ntcc_2",
+                "title": "NÂNG TẦM CUỘC CHƠI 2.0",
+                "artist": "Rocky CDE, Rich Choi, Cậu Phát",
+                "artists_list": ["Rocky CDE", "Rich Choi", "Cậu Phát"],
+                "popularity": 35,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/ntcc_2",
+            },
+        ]
+        with patch.object(self.service, "search_tracks", return_value=mock_candidates):
+            result = self.service.find_best_match("nâng tầm cuộc chơi 2 gió và cỏ richchoi")
+            self.assertIsNotNone(result)
+            self.assertEqual(result["id"], "ntcc_2")
+
+    def test_find_best_match_rejects_short_title_even_if_artist_matches(self) -> None:
+        """Tên bài quá ngắn (vd: 'Em') không được phép khớp vào truy vấn dài chỉ vì trùng ca sĩ."""
+        mock_candidates = [
+            {
+                "id": "short_em",
+                "title": "Em",
+                "artist": "Sơn Tùng",
+                "artists_list": ["Sơn Tùng"],
+                "popularity": 50,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/short_em",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=mock_candidates):
+            result = self.service.find_best_match("Em Của Ngày Hôm Qua Sơn Tùng")
+            self.assertIsNone(result)
+
+    def test_find_best_match_does_not_negative_cache_api_failures(self) -> None:
+        """Lỗi tạm thời (503/429/mất mạng trả về search_fallback) tuyệt đối không được lưu vào Negative Cache."""
+        fallback_only = [
+            {
+                "id": "search_fallback",
+                "title": "Nâng Tầm Cuộc Chơi",
+                "artist": "",
+                "is_official_api": False,
+                "spotify_url": "https://open.spotify.com/search/test",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=fallback_only):
+            res = self.service.find_best_match("Nâng Tầm Cuộc Chơi")
+            self.assertIsNone(res)
+
+        is_hit, _ = self.cache_service.get("Nâng Tầm Cuộc Chơi")
+        self.assertFalse(is_hit, "Không được lưu Negative Cache khi API bị lỗi tạm thời!")
+
+    def test_find_best_match_prefix_fallback_rescues_extra_context(self) -> None:
+        """Nếu lần tìm đầu không ra ứng viên khớp vì dư từ khóa phụ, fallback tìm theo cụm đầu và đối soát lại."""
+        unrelated = [
+            {
+                "id": "other",
+                "title": "Có Ai Hẹn Hò Cùng Em Chưa",
+                "artist": "Quân A.P",
+                "artists_list": ["Quân A.P"],
+                "popularity": 70,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/other",
+            }
+        ]
+        target = [
+            {
+                "id": "ntcc_1",
+                "title": "Nâng Tầm Cuộc Chơi",
+                "artist": "Rocky CDE, Cậu Phát",
+                "artists_list": ["Rocky CDE", "Cậu Phát"],
+                "popularity": 40,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/ntcc_1",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", side_effect=[unrelated, target]) as mock_search:
+            res = self.service.find_best_match("nâng tầm cuộc chơi gió và cò")
+            self.assertIsNotNone(res)
+            self.assertEqual(res["id"], "ntcc_1")
+            self.assertEqual(mock_search.call_count, 2)
+
+    def test_http_503_retries_and_succeeds(self) -> None:
+        """Khi Spotify trả HTTP 503 (no healthy upstream), tự động retry và thành công."""
+        self.service._access_token = "valid_token"
+        self.service._token_expires_at = time.time() + 3600
+
+        err_fp = io.BytesIO(b'{"error":{"status":503,"message":"no healthy upstream"}}')
+        http_503_err = urllib.error.HTTPError(
+            url="https://api.spotify.com/v1/search",
+            code=503,
+            msg="Service Unavailable",
+            hdrs={},
+            fp=err_fp,
+        )
+        success_response = {
+            "tracks": {
+                "items": [
+                    {
+                        "id": "ok_after_503",
+                        "name": "Nâng Tầm Cuộc Chơi",
+                        "artists": [{"name": "Rocky CDE"}],
+                        "album": {"name": "Single", "release_date": "2024-01-01", "images": []},
+                        "duration_ms": 200000,
+                        "external_urls": {"spotify": "https://open.spotify.com/track/ok_after_503"},
+                        "popularity": 50,
+                    }
+                ]
+            }
+        }
+        success_fp = io.BytesIO(json.dumps(success_response).encode("utf-8"))
+
+        with patch("time.sleep"):
+            with patch("urllib.request.urlopen", side_effect=[http_503_err, success_fp]):
+                results = self.service.search_tracks("Nâng Tầm Cuộc Chơi")
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["id"], "ok_after_503")
+
+    def test_version_aware_matching_distinguishes_beat_remix_remixer_and_live(self) -> None:
+        """Phân biệt chính xác Bản gốc vs Beat vs Remix vs Live Session vs tên Remixer khác nhau."""
+        # 1. VANTRI Remix không được khớp nhầm sang MVS Remix hay bản Instrumental
+        remix_candidates = [
+            {
+                "id": "mvs_remix",
+                "title": "Em Thua Cô Ta (MVS Remix)",
+                "artist": "Min Quỳnh Anh, MeMe Media, Mvs",
+                "artists_list": ["Min Quỳnh Anh", "MeMe Media", "Mvs"],
+                "popularity": 80,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/mvs_remix",
+            },
+            {
+                "id": "vantri_inst",
+                "title": "Em Thua Cô Ta (VANTRI Remix)[instrumental]",
+                "artist": "Min Quỳnh Anh, MeMe Media, VANTRI",
+                "artists_list": ["Min Quỳnh Anh", "MeMe Media", "VANTRI"],
+                "popularity": 50,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/vantri_inst",
+            },
+            {
+                "id": "vantri_vocal",
+                "title": "Em Thua Cô Ta (VANTRI Remix)",
+                "artist": "Min Quỳnh Anh, MeMe Media, VANTRI",
+                "artists_list": ["Min Quỳnh Anh", "MeMe Media", "VANTRI"],
+                "popularity": 40,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/vantri_vocal",
+            },
+        ]
+        with patch.object(self.service, "search_tracks", return_value=remix_candidates):
+            res = self.service.find_best_match(
+                "Em Thua Cô Ta (VANTRI Remix)", artist="Min Quỳnh Anh, Meme Media"
+            )
+            self.assertIsNotNone(res)
+            self.assertEqual(res["id"], "vantri_vocal")
+
+        # 2. Bản gốc KHÔNG được khớp nhầm sang bản Beat hoặc bản Drill/Remix
+        beat_only = [
+            {
+                "id": "beat_ver",
+                "title": "Hai Chữ Đơn Thân - Beat",
+                "artist": "Lý Văn, WDM",
+                "artists_list": ["Lý Văn", "WDM"],
+                "popularity": 60,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/beat_ver",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=beat_only):
+            res_orig = self.service.find_best_match("Hai Chữ Đơn Thân", artist="Lý Văn, WDM")
+            self.assertIsNone(res_orig)
+
+        # 3. Yêu cầu Beat KHÔNG được khớp nhầm sang bản có lời (non-beat)
+        non_beat_remix = [
+            {
+                "id": "ton_vocal",
+                "title": "Anh Chỉ Là Người Thay Thế - Tón Remix",
+                "artist": "Yến Nhi, Mimilee, Tón",
+                "artists_list": ["Yến Nhi", "Mimilee", "Tón"],
+                "popularity": 70,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/ton_vocal",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=non_beat_remix):
+            res_beat = self.service.find_best_match(
+                "Anh Chỉ Là Người Thay Thế (Tón Remix) (Beat)",
+                artist="Yến Nhi, Mimilee, Kiyoshi Phan Music",
+            )
+            self.assertIsNone(res_beat)
+
+        # 4. Yêu cầu Live Session KHÔNG được khớp nhầm sang bản Studio thường
+        studio_only = [
+            {
+                "id": "studio_track",
+                "title": "ít nhất là vào hôm nay",
+                "artist": "Ngọc Dolil",
+                "artists_list": ["Ngọc Dolil"],
+                "popularity": 65,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/studio_track",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=studio_only):
+            res_live = self.service.find_best_match(
+                "Ít Nhất Là Vào Hôm Nay (InĐậm.Stage Live Session)",
+                artist="Ngọc Dolil, Tr.D, InĐậm.Stage",
+            )
+            self.assertIsNone(res_live)
+
+        # 5. Yêu cầu Remix KHÔNG được khớp nhầm sang Bản gốc
+        original_only = [
+            {
+                "id": "orig_only",
+                "title": "Mừng Ngày Em Cưới",
+                "artist": "Lê Gia Bảo",
+                "artists_list": ["Lê Gia Bảo"],
+                "popularity": 75,
+                "is_official_api": True,
+                "spotify_url": "https://open.spotify.com/track/orig_only",
+            }
+        ]
+        with patch.object(self.service, "search_tracks", return_value=original_only):
+            res_rem = self.service.find_best_match(
+                "Mừng Ngày Em Cưới (AM Remix)", artist="Lê Gia Bảo"
+            )
+            self.assertIsNone(res_rem)
+
     def test_batch_search_tracks_sets_empty_link_when_not_found(self) -> None:
         """(A1) Batch search khi không tìm thấy thì link Spotify phải là None, is_found = False."""
         with patch.object(self.service, "find_best_match", return_value=None):

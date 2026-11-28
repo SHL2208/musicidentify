@@ -127,6 +127,7 @@ class BatchJobSnapshot:
     file_path: str | None = None
     queries: list[str] = field(default_factory=list)
     language: str = "vi"
+    enable_spotify: bool = True
 
 
 class BatchJob:
@@ -143,6 +144,7 @@ class BatchJob:
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
         language: str = "vi",
+        enable_spotify: bool = True,
     ):
         self.job_id = job_id
         self.job_name = job_name
@@ -151,6 +153,7 @@ class BatchJob:
         self.scan_mode = scan_mode
         self.model_override = model_override
         self.language = language
+        self.enable_spotify = enable_spotify
         self.status: JobStatus = JobStatus.QUEUED
         self.submitted_at: float = time.time()
         self.start_time: float | None = None
@@ -221,6 +224,7 @@ class BatchJob:
             file_path=str(self.file_path) if self.file_path else None,
             queries=list(self.queries),
             language=getattr(self, "language", "vi"),
+            enable_spotify=getattr(self, "enable_spotify", True),
         )
 
     def to_persistent_dict(self) -> dict:
@@ -233,6 +237,7 @@ class BatchJob:
             "queries": self.queries,
             "scan_mode": self.scan_mode,
             "language": getattr(self, "language", "vi"),
+            "enable_spotify": getattr(self, "enable_spotify", True),
             "total_tracks": self.total_tracks,
             "start_time": self.start_time,
             "finish_time": self.finish_time,
@@ -312,6 +317,7 @@ class BatchJobManager:
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
         language: str = "vi",
+        enable_spotify: bool = True,
     ) -> tuple[bool, str, BatchJob]:
         """Thêm một lô quét mới vào hàng đợi."""
         with self._lock:
@@ -335,6 +341,7 @@ class BatchJobManager:
                 start_index=start_index,
                 initial_results=initial_results,
                 language=language,
+                enable_spotify=enable_spotify,
             )
 
             # Đưa vào hàng đợi
@@ -614,8 +621,11 @@ class BatchJobManager:
         }
         import inspect
 
-        if "language" in inspect.signature(self.batch_service.process_batch).parameters:
+        batch_sig = inspect.signature(self.batch_service.process_batch).parameters
+        if "language" in batch_sig:
             batch_kwargs["language"] = getattr(job, "language", "vi") or "vi"
+        if "enable_spotify" in batch_sig:
+            batch_kwargs["enable_spotify"] = getattr(job, "enable_spotify", True)
 
         report: BatchReport = self.batch_service.process_batch(**batch_kwargs)
 
@@ -704,6 +714,7 @@ class BatchJobManager:
                 start_index=len(restored_results),
                 initial_results=restored_results,
                 language=data.get("language", "vi"),
+                enable_spotify=data.get("enable_spotify", True),
             )
             job.status = JobStatus(status_str)
             job.total_tracks = data.get("total_tracks", len(restored_results))

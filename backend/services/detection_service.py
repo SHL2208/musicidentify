@@ -9,6 +9,7 @@ from ..core.config import (
     PRE_AI_CUTOFF_MONTH,
     PRE_AI_CUTOFF_YEAR,
 )
+from ..core.utils import call_with_supported_kwargs
 from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
 from ..core.interfaces.services.audio_engine_interface import IAudioEngine
 from ..core.interfaces.services.classifier_interface import IAIClassifier
@@ -58,6 +59,7 @@ class DetectionService(IDetectionService):
         model_override: str | None = None,
         force_rescan: bool = False,
         language: str = "vi",
+        enable_spotify: bool = True,
     ) -> DetectionResult:
         """Thực hiện toàn bộ quy trình nhận diện 1 bài hát từ A đến Z (hỗ trợ Cache thông minh và Force Re-scan)."""
         # 0a. Kiểm tra kết quả trong CSDL trước nếu không yêu cầu quét lại (Force Re-scan)
@@ -133,8 +135,11 @@ class DetectionService(IDetectionService):
                     and track.input_type not in (InputType.LOCAL_FILE,)
                 ):
                     try:
-                        resolved_cand = self.resolver.resolve_track(
-                            track.raw_query, artist=track.artist or ""
+                        resolved_cand = call_with_supported_kwargs(
+                            self.resolver.resolve_track,
+                            track.raw_query,
+                            artist=track.artist or "",
+                            enable_spotify=enable_spotify,
                         )
                         if resolved_cand and resolved_cand.resolved_url:
                             track.resolved_url = resolved_cand.resolved_url
@@ -211,7 +216,8 @@ class DetectionService(IDetectionService):
                     track.spotify_url = existing_result.spotify_url
                     track.spotify_metadata = getattr(existing_result, "spotify_metadata", None)
                 elif (
-                    not getattr(existing_result, "spotify_url", None)
+                    enable_spotify
+                    and not getattr(existing_result, "spotify_url", None)
                     and getattr(self, "spotify_service", None)
                     and ENABLE_SPOTIFY_SEARCH
                     and not getattr(track, "spotify_searched", False)
@@ -268,8 +274,12 @@ class DetectionService(IDetectionService):
         ):
             try:
                 try:
-                    resolved_item = self.resolver.resolve_track(
-                        track.raw_query, artist=track.artist or "", force_rescan=force_rescan
+                    resolved_item = call_with_supported_kwargs(
+                        self.resolver.resolve_track,
+                        track.raw_query,
+                        artist=track.artist or "",
+                        force_rescan=force_rescan,
+                        enable_spotify=enable_spotify,
                     )
                 except TypeError:
                     resolved_item = self.resolver.resolve_track(track.raw_query)
@@ -497,7 +507,7 @@ class DetectionService(IDetectionService):
                 )
 
         # 0c. Tự động tra cứu Spotify làm giàu siêu dữ liệu (nếu chưa có và chưa từng tra cứu)
-        if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
+        if enable_spotify and ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
             if not track.spotify_url and not getattr(track, "spotify_searched", False):
                 track.spotify_searched = True
                 title_for_spotify = track.track_title or track.raw_query
@@ -529,7 +539,7 @@ class DetectionService(IDetectionService):
 
         # 0d. Pre-Download Early-Exit (Xác thực bài hát người làm trước tháng 11/2022)
         # Bỏ qua hoàn toàn bước tải YouTube audio, phân tích Librosa và Gemini LLM để tiết kiệm thời gian (90s -> 1s)
-        if ENABLE_SPOTIFY_EARLY_EXIT:
+        if enable_spotify and ENABLE_SPOTIFY_EARLY_EXIT:
             rel_date_cand = str(
                 track.release_date
                 or (track.spotify_metadata.get("release_date") if track.spotify_metadata else "")
@@ -1038,7 +1048,7 @@ class DetectionService(IDetectionService):
         )
 
         # Tự động tìm kiếm & làm giàu link Spotify nếu chưa có và chưa từng tra cứu
-        if ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
+        if enable_spotify and ENABLE_SPOTIFY_SEARCH and getattr(self, "spotify_service", None):
             if not track.spotify_url and not getattr(track, "spotify_searched", False):
                 track.spotify_searched = True
                 title_for_spotify = track.track_title or result.track_title or track.raw_query
@@ -1724,12 +1734,18 @@ class DetectionService(IDetectionService):
         model_override: str | None = None,
         force_rescan: bool = False,
         language: str = "vi",
+        enable_spotify: bool = True,
     ) -> DetectionResult:
         """Phân giải chuỗi query tự do qua IInputResolver và thực hiện nhận diện bài hát."""
-        track = self.resolver.resolve_track(query)
+        track = call_with_supported_kwargs(
+            self.resolver.resolve_track,
+            query,
+            enable_spotify=enable_spotify,
+        )
         return self.detect_single(
             track,
             model_override=model_override,
             force_rescan=force_rescan,
             language=language,
+            enable_spotify=enable_spotify,
         )

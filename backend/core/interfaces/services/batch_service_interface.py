@@ -19,6 +19,7 @@ class IBatchService(ABC):
         stop_check: Callable[[], bool] | None = None,
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
+        enable_spotify: bool = True,
     ) -> BatchReport:
         """
         Xử lý danh sách bài hát có điều tiết tốc độ (Rate Limiting)

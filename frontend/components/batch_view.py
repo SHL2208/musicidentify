@@ -12,7 +12,7 @@ from backend.services.batch_job_manager import (
     format_detection_row,
     format_time_duration,
 )
-from frontend.components.ui_compat import get_width_kwargs
+from frontend.components.ui_compat import get_width_kwargs, render_spotify_toggle
 from frontend.services.backend_client import BackendClient
 
 logger = logging.getLogger(__name__)
@@ -105,8 +105,8 @@ def render_batch_view(client: BackendClient):
         "thu nhỏ trình duyệt hoặc làm việc khác thoải mái mà không lo bị ngắt quãng."
     )
 
-    # 1. Tùy chọn thông báo Desktop & Âm thanh
-    col_opt1, col_opt2 = st.columns([3, 1])
+    # 1. Tùy chọn thông báo Desktop, Check Spotify & Âm thanh
+    col_opt1, col_opt2, col_opt3 = st.columns([2, 2, 1])
     with col_opt1:
         enable_notifications = st.toggle(
             "🔔 Bật thông báo Desktop & Chuông khi quét xong (Dù đang ở tab khác)",
@@ -116,6 +116,11 @@ def render_batch_view(client: BackendClient):
         )
         st.session_state.batch_enable_notifications = enable_notifications
     with col_opt2:
+        render_spotify_toggle(
+            key="batch_enable_spotify",
+            label="🎧 Check Spotify khi quét AI",
+        )
+    with col_opt3:
         st.caption("🛡️ Bounded Concurrency: 1 Worker")
 
     render_notification_script(enable_notifications)
@@ -232,6 +237,7 @@ def render_batch_view(client: BackendClient):
                         scan_mode=selected_scan_mode,
                         model_override=st.session_state.model_name,
                         language=st.session_state.get("reason_language", "vi"),
+                        enable_spotify=st.session_state.get("enable_spotify", True),
                     )
                     if success:
                         st.toast(msg, icon="🚀")
@@ -520,6 +526,8 @@ def render_batch_view(client: BackendClient):
                                         track_id=target_res.track_id,
                                         model_override=st.session_state.model_name,
                                         force_rescan=True,
+                                        language=st.session_state.get("reason_language", "vi"),
+                                        enable_spotify=st.session_state.get("enable_spotify", True),
                                     )
                                     live_res_list[selected_idx] = fresh
                                     curr_snap.live_rows[selected_idx] = format_detection_row(

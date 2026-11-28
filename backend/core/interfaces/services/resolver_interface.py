@@ -17,7 +17,13 @@ class IInputResolver(ABC):
         """Nhận diện loại đầu vào là URL, LOCAL_FILE hay SONG_NAME."""
 
     @abstractmethod
-    def resolve_track(self, query: str, artist: str = "", force_rescan: bool = False) -> TrackItem:
+    def resolve_track(
+        self,
+        query: str,
+        artist: str = "",
+        force_rescan: bool = False,
+        enable_spotify: bool = True,
+    ) -> TrackItem:
         """Chuyển đổi chuỗi đầu vào bất kỳ thành một TrackItem hoàn chỉnh."""
 
     @abstractmethod

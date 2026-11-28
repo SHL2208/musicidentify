@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..core.config import BATCH_SLEEP_INTERVAL
+from ..core.utils import call_with_supported_kwargs
 from ..core.interfaces.repositories.track_repository_interface import ITrackRepository
 from ..core.interfaces.services.batch_service_interface import IBatchService
 from ..core.interfaces.services.detection_service_interface import IDetectionService
@@ -43,6 +44,7 @@ class BatchService(IBatchService):
         stop_check: Callable[[], bool] | None = None,
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
+        enable_spotify: bool = True,
     ) -> BatchReport:
         """Xử lý danh sách bài hát có điều tiết tốc độ, kiểm tra tín hiệu dừng và hỗ trợ tiếp tục (Resume)."""
         total = len(tracks)
@@ -78,11 +80,13 @@ class BatchService(IBatchService):
                     track.status = "PROCESSING"
                     self.track_repo.save_track(track)
 
-                result = self.detection_service.detect_single(
+                result = call_with_supported_kwargs(
+                    self.detection_service.detect_single,
                     track,
                     model_override=model_override,
                     force_rescan=force_rescan,
                     language=language,
+                    enable_spotify=enable_spotify,
                 )
                 was_cached = bool(getattr(result, "is_cached", False))
 

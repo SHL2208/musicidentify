@@ -7,6 +7,7 @@ from backend.core.interfaces.services.detection_service_interface import IDetect
 from backend.core.interfaces.services.resolver_interface import IInputResolver
 from backend.core.interfaces.services.spotify_service_interface import ISpotifyService
 from backend.core.models.entities import DetectionResult, TrackItem
+from backend.core.utils import call_with_supported_kwargs
 
 from ..schemas.dtos import StandardResponse, TrackCorrectionRequest, TrackDetectRequest
 
@@ -34,19 +35,27 @@ class TrackController:
         try:
             force_rescan_flag = getattr(request, "force_rescan", False)
             lang = getattr(request, "language", "vi") or "vi"
+            enable_spotify_flag = bool(getattr(request, "enable_spotify", True))
             track_id_param = getattr(request, "track_id", None)
             try:
-                track = self.resolver.resolve_track(request.query, force_rescan=force_rescan_flag)
+                track = call_with_supported_kwargs(
+                    self.resolver.resolve_track,
+                    request.query,
+                    force_rescan=force_rescan_flag,
+                    enable_spotify=enable_spotify_flag,
+                )
             except TypeError:
                 track = self.resolver.resolve_track(request.query)
 
             if track_id_param:
                 track.id = track_id_param
-            result = self.detection_service.detect_single(
+            result = call_with_supported_kwargs(
+                self.detection_service.detect_single,
                 track,
                 model_override=request.model_override,
                 force_rescan=force_rescan_flag,
                 language=lang,
+                enable_spotify=enable_spotify_flag,
             )
             return StandardResponse[DetectionResult](
                 success=True,

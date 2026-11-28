@@ -1045,7 +1045,13 @@ class InputResolverService(IInputResolver):
 
 
 
-    def resolve_track(self, query: str, artist: str = "", force_rescan: bool = False) -> TrackItem:
+    def resolve_track(
+        self,
+        query: str,
+        artist: str = "",
+        force_rescan: bool = False,
+        enable_spotify: bool = True,
+    ) -> TrackItem:
 
         """Chuyển đổi một chuỗi truy vấn (YouTube, Zing, Spotify, Local, Text) thành TrackItem hoàn chỉnh."""
 
@@ -1057,7 +1063,7 @@ class InputResolverService(IInputResolver):
 
 
 
-        cache_key = f"{query.lower()}||{artist.strip().lower()}"
+        cache_key = f"{query.lower()}||{artist.strip().lower()}||spot:{1 if enable_spotify else 0}"
 
         if not force_rescan and cache_key in self._cache:
 
@@ -1087,11 +1093,21 @@ class InputResolverService(IInputResolver):
 
                 preview_url=c.preview_url,
 
+                spotify_url=getattr(c, "spotify_url", None),
+
+                spotify_metadata=getattr(c, "spotify_metadata", None),
+
+                spotify_searched=getattr(c, "spotify_searched", False),
+
+                release_date=getattr(c, "release_date", None),
+
+                distributor=getattr(c, "distributor", None),
+
             )
 
 
 
-        item = self._do_resolve_track(query, artist)
+        item = self._do_resolve_track(query, artist, enable_spotify=enable_spotify)
 
         self._cache[cache_key] = item
 
@@ -1099,7 +1115,9 @@ class InputResolverService(IInputResolver):
 
 
 
-    def _do_resolve_track(self, query: str, artist: str = "") -> TrackItem:
+    def _do_resolve_track(
+        self, query: str, artist: str = "", enable_spotify: bool = True
+    ) -> TrackItem:
 
         """Thực hiện giải quyết bài hát chi tiết khi không có cache."""
 
@@ -1359,7 +1377,12 @@ class InputResolverService(IInputResolver):
         # TẦNG 0: Tiền trích xuất & làm sạch siêu dữ liệu qua Spotify (nếu bật ENABLE_SPOTIFY_PRE_SEARCH)
         spotify_pre_meta = None
         spotify_did_pre_search = False
-        if ENABLE_SPOTIFY_PRE_SEARCH and hasattr(self, "spotify_service") and self.spotify_service:
+        if (
+            enable_spotify
+            and ENABLE_SPOTIFY_PRE_SEARCH
+            and hasattr(self, "spotify_service")
+            and self.spotify_service
+        ):
             spotify_did_pre_search = True
             try:
                 spot_match = self.search_spotify(target_title, target_artist=target_artist)
@@ -1447,9 +1470,9 @@ class InputResolverService(IInputResolver):
 
 
 
-        # TẦNG 3: Zing MP3 không tìm thấy / bị khóa VIP -> Fallback sang Spotify
+        # TẦNG 3: Zing MP3 không tìm thấy / bị khóa VIP -> Fallback sang Spotify (nếu bật enable_spotify)
 
-        spotify_meta = self.search_spotify(query)
+        spotify_meta = self.search_spotify(query) if enable_spotify else {}
 
         if spotify_meta and (spotify_meta.get("preview_url") or spotify_meta.get("track_url")):
 

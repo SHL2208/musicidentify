@@ -17,7 +17,7 @@ from frontend.components.header import render_header
 from frontend.components.metrics_display import render_metrics_display
 from frontend.components.sidebar import render_sidebar
 from frontend.components.spectrogram_viewer import render_spectrogram_viewer
-from frontend.components.ui_compat import get_width_kwargs
+from frontend.components.ui_compat import get_width_kwargs, render_spotify_toggle
 from frontend.components.verdict_card import render_verdict_card
 from frontend.services.backend_client import BackendClient
 
@@ -66,9 +66,16 @@ def main():
     with tab1:
         current_reason_lang = st.session_state.get("reason_language", "vi")
         lang_display = "Tiếng Việt" if current_reason_lang == "vi" else "English"
-        st.caption(
-            f"🌐 Ngôn ngữ Luận cứ kết quả: **{lang_display}** (thay đổi tại thanh bên ⚙️ Cấu hình)"
-        )
+        col_cap, col_spot = st.columns([3, 2])
+        with col_cap:
+            st.caption(
+                f"🌐 Ngôn ngữ Luận cứ kết quả: **{lang_display}** (thay đổi tại thanh bên ⚙️ Cấu hình)"
+            )
+        with col_spot:
+            render_spotify_toggle(
+                key="single_enable_spotify",
+                label="🎧 Check Spotify (Pre-search, Link & Early-Exit)",
+            )
         input_method = st.radio(
             "Phương thức thẩm định:",
             ["🔗 Nhập Link YouTube / Tên bài hát", "📤 Tải file âm thanh lên (.mp3, .wav, .m4a)"],
@@ -132,6 +139,7 @@ def main():
                         query=query_to_process,
                         model_override=st.session_state.model_name,
                         language=req_lang,
+                        enable_spotify=st.session_state.get("enable_spotify", True),
                     )
                     st.session_state.single_result = result
                 except Exception as e:
@@ -202,6 +210,7 @@ def main():
                                 model_override=st.session_state.model_name,
                                 force_rescan=True,
                                 language=st.session_state.get("reason_language", "vi"),
+                                enable_spotify=st.session_state.get("enable_spotify", True),
                             )
                             st.session_state.single_result = fresh_res
                             st.toast("🎉 Đã quét lại thành công và cập nhật CSDL!", icon="✅")

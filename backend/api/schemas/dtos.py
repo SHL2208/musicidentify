@@ -26,6 +26,10 @@ class TrackDetectRequest(BaseModel):
     language: str | None = Field(
         default="vi", description="Ngôn ngữ cho kết quả luận cứ ('vi' hoặc 'en')"
     )
+    enable_spotify: bool = Field(
+        default=True,
+        description="Bật/tắt tra cứu và đối soát siêu dữ liệu Spotify trong quá trình thẩm định",
+    )
 
 
 class BatchDetectRequest(BaseModel):
@@ -37,6 +41,10 @@ class BatchDetectRequest(BaseModel):
     )
     language: str | None = Field(
         default="vi", description="Ngôn ngữ cho kết quả luận cứ ('vi' hoặc 'en')"
+    )
+    enable_spotify: bool = Field(
+        default=True,
+        description="Bật/tắt tra cứu và đối soát siêu dữ liệu Spotify khi quét hàng loạt",
     )
 
 

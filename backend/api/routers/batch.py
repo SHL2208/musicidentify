@@ -30,6 +30,7 @@ def process_queries_batch(request: BatchDetectRequest, controller=Depends(get_ba
 async def upload_and_process_batch_file(
     file: UploadFile = File(...),
     model_override: str | None = None,
+    enable_spotify: bool = True,
     controller=Depends(get_batch_controller),
     storage=Depends(get_storage_repo),
 ):
@@ -41,6 +42,8 @@ async def upload_and_process_batch_file(
     with open(saved_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    report_resp = controller.process_file(saved_path, model_override=model_override)
+    report_resp = controller.process_file(
+        saved_path, model_override=model_override, enable_spotify=enable_spotify
+    )
     storage.cleanup_file(saved_path)
     return report_resp

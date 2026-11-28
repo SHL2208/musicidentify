@@ -1,6 +1,11 @@
 import streamlit as st
 
-from backend.core.config import DEFAULT_GEMINI_MODEL
+from backend.core.config import (
+    DEFAULT_GEMINI_MODEL,
+    ENABLE_SPOTIFY_EARLY_EXIT,
+    ENABLE_SPOTIFY_PRE_SEARCH,
+    ENABLE_SPOTIFY_SEARCH,
+)
 
 
 def init_session_state():
@@ -42,3 +47,7 @@ def init_session_state():
         st.session_state.active_tab = 0
     if "reason_language" not in st.session_state:
         st.session_state.reason_language = "vi"
+    if "enable_spotify" not in st.session_state:
+        st.session_state.enable_spotify = bool(
+            ENABLE_SPOTIFY_SEARCH or ENABLE_SPOTIFY_PRE_SEARCH or ENABLE_SPOTIFY_EARLY_EXIT
+        )

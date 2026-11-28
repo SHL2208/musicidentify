@@ -30,6 +30,7 @@ class BackendClient:
         model_override: str | None = None,
         force_rescan: bool = False,
         language: str = "vi",
+        enable_spotify: bool = True,
     ) -> DetectionResult:
         """Gọi Controller phân tích một bài hát đơn lẻ (hỗ trợ Cache và Force Re-scan)."""
         req = TrackDetectRequest(
@@ -38,6 +39,7 @@ class BackendClient:
             model_override=model_override,
             force_rescan=force_rescan,
             language=language,
+            enable_spotify=enable_spotify,
         )
         resp = self.track_controller.detect_track(req)
         if not resp.success or resp.data is None:
@@ -113,6 +115,7 @@ class BackendClient:
         stop_check: Callable[[], bool] | None = None,
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
+        enable_spotify: bool = True,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ danh sách queries."""
         req = BatchDetectRequest(
@@ -120,6 +123,7 @@ class BackendClient:
             model_override=model_override,
             scan_mode=scan_mode,
             language=language,
+            enable_spotify=enable_spotify,
         )
         resp = self.batch_controller.process_queries(
             req,
@@ -143,6 +147,7 @@ class BackendClient:
         stop_check: Callable[[], bool] | None = None,
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
+        enable_spotify: bool = True,
     ) -> BatchReport:
         """Gọi Controller xử lý lô bài hát từ tệp (.txt, .csv, .xlsx)."""
         resp = self.batch_controller.process_file(
@@ -154,6 +159,7 @@ class BackendClient:
             stop_check=stop_check,
             start_index=start_index,
             initial_results=initial_results,
+            enable_spotify=enable_spotify,
         )
         if not resp.success or resp.data is None:
             raise RuntimeError(resp.error or resp.message)
@@ -207,6 +213,7 @@ class BackendClient:
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
         language: str = "vi",
+        enable_spotify: bool = True,
     ):
         """Gửi yêu cầu quét hàng loạt vào hàng đợi chạy ngầm."""
         return self.batch_job_manager.enqueue_job(
@@ -218,6 +225,7 @@ class BackendClient:
             start_index=start_index,
             initial_results=initial_results,
             language=language,
+            enable_spotify=enable_spotify,
         )
 
     def cancel_queued_batch_job(self, job_id: str) -> bool:

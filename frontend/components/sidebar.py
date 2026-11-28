@@ -7,6 +7,7 @@ from backend.core.config import (
     LOCAL_MODEL_BASE_URL,
     USE_LOCAL_MODEL,
 )
+from frontend.components.ui_compat import render_spotify_toggle
 
 
 def render_sidebar():
@@ -36,6 +37,11 @@ def render_sidebar():
             key="sb_reason_language",
         )
         st.session_state.reason_language = "vi" if selected_lang == "Tiếng Việt" else "en"
+
+        render_spotify_toggle(
+            key="sb_enable_spotify",
+            label="🎧 Check Spotify khi Check AI",
+        )
 
         st.divider()
         st.subheader("📊 Thông số Giám định")

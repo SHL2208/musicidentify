@@ -4,6 +4,7 @@ from pathlib import Path
 from backend.core.interfaces.services.batch_service_interface import IBatchService
 from backend.core.interfaces.services.resolver_interface import IInputResolver
 from backend.core.models.entities import BatchReport, DetectionResult, TrackItem
+from backend.core.utils import call_with_supported_kwargs
 
 from ..schemas.dtos import BatchDetectRequest, StandardResponse
 
@@ -55,7 +56,9 @@ class BatchController:
 
             scan_m = getattr(request, "scan_mode", "smart")
             lang = getattr(request, "language", "vi") or "vi"
-            report = self.batch_service.process_batch(
+            enable_spot = bool(getattr(request, "enable_spotify", True))
+            report = call_with_supported_kwargs(
+                self.batch_service.process_batch,
                 tracks=tracks,
                 model_override=request.model_override,
                 scan_mode=scan_m,
@@ -64,6 +67,7 @@ class BatchController:
                 stop_check=stop_check,
                 start_index=start_index,
                 initial_results=initial_results,
+                enable_spotify=enable_spot,
             )
             return StandardResponse[BatchReport](
                 success=True, message=f"Đã xử lý xong lô {report.total_tracks} bài hát", data=report
@@ -84,11 +88,13 @@ class BatchController:
         stop_check: Callable[[], bool] | None = None,
         start_index: int = 0,
         initial_results: list[DetectionResult] | None = None,
+        enable_spotify: bool = True,
     ) -> StandardResponse[BatchReport]:
         """Tiếp nhận tệp dữ liệu (.txt, .csv, .xlsx) và thực hiện quét hàng loạt."""
         try:
             tracks = self.resolver.parse_batch_file(file_path)
-            report = self.batch_service.process_batch(
+            report = call_with_supported_kwargs(
+                self.batch_service.process_batch,
                 tracks=tracks,
                 model_override=model_override,
                 scan_mode=scan_mode,
@@ -97,6 +103,7 @@ class BatchController:
                 stop_check=stop_check,
                 start_index=start_index,
                 initial_results=initial_results,
+                enable_spotify=enable_spotify,
             )
             return StandardResponse[BatchReport](
                 success=True,
